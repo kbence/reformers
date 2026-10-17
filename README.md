@@ -22,11 +22,11 @@ cargo run --release
 | Esc | options: resume, graphics, quit (pauses the game) |
 
 Graphics options: texture filter (nearest/smooth), textures on (MAPTEX.PCX material tiles, car
-skins) or off (flat COL.PCX colours), CRT filter, minimap, fullscreen, window resolution.
+skins) or off (flat COL.PCX colours), CRT filter, minimap, ghost car, fullscreen, window resolution.
 
 Flags: `--car N` starting car; `--soft` makes all ground diggable so wheels dig tracks (the original
 only digs ground of colour 0x0f, which no shipped map has); `--smooth`, `--untextured`, `--crt`,
-`--no-minimap` preset graphics options; `--menu` starts paused.
+`--no-minimap`, `--ghost` preset the options; `--menu` starts paused.
 
 ## Time trial
 
@@ -34,7 +34,9 @@ When `assets/CHECK.PCX` exists, the map is a time trial. Drive through the start
 clock, then through the checkpoints in order; any other order doesn't count. The next checkpoint is
 the yellow arch (start/finish has a chequered banner); the others are dim. Each arch stands on the
 two ends of its painted line. Best laps are saved per map and car in
-`~/.local/share/reformers/best_laps.txt` (or `$XDG_DATA_HOME`, or `%APPDATA%` on Windows).
+`~/.local/share/reformers/best_laps.txt` (or `$XDG_DATA_HOME`, or `%APPDATA%` on Windows). The
+best lap can also drive along as a translucent ghost car with a dot on the minimap (off by default;
+Esc menu or `--ghost`), saved next to it as `ghost-*.bin`.
 
 `CHECK.PCX` is a 256×256 indexed image on the same grid as `MAP.PCX`/`COL.PCX` (the 64 px strip on
 the right is a legend and is ignored), so tracks can be painted in any paint program. Like

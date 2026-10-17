@@ -775,6 +775,26 @@ mod tests {
         }
     }
 
+    /// Same inputs, same run: input replays (#6) rely on it. Within one build and platform only;
+    /// the sin table and atan2 go through f64 libm, which could differ elsewhere.
+    #[test]
+    fn same_inputs_same_run() {
+        let run = || {
+            let mut s = sim();
+            for t in 0..TICK_HZ * 8 {
+                s.tick(&[Keys {
+                    throttle: t % 300 < 200,
+                    left: t % 170 < 40,
+                    right: t % 230 > 180,
+                    brake: t % 500 > 470,
+                    ..Keys::default()
+                }]);
+            }
+            (s.cars[0].atom_positions(), s.terrain.height)
+        };
+        assert_eq!(run(), run());
+    }
+
     #[test]
     fn upside_down_only_on_the_roof() {
         let flat = || Terrain {

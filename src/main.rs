@@ -7,6 +7,7 @@
 
 use macroquad::prelude::*;
 use reformers::car::{self, Car, Prim};
+use reformers::ghost::{self, Frame, Ghost};
 use reformers::sim::{Keys, Sim, SimCar, TICK_HZ};
 use reformers::terrain::{SIZE, Terrain};
 use reformers::track::{Event, Lap, Race, Track, format_time};
@@ -18,13 +19,34 @@ const CHUNK: usize = 32;
 const CAM_CLEARANCE: f32 = 0.3; // render units the camera keeps above the ground // rows per mesh: macroquad meshes index with u16
 const SPAWN: (u16, u16) = (0x8000, 0x7a00); // without CHECK.PCX
 
-/// Best laps, one `key time split…` line per map + car, in the user's data dir.
-fn best_laps_file() -> Option<PathBuf> {
+fn data_dir() -> Option<PathBuf> {
     let env = |k: &str| std::env::var_os(k).map(PathBuf::from);
     let base = env("XDG_DATA_HOME")
         .or_else(|| env("HOME").map(|h| h.join(".local/share")))
         .or_else(|| env("APPDATA"))?;
-    Some(base.join("reformers").join("best_laps.txt"))
+    Some(base.join("reformers"))
+}
+
+/// Best laps, one `key time split…` line per map + car, in the user's data dir.
+fn best_laps_file() -> Option<PathBuf> {
+    Some(data_dir()?.join("best_laps.txt"))
+}
+
+/// The best lap's ghost for this map + car; empty if there is none (or it won't load).
+fn load_ghost(level: &Level, car: usize) -> Ghost {
+    best_key(level, car)
+        .and_then(|k| std::fs::read(data_dir()?.join(format!("ghost-{k}.bin"))).ok())
+        .and_then(|b| Ghost::from_bytes(&b).ok())
+        .unwrap_or_default()
+}
+
+fn save_ghost(key: &str, ghost: &Ghost) {
+    let Some(dir) = data_dir() else { return };
+    let written = std::fs::create_dir_all(&dir)
+        .and_then(|_| std::fs::write(dir.join(format!("ghost-{key}.bin")), ghost.to_bytes()));
+    if let Err(e) = written {
+        eprintln!("can't save ghost to {}: {e}", dir.display());
+    }
 }
 
 fn load_best(key: &str) -> Option<Lap> {
@@ -275,19 +297,19 @@ fn skin_texture(pcx_bytes: &[u8], palette: &[[u8; 3]; 256]) -> Skin {
 /// `roll` is each wheel's accumulated rotation (radians), by atom index 0–3.
 fn car_meshes(
     model: &Car,
-    car: &SimCar,
+    atoms: &[[f32; 3]],
+    steer: f32,
     t: &Terrain,
     skin: &Skin,
     roll: &[f32; 4],
     use_skin: bool,
 ) -> [Mesh; 3] {
-    let atoms = car.atom_positions();
     let n = atoms.len();
     let w = |p: [f32; 3]| Vec3::from(p);
     let unit = |a: Vec3| a.normalize_or_zero();
     let side = unit(w(atoms[7]) - w(atoms[6]));
     let fwd = unit(w(atoms[4]) - w(atoms[6]) + w(atoms[5]) - w(atoms[7]));
-    let steered = fwd * car.steer_angle().sin() + side * car.steer_angle().cos(); // like 0x11f0
+    let steered = fwd * steer.sin() + side * steer.cos(); // like 0x11f0
     let entry = |e: u16| -> Vec3 {
         let e = e as usize;
         let world = if e < 2 * n {
@@ -516,6 +538,7 @@ struct Graphics {
     textured: bool,
     crt: bool,
     minimap: bool,
+    ghost: bool,
     fullscreen: bool,
     resolution: usize, // index into RESOLUTIONS, windowed mode only
 }
@@ -527,16 +550,18 @@ enum Row {
     Textures,
     Crt,
     Minimap,
+    Ghost,
     Fullscreen,
     Resolution,
     Quit,
 }
-const ROWS: [Row; 8] = [
+const ROWS: [Row; 9] = [
     Row::Resume,
     Row::Filter,
     Row::Textures,
     Row::Crt,
     Row::Minimap,
+    Row::Ghost,
     Row::Fullscreen,
     Row::Resolution,
     Row::Quit,
@@ -554,6 +579,7 @@ impl Graphics {
             Row::Textures => format!("Textures: {}", on(self.textured)),
             Row::Crt => format!("CRT filter: {}", on(self.crt)),
             Row::Minimap => format!("Minimap: {}", on(self.minimap)),
+            Row::Ghost => format!("Ghost car: {}", on(self.ghost)),
             Row::Fullscreen => format!("Fullscreen: {}", on(self.fullscreen)),
             Row::Resolution => {
                 let (w, h) = RESOLUTIONS[self.resolution];
@@ -577,6 +603,7 @@ impl Graphics {
             Row::Textures => self.textured = !self.textured,
             Row::Crt => self.crt = !self.crt,
             Row::Minimap => self.minimap = !self.minimap,
+            Row::Ghost => self.ghost = !self.ghost,
             Row::Fullscreen => {
                 self.fullscreen = !self.fullscreen;
                 set_fullscreen(self.fullscreen);
@@ -600,8 +627,15 @@ impl Graphics {
     }
 }
 
-/// COL.PCX in the top-right corner with the gates (next one yellow, start white) and the car.
-fn draw_minimap(colour: &Texture2D, track: Option<&Track>, next: usize, car: &SimCar, top: f32) {
+/// COL.PCX in the top-right corner with the gates (next one yellow, start white), the ghost and the car.
+fn draw_minimap(
+    colour: &Texture2D,
+    track: Option<&Track>,
+    next: usize,
+    car: &SimCar,
+    ghost: Option<[f32; 2]>,
+    top: f32,
+) {
     let size = (screen_width().min(screen_height()) * 0.28).round();
     let (x0, y0) = (screen_width() - size - 12.0, top + 12.0);
     let to_map = |[x, y]: [f32; 2]| vec2(x0 + x / 65536.0 * size, y0 + y / 65536.0 * size);
@@ -627,6 +661,10 @@ fn draw_minimap(colour: &Texture2D, track: Option<&Track>, next: usize, car: &Si
             };
             draw_line(a.x, a.y, b.x, b.y, w, c);
         }
+    }
+    if let Some(g) = ghost {
+        let g = to_map(g);
+        draw_circle(g.x, g.y, 4.0, Color::new(1.0, 1.0, 1.0, 0.6));
     }
     let [x, y, _] = car.centre();
     let p = to_map([x, y]);
@@ -768,6 +806,8 @@ async fn main() {
         spawn_heading,
     ));
     let mut race = Race::new(best_key(&level, current).and_then(|k| load_best(&k)));
+    let mut ghost = load_ghost(&level, current);
+    let mut recording = Ghost::default(); // this lap so far
     let mut ticks = 0u64;
     let mut banner: Option<(String, f64)> = None; // message, shown until
     let mut last_centre = sim.cars[0].centre();
@@ -804,6 +844,7 @@ async fn main() {
         textured: !flag("--untextured"),
         crt: flag("--crt"),
         minimap: !flag("--no-minimap"),
+        ghost: flag("--ghost"), // off by default
         fullscreen: false,
         resolution: 1,
     };
@@ -867,6 +908,8 @@ async fn main() {
                         }
                         // a changed map is a different track: new time trial, its own best lap
                         race = Race::new(best_key(&level, current).and_then(|k| load_best(&k)));
+                        ghost = load_ghost(&level, current);
+                        recording = Ghost::default();
                         banner = Some(("map reloaded".into(), get_time() + 1.5));
                     }
                     Err(e) => banner = Some((format!("reload failed: {e}"), get_time() + 5.0)),
@@ -936,6 +979,8 @@ async fn main() {
             // best laps are per car: a new car starts a new time trial
             current = n;
             race = Race::new(best_key(&level, current).and_then(|k| load_best(&k)));
+            ghost = load_ghost(&level, current);
+            recording = Ghost::default();
         }
         if (!menu_open && is_key_pressed(KeyCode::R)) || pick.is_some() {
             // time trial: back to the last checkpoint, facing the next; else upright where the car is
@@ -973,7 +1018,10 @@ async fn main() {
                 let [x, y, _] = sim.cars[0].centre();
                 let n = t.gates.len();
                 let msg = match race.update(t, [x, y], ticks) {
-                    Some(Event::Start) => Some("GO!".to_string()),
+                    Some(Event::Start) => {
+                        recording = Ghost::default();
+                        Some("GO!".to_string())
+                    }
                     Some(Event::Gate(g)) => Some(match race.split_delta() {
                         Some(d) => format!(
                             "checkpoint {g}/{}   {}{}",
@@ -984,10 +1032,12 @@ async fn main() {
                         None => format!("checkpoint {g}/{}", n - 1),
                     }),
                     Some(Event::Lap { time, best }) => {
-                        if best
-                            && let (Some(k), Some(lap)) = (best_key(&level, current), &race.best)
+                        let lap = std::mem::take(&mut recording);
+                        if best && let (Some(k), Some(b)) = (best_key(&level, current), &race.best)
                         {
-                            save_best(&k, lap);
+                            save_best(&k, b);
+                            save_ghost(&k, &lap);
+                            ghost = lap;
                         }
                         Some(format!(
                             "lap {}{}",
@@ -1005,6 +1055,13 @@ async fn main() {
             for i in 0..4 {
                 // spin is rim travel per tick (16.16 world units)
                 roll[i] += spin[i] as f32 / 65536.0 / model.atoms[i].radius;
+            }
+            if race.started && race.lap_time(ticks).is_multiple_of(ghost::STEP) {
+                recording.frames.push(Frame {
+                    atoms: sim.cars[0].atom_positions(),
+                    steer: sim.cars[0].steer_angle(),
+                    roll,
+                });
             }
         }
         let c = sim.cars[0].centre();
@@ -1096,8 +1153,37 @@ async fn main() {
             draw_mesh(m);
         }
         gl_use_default_material();
-        for m in car_meshes(model, &sim.cars[0], &sim.terrain, skin, &roll, gfx.textured) {
+        let me = &sim.cars[0];
+        for m in car_meshes(
+            model,
+            &atoms,
+            me.steer_angle(),
+            &sim.terrain,
+            skin,
+            &roll,
+            gfx.textured,
+        ) {
             draw_mesh(&m);
+        }
+        // the best lap's ghost, in step with the lap timer
+        if gfx.ghost
+            && race.started
+            && let Some(f) = ghost.at(race.lap_time(ticks))
+        {
+            for mut m in car_meshes(
+                model,
+                &f.atoms,
+                f.steer,
+                &sim.terrain,
+                skin,
+                &f.roll,
+                gfx.textured,
+            ) {
+                m.vertices
+                    .iter_mut()
+                    .for_each(|v| v.color[3] = (v.color[3] as u16 * 2 / 5) as u8);
+                draw_mesh(&m);
+            }
         }
         if wireframe {
             for (a, b, broken) in sim.cars[0].spring_links() {
@@ -1199,11 +1285,22 @@ async fn main() {
             draw_text(&line, 12.0, 52.0, 30.0, YELLOW);
         }
         if gfx.minimap {
+            // ghost dot: midpoint of the axle atoms 4 and 6, like `SimCar::centre`
+            let ghost_at = (gfx.ghost && race.started)
+                .then(|| ghost.at(race.lap_time(ticks)))
+                .flatten()
+                .map(|f| {
+                    [
+                        (f.atoms[4][0] + f.atoms[6][0]) / 2.0,
+                        (f.atoms[4][1] + f.atoms[6][1]) / 2.0,
+                    ]
+                });
             draw_minimap(
                 &colour_tex,
                 level.track.as_ref(),
                 race.next,
                 &sim.cars[0],
+                ghost_at,
                 band,
             );
         }
