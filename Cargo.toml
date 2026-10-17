@@ -1,0 +1,12 @@
+[package]
+name = "reformers"
+version = "0.1.0"
+edition = "2024"
+default-run = "reformers"
+
+[dependencies]
+macroquad = "0.4.16"
+
+# ponytail: the sim ports 32-bit asm that wraps everywhere; panicking on overflow would diverge from it.
+[profile.dev]
+overflow-checks = false
