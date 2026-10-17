@@ -1,7 +1,7 @@
 //! Reformers, the game: `cargo run --release [-- --soft] [--car N]`.
 //! Arrows drive, Space brakes, R puts the car back on its wheels (on the last checkpoint in a time
-//! trial), 1–5 switch car, W toggles the spring wireframe, Esc opens the options overlay (resume,
-//! graphics, quit). With `CHECK.PCX` present the map is a time trial: the timer starts at the start line.
+//! trial), 1–5 switch car, W toggles the spring wireframe, C cycles the camera, Esc opens the
+//! options overlay (resume, map, camera, graphics, quit). `--map NAME` picks a map folder. With `CHECK.PCX` present the map is a time trial: the timer starts at the start line.
 //! `--menu` starts with the overlay open; `--smooth` / `--untextured` / `--crt` preset the graphics options.
 //! `--shot out.png`: hold throttle + left, save a frame after 4 s and exit (for checking without a human).
 
@@ -103,15 +103,56 @@ struct Level {
     gate_cells: Vec<(usize, usize, usize)>,
     /// (x, y, zone) for every painted zone cell.
     zone_cells: Vec<(usize, usize, Zone)>,
+    /// MAPTEX tile sheet for this map's palette: the map folder's own, or the shared one when
+    /// the palettes match (TEREP1's BMP palette doesn't, so it draws flat colours).
+    maptex: Option<Vec<u8>>,
 }
 
-/// Map files whose changes reload the map while the game runs.
-const WATCHED: [&str; 3] = ["MAP.PCX", "COL.PCX", "CHECK.PCX"];
+/// A map's files whose changes reload it while the game runs.
+fn watched(map: &str) -> Vec<Option<std::time::SystemTime>> {
+    ["MAP.PCX", "MAP.BMP", "COL.PCX", "COL.BMP", "CHECK.PCX"]
+        .iter()
+        .map(|f| assets::modified(&format!("maps/{map}/{f}")))
+        .collect()
+}
 
-fn load_level() -> Result<(Terrain, Level), String> {
-    let (map, col) = (assets::read("MAP.PCX")?, assets::read("COL.PCX")?);
-    let terrain = Terrain::load(&map, &col).map_err(|e| format!("MAP.PCX/COL.PCX: {e}"))?;
-    let check = assets::read("CHECK.PCX").ok();
+/// `--map NAME`, else the map saved in settings.txt, else terep2, else the first map folder.
+fn pick_map(args: &[String], saved: &str) -> String {
+    let maps = assets::maps();
+    let flag = args
+        .iter()
+        .position(|a| a == "--map")
+        .and_then(|i| args.get(i + 1));
+    if let Some(m) = flag {
+        if !maps.contains(m) {
+            panic!("no map {m:?}; maps: {}", maps.join(", "));
+        }
+        return m.clone();
+    }
+    let saved = saved
+        .lines()
+        .find_map(|l| l.strip_prefix("map="))
+        .map(str::trim);
+    [saved, Some("terep2")]
+        .into_iter()
+        .flatten()
+        .find(|m| maps.iter().any(|x| x == m))
+        .map(String::from)
+        .or_else(|| maps.first().cloned())
+        .unwrap_or_else(|| panic!("no maps found: put map folders in assets/maps/"))
+}
+
+fn load_level(name: &str) -> Result<(Terrain, Level), String> {
+    let (map_file, map) = assets::read_map_image(name, "MAP")?;
+    let (col_file, col) = assets::read_map_image(name, "COL")?;
+    let terrain = Terrain::load(&map, &col).map_err(|e| format!("{map_file}/{col_file}: {e}"))?;
+    let check = assets::read(&format!("maps/{name}/CHECK.PCX")).ok();
+    let maptex = assets::read(&format!("maps/{name}/MAPTEX.PCX"))
+        .ok()
+        .or_else(|| {
+            let shared = assets::read("MAPTEX.PCX").ok()?;
+            (pcx::decode(&shared).ok()?.palette == terrain.palette).then_some(shared)
+        });
     let track = check.as_deref().map(Track::load).transpose()?;
     let gate_cells = track.as_ref().map_or(vec![], |t| {
         (0..SIZE * SIZE)
@@ -134,6 +175,7 @@ fn load_level() -> Result<(Terrain, Level), String> {
         key: check.map(|c| track_hash(&[&map, &col, &c])),
         gate_cells,
         zone_cells,
+        maptex,
     };
     Ok((terrain, level))
 }
@@ -193,6 +235,14 @@ fn index_image(t: &Terrain) -> Image {
         width: SIZE as u16,
         height: SIZE as u16,
     }
+}
+
+/// The map's MAPTEX tiles, or a white texel for maps without matching tiles (drawn flat then).
+fn tiles(level: &Level, palette: &[[u8; 3]; 256]) -> Texture2D {
+    level.maptex.as_ref().map_or_else(
+        || Texture2D::from_rgba8(1, 1, &[255, 255, 255, 255]),
+        |b| maptex_texture(b, palette),
+    )
 }
 
 /// MAPTEX.PCX's 256×256 tile sheet through the palette: row = colour >> 4, column = colour & 15,
@@ -319,10 +369,12 @@ fn skin_texture(pcx_bytes: &[u8], palette: &[[u8; 3]; 256]) -> Skin {
 
 /// Builds the car's meshes for this frame from the display-list primitives.
 /// `roll` is each wheel's accumulated rotation (radians), by atom index 0–3.
+#[allow(clippy::too_many_arguments)]
 fn car_meshes(
     model: &Car,
     atoms: &[[f32; 3]],
     steer: f32,
+    palette: &[[u8; 3]; 256],
     t: &Terrain,
     skin: &Skin,
     roll: &[f32; 4],
@@ -362,7 +414,7 @@ fn car_meshes(
         let (x, y) = ((sum[0] / n) as usize, (sum[1] / n) as usize);
         let i = skin.image.pixels
             [y.min(skin.image.height - 1) * skin.image.width + x.min(skin.image.width - 1)];
-        let [r, g, b] = t.palette[i as usize];
+        let [r, g, b] = palette[i as usize];
         Color::from_rgba(r, g, b, 255)
     };
     let mut flat = Mesh {
@@ -395,7 +447,7 @@ fn car_meshes(
                 let c = if shadow {
                     Color::from_rgba(0, 0, 0, 110)
                 } else {
-                    let [r, g, b] = t.palette[*colour as usize];
+                    let [r, g, b] = palette[*colour as usize];
                     Color::from_rgba(r, g, b, 255)
                 };
                 fan(
@@ -568,6 +620,8 @@ const CAMERAS: [&str; 4] = ["chase", "bumper", "orbit (Q/E)", "top-down"];
 
 /// Graphics options: one field + one menu row each; saved to settings.txt.
 struct Graphics {
+    /// Map folder name (switching it in the menu loads that map).
+    map: String,
     camera: usize, // index into CAMERAS
     nearest: bool,
     textured: bool,
@@ -581,6 +635,7 @@ struct Graphics {
 #[derive(Clone, Copy, PartialEq)]
 enum Row {
     Resume,
+    Map,
     Camera,
     Filter,
     Textures,
@@ -591,8 +646,9 @@ enum Row {
     Resolution,
     Quit,
 }
-const ROWS: [Row; 10] = [
+const ROWS: [Row; 11] = [
     Row::Resume,
+    Row::Map,
     Row::Camera,
     Row::Filter,
     Row::Textures,
@@ -607,7 +663,8 @@ const ROWS: [Row; 10] = [
 impl Graphics {
     fn to_text(&self) -> String {
         format!(
-            "camera={}\nnearest={}\ntextured={}\ncrt={}\nminimap={}\nghost={}\nfullscreen={}\nresolution={}\n",
+            "map={}\ncamera={}\nnearest={}\ntextured={}\ncrt={}\nminimap={}\nghost={}\nfullscreen={}\nresolution={}\n",
+            self.map,
             self.camera,
             self.nearest,
             self.textured,
@@ -624,6 +681,7 @@ impl Graphics {
         for (k, v) in text.lines().filter_map(|l| l.split_once('=')) {
             let (b, n) = (v.trim() == "true", v.trim().parse::<usize>().ok());
             match k.trim() {
+                "map" => self.map = v.trim().to_string(),
                 "camera" => self.camera = n.filter(|&n| n < CAMERAS.len()).unwrap_or(self.camera),
                 "nearest" => self.nearest = b,
                 "textured" => self.textured = b,
@@ -645,6 +703,7 @@ impl Graphics {
         let on = |b: bool| if b { "on" } else { "off" };
         match row {
             Row::Resume => "Resume".into(),
+            Row::Map => format!("Map: {}", self.map),
             Row::Camera => format!("Camera: {}  (C)", CAMERAS[self.camera]),
             Row::Filter => format!(
                 "Texture filter: {}",
@@ -677,6 +736,16 @@ impl Graphics {
             Row::Textures => self.textured = !self.textured,
             Row::Crt => self.crt = !self.crt,
             Row::Minimap => self.minimap = !self.minimap,
+            Row::Map => {
+                let maps = assets::maps();
+                let i = maps.iter().position(|m| *m == self.map).unwrap_or(0) as i32;
+                let n = maps.len().max(1) as i32;
+                if let Some(m) =
+                    maps.get((i + if step == 0 { 1 } else { step }).rem_euclid(n) as usize)
+                {
+                    self.map = m.clone();
+                }
+            }
             Row::Camera => {
                 let n = CAMERAS.len() as i32;
                 self.camera =
@@ -864,17 +933,25 @@ async fn main() {
         .cloned()
         .unwrap_or("1".into());
     let read = |f: &str| assets::read(f).unwrap_or_else(|e| panic!("{e}"));
-    let (terrain, mut level) = load_level().unwrap_or_else(|e| panic!("{e}"));
+    let saved = settings_file()
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_default();
+    let mut map = pick_map(&args, &saved);
+    let (terrain, mut level) = load_level(&map).unwrap_or_else(|e| panic!("{e}"));
     let mut sim = Sim::new(terrain);
-    let mut stamps = WATCHED.map(assets::modified);
+    let mut stamps = watched(&map);
     let mut next_poll = 0.0;
     // All five original cars, switchable with 1–5. Only CAR1/CAR2 ship a skin; the rest use TEXTURES.PCX like 0x1323.
+    // cars are TEREP2's: always its palette (MAPTEX.PCX carries it), whatever map they drive on
+    let car_palette = pcx::decode(&read("MAPTEX.PCX"))
+        .expect("MAPTEX.PCX")
+        .palette;
     let cars: Vec<(Car, Skin)> = (1..=5)
         .map(|n| {
             let model = car::parse(&read(&format!("CAR{n}.DAT"))).expect("car");
             let skin =
                 assets::read(&format!("CAR{n}.PCX")).unwrap_or_else(|_| read("TEXTURES.PCX"));
-            (model, skin_texture(&skin, &sim.terrain.palette))
+            (model, skin_texture(&skin, &car_palette))
         })
         .collect();
     let mut current = car_n.parse::<usize>().unwrap_or(1).clamp(1, 5) - 1;
@@ -905,8 +982,7 @@ async fn main() {
     let chunks = SIZE.div_ceil(CHUNK);
     let mut meshes: Vec<Mesh> = (0..chunks).map(|c| chunk_mesh(&sim.terrain, c)).collect();
     let colour_tex = Texture2D::from_image(&colour_image(&sim.terrain));
-    let maptex_pcx = read("MAPTEX.PCX");
-    let mut maptex = maptex_texture(&maptex_pcx, &sim.terrain.palette);
+    let mut maptex = tiles(&level, &sim.terrain.palette);
     let terrain_material = load_material(
         ShaderSource::Glsl {
             vertex: TERRAIN_VERTEX,
@@ -930,6 +1006,7 @@ async fn main() {
     let mut shown_colour = sim.terrain.colour.clone();
     let flag = |f: &str| args.iter().any(|a| a == f);
     let mut gfx = Graphics {
+        map: map.clone(),
         camera: 0,
         nearest: true,
         textured: true,
@@ -939,9 +1016,8 @@ async fn main() {
         fullscreen: false,
         resolution: 1,
     };
-    if let Some(text) = settings_file().and_then(|p| std::fs::read_to_string(p).ok()) {
-        gfx.apply_text(&text);
-    }
+    gfx.apply_text(&saved);
+    gfx.map = map.clone(); // pick_map already weighed --map and the saved one
     // launch flags win over the saved settings
     gfx.nearest &= !flag("--smooth");
     gfx.textured &= !flag("--untextured");
@@ -983,26 +1059,37 @@ async fn main() {
 
     loop {
         // hot reload: edit a map image, save, and it's here within a second
-        if get_time() >= next_poll {
+        if get_time() >= next_poll || gfx.map != map {
             next_poll = get_time() + 1.0;
-            let now = WATCHED.map(assets::modified);
-            if now != stamps {
+            let now = watched(&gfx.map);
+            let switched = gfx.map != map;
+            if now != stamps || switched {
                 stamps = now;
-                match load_level() {
+                match load_level(&gfx.map) {
                     Ok((terrain, new)) => {
                         sim.set_terrain(terrain);
                         level = new;
+                        map = gfx.map.clone();
                         meshes = (0..chunks).map(|c| chunk_mesh(&sim.terrain, c)).collect();
                         colour_tex.update(&colour_image(&sim.terrain));
                         index_tex.update(&index_image(&sim.terrain));
-                        maptex = maptex_texture(&maptex_pcx, &sim.terrain.palette);
+                        maptex = tiles(&level, &sim.terrain.palette);
                         terrain_material.set_texture("MapTex", maptex.clone());
                         shown.copy_from_slice(&sim.terrain.height);
                         original.copy_from_slice(&sim.terrain.height);
                         shown_colour.copy_from_slice(&sim.terrain.colour);
-                        // buried by the new heights: back on top, same spot and heading
+                        // new map: start at its spawn; edited map: stay, unless buried by the new heights
                         let [x, y, z] = sim.cars[0].centre();
-                        if z < sim.terrain.height_at(x, y) {
+                        if switched {
+                            let ((sx, sy), h) = level
+                                .track
+                                .as_ref()
+                                .and_then(|t| t.spawn.as_ref())
+                                .map_or((SPAWN, 0.0), |s| ((s.x, s.y), s.heading));
+                            sim.cars[0] =
+                                SimCar::spawn_facing(&cars[current].0, &sim.terrain, sx, sy, h);
+                            roll = [0.0; 4];
+                        } else if z < sim.terrain.height_at(x, y) {
                             let h = heading(&sim.cars[0]);
                             sim.cars[0] = SimCar::spawn_facing(
                                 &cars[current].0,
@@ -1017,9 +1104,17 @@ async fn main() {
                         race = Race::new(best_key(&level, current).and_then(|k| load_best(&k)));
                         ghost = load_ghost(&level, current);
                         recording = Ghost::default();
-                        banner = Some(("map reloaded".into(), get_time() + 1.5));
+                        let msg = if switched {
+                            format!("map: {map}")
+                        } else {
+                            "map reloaded".into()
+                        };
+                        banner = Some((msg, get_time() + 1.5));
                     }
-                    Err(e) => banner = Some((format!("reload failed: {e}"), get_time() + 5.0)),
+                    Err(e) => {
+                        gfx.map = map.clone(); // a map that won't load: stay on this one
+                        banner = Some((format!("reload failed: {e}"), get_time() + 5.0))
+                    }
                 }
             }
         }
@@ -1280,7 +1375,7 @@ async fn main() {
         });
         clear_background(Color::from_rgba(120, 160, 210, 255));
         // untextured: plain COL colours (filtered per the option); textured: MAPTEX tiles per cell
-        if gfx.textured {
+        if gfx.textured && level.maptex.is_some() {
             gl_use_material(&terrain_material);
         }
         for m in &mut meshes {
@@ -1295,6 +1390,7 @@ async fn main() {
             model,
             &atoms,
             me.steer_angle(),
+            &car_palette,
             &sim.terrain,
             skin,
             &roll,
@@ -1314,6 +1410,7 @@ async fn main() {
                 model,
                 &f.atoms,
                 f.steer,
+                &car_palette,
                 &sim.terrain,
                 skin,
                 &f.roll,
@@ -1504,8 +1601,26 @@ mod tests {
     use super::*;
 
     #[test]
+    fn picks_maps() {
+        let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        assert_eq!(pick_map(&args(&["x"]), ""), "terep2");
+        assert_eq!(pick_map(&args(&["x"]), "camera=1\nmap=terep1\n"), "terep1");
+        assert_eq!(
+            pick_map(&args(&["x"]), "map=gone"),
+            "terep2",
+            "a deleted map falls back"
+        );
+        assert_eq!(
+            pick_map(&args(&["x", "--map", "terep2-hills"]), "map=terep1"),
+            "terep2-hills"
+        );
+        assert!(assets::maps().len() >= 3);
+    }
+
+    #[test]
     fn settings_round_trip() {
         let mut a = Graphics {
+            map: "terep1".into(),
             camera: 2,
             nearest: false,
             textured: true,
@@ -1516,6 +1631,7 @@ mod tests {
             resolution: 3,
         };
         let mut b = Graphics {
+            map: "x".into(),
             camera: 0,
             nearest: true,
             textured: false,

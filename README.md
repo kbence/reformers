@@ -27,11 +27,11 @@ skins) or off (flat COL.PCX colours), CRT filter, minimap, ghost car, fullscreen
 
 Flags: `--car N` starting car; `--soft` makes all ground diggable so wheels dig tracks (the original
 only digs ground of colour 0x0f, which no shipped map has); `--smooth`, `--untextured`, `--crt`,
-`--no-minimap`, `--ghost` preset the options; `--menu` starts paused.
+`--no-minimap`, `--ghost` preset the options; `--map NAME` picks a map; `--menu` starts paused.
 
 ## Time trial
 
-When `assets/CHECK.PCX` exists, the map is a time trial. Drive through the start line to start the
+When a map has a `CHECK.PCX`, it's a time trial. Drive through the start line to start the
 clock, then through the checkpoints in order; any other order doesn't count. The next checkpoint is
 the yellow arch (start/finish has a chequered banner); the others are dim. Each arch stands on the
 two ends of its painted line. Best laps are saved per map and car in
@@ -55,23 +55,30 @@ the right is a legend and is ignored), so tracks can be painted in any paint pro
 
 Respawns put the car on a checkpoint's centre, so centre each line on the drivable road.
 
-The game watches `MAP.PCX`, `COL.PCX` and `CHECK.PCX` while it runs: save one in your paint program
+The game watches the current map's `MAP`, `COL` and `CHECK` files while it runs: save one in your paint program
 and the map reloads within a second (the time trial restarts). A file that fails to load shows an
 error and the previous map stays.
 
-## Assets
+## Maps and assets
 
-The game reads the original demo's files from `assets/` (also found next to the executable, or
-wherever `REFORMERS_ASSETS` points): `MAP.PCX`, `COL.PCX`, `MAPTEX.PCX`, `TEXTURES.PCX`,
-`CAR1–5.DAT`, `CAR1.PCX`, `CAR2.PCX` (`MAPHILL.PCX` is an unused alternate height map). They are the
-original author's copyrighted work; see `assets/READ.ME`. `CHECK.PCX`, the time-trial track, is
-Reformers' own.
+Each map is a folder in `assets/maps/`: `MAP` (heights) and `COL` (colours = surface materials), as
+PCX or TEREP1's BMP, plus an optional `CHECK.PCX` that makes it a time trial. Pick one in the Esc
+menu or with `--map NAME`; the last one is remembered. Shipped: `terep2` (the original, with the
+time-trial track), `terep2-hills` (its unused `MAPHILL.PCX`) and `terep1` (TEREP1's map, same
+landscape, own palette; heights use TEREP2's scale, so it comes out gentler). A map folder may
+carry its own `MAPTEX.PCX`; otherwise the shared one is used when the palettes match, and the
+terrain is drawn in flat colours when they don't.
+
+Shared game files live in `assets/` (also found next to the executable, or wherever
+`REFORMERS_ASSETS` points): `MAPTEX.PCX`, `TEXTURES.PCX`, `CAR1–5.DAT`, `CAR1.PCX`, `CAR2.PCX`.
+They and the map images are the original author's copyrighted work; see `assets/READ.ME`. The
+`CHECK.PCX` time-trial track is Reformers' own.
 
 ## Tools
 
 ```bash
 cargo run --release --bin tool -- drive "t:3 tl:2 b:1" out/run   # headless drive → out/run.pgm, out/run_dents.pgm
-cargo run --release --bin tool -- assets/MAP.PCX out/map.pgm --map  # PCX → PGM/PPM/raw f32/raw RGB
+cargo run --release --bin tool -- assets/maps/terep2/MAP.PCX out/map.pgm --map  # PCX → PGM/PPM/raw f32/raw RGB
 cargo test
 ```
 

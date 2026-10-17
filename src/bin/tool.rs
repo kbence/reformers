@@ -65,7 +65,8 @@ fn drive(args: &[String]) {
         fail("usage: tool drive [--soft] [--car N] <script> <out-prefix>")
     };
     let read = |f: &str| assets::read(f).unwrap_or_else(|e| fail(&e));
-    let terrain = Terrain::load(&read("MAP.PCX"), &read("COL.PCX")).unwrap_or_else(|e| fail(&e));
+    let terrain = Terrain::load(&read("maps/terep2/MAP.PCX"), &read("maps/terep2/COL.PCX"))
+        .unwrap_or_else(|e| fail(&e));
     let before = terrain.height.clone();
     let mut sim = Sim::new(terrain);
     sim.dig_everywhere = flag("--soft");

@@ -1,4 +1,4 @@
-//! 256×256 terrain from MAP.PCX (heights) + COL.PCX (colour = surface material).
+//! 256×256 terrain from MAP.PCX (heights) + COL.PCX (colour = surface material); TEREP1's BMPs too.
 //! Coordinates follow the original: 1 cell = 256 world units, height = MAP index × 16.
 
 use crate::pcx;
@@ -15,8 +15,8 @@ pub struct Terrain {
 
 impl Terrain {
     pub fn load(map_pcx: &[u8], col_pcx: &[u8]) -> Result<Terrain, String> {
-        let map = pcx::decode(map_pcx)?.crop(SIZE, SIZE);
-        let col = pcx::decode(col_pcx)?.crop(SIZE, SIZE);
+        let map = pcx::decode_image(map_pcx)?.crop(SIZE, SIZE);
+        let col = pcx::decode_image(col_pcx)?.crop(SIZE, SIZE);
         Ok(Terrain {
             height: map.pixels,
             colour: col.pixels,
@@ -92,7 +92,9 @@ mod tests {
     #[test]
     fn loads_game_map() {
         let read = |f: &str| crate::assets::read(f).unwrap();
-        let t = Terrain::load(&read("MAP.PCX"), &read("COL.PCX")).unwrap();
+        let t = Terrain::load(&read("maps/terep2/MAP.PCX"), &read("maps/terep2/COL.PCX")).unwrap();
+        let t1 = Terrain::load(&read("maps/terep1/MAP.BMP"), &read("maps/terep1/COL.BMP")).unwrap();
+        assert_ne!(t1.height, t.height);
         assert_eq!(t.heights_f32().len(), SIZE * SIZE);
         assert_eq!(t.colour_rgb().len(), SIZE * SIZE * 3);
     }

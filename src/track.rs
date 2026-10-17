@@ -53,7 +53,7 @@ fn cell(p: [f32; 2]) -> (i32, i32) {
 
 impl Track {
     pub fn load(check_pcx: &[u8]) -> Result<Track, String> {
-        let img = pcx::decode(check_pcx)?;
+        let img = pcx::decode_image(check_pcx)?;
         if img.width < SIZE || img.height < SIZE {
             return Err(format!(
                 "CHECK.PCX is {}×{}, needs at least {SIZE}×{SIZE}",
@@ -578,10 +578,12 @@ mod tests {
     #[test]
     fn shipped_track_laps() {
         let read = |f: &str| crate::assets::read(f).unwrap();
-        let t = Track::load(&read("CHECK.PCX")).unwrap();
+        let t = Track::load(&read("maps/terep2/CHECK.PCX")).unwrap();
         assert!(t.gates.len() >= 3);
         let car = crate::car::parse(&read("CAR1.DAT")).unwrap();
-        let mut s = Sim::new(Terrain::load(&read("MAP.PCX"), &read("COL.PCX")).unwrap());
+        let mut s = Sim::new(
+            Terrain::load(&read("maps/terep2/MAP.PCX"), &read("maps/terep2/COL.PCX")).unwrap(),
+        );
         let sp = t.spawn.as_ref().unwrap();
         s.cars.push(SimCar::spawn_facing(
             &car, &s.terrain, sp.x, sp.y, sp.heading,

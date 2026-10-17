@@ -722,7 +722,9 @@ mod tests {
 
     fn sim() -> Sim {
         let read = |f: &str| crate::assets::read(f).unwrap();
-        let mut sim = Sim::new(Terrain::load(&read("MAP.PCX"), &read("COL.PCX")).unwrap());
+        let mut sim = Sim::new(
+            Terrain::load(&read("maps/terep2/MAP.PCX"), &read("maps/terep2/COL.PCX")).unwrap(),
+        );
         let car = crate::car::parse(&read("CAR1.DAT")).unwrap();
         sim.cars
             .push(SimCar::spawn(&car, &sim.terrain, 0x8000, 0x7a00));

@@ -20,6 +20,33 @@ fn dirs() -> Vec<PathBuf> {
     d
 }
 
+/// Map folders (`maps/<name>/` with MAP + COL) in the first asset dir that has any, sorted.
+pub fn maps() -> Vec<String> {
+    dirs()
+        .iter()
+        .find_map(|d| {
+            let mut names: Vec<String> = std::fs::read_dir(d.join("maps"))
+                .ok()?
+                .filter_map(|e| e.ok())
+                .filter(|e| e.path().is_dir())
+                .filter_map(|e| e.file_name().into_string().ok())
+                .collect();
+            names.sort();
+            (!names.is_empty()).then_some(names)
+        })
+        .unwrap_or_default()
+}
+
+/// A map's image: `maps/<map>/<stem>.PCX`, or `.BMP` (TEREP1). Returns the file name and bytes.
+pub fn read_map_image(map: &str, stem: &str) -> Result<(String, Vec<u8>), String> {
+    let pcx = format!("maps/{map}/{stem}.PCX");
+    let bmp = format!("maps/{map}/{stem}.BMP");
+    read(&pcx)
+        .map(|b| (pcx, b))
+        .or_else(|_| read(&bmp).map(|b| (bmp.clone(), b)))
+        .map_err(|_| format!("map {map:?} has no {stem}.PCX or {stem}.BMP"))
+}
+
 /// When an asset was last modified (None if missing), for hot reload. Same lookup as `read`.
 pub fn modified(name: &str) -> Option<std::time::SystemTime> {
     dirs()

@@ -64,6 +64,15 @@ pub fn decode(data: &[u8]) -> Result<Image, String> {
     })
 }
 
+/// A map image in either format the games used: TEREP2's PCX or TEREP1's BMP.
+pub fn decode_image(data: &[u8]) -> Result<Image, String> {
+    if data.starts_with(b"BM") {
+        crate::bmp::decode(data)
+    } else {
+        decode(data)
+    }
+}
+
 impl Image {
     /// Top-left `w`×`h` region. TEREP2's 320×256 maps keep the map in columns
     /// 0–255; columns 256–319 are a legend/label sidebar.
@@ -128,7 +137,12 @@ mod tests {
 
     #[test]
     fn decodes_game_maps() {
-        for f in ["MAP.PCX", "COL.PCX", "MAPTEX.PCX", "MAPHILL.PCX"] {
+        for f in [
+            "maps/terep2/MAP.PCX",
+            "maps/terep2/COL.PCX",
+            "MAPTEX.PCX",
+            "maps/terep2-hills/MAP.PCX",
+        ] {
             let img = decode(&crate::assets::read(f).unwrap()).unwrap();
             assert_eq!((img.width, img.height), (320, 256), "{f}");
         }
