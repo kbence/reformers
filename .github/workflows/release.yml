@@ -1,0 +1,93 @@
+# Builds Reformers for Windows, macOS (universal) and Linux and attaches the archives to the
+# release that triggered it. Run it by hand (workflow_dispatch) to build without uploading.
+# The archives contain the original game files from assets/: fine while the repo is private,
+# see issue #1 before publishing.
+name: release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows-x86_64
+          - os: macos-latest
+            name: macos-universal
+          - os: ubuntu-latest
+            name: linux-x86_64
+    runs-on: ${{ matrix.os }}
+    env:
+      TAG: ${{ github.event.release.tag_name || github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux libraries (OpenGL, X11, ALSA, udev for gamepads)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev libudev-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ runner.os == 'macOS' && 'aarch64-apple-darwin,x86_64-apple-darwin' || '' }}
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test --release
+
+      - name: Build
+        if: runner.os != 'macOS'
+        shell: bash
+        run: |
+          cargo build --release --bins
+          mkdir -p dist
+          cp target/release/reformers* target/release/tool* dist/ 2>/dev/null || true
+          rm -f dist/*.d dist/*.pdb
+
+      - name: Build (universal macOS binary)
+        if: runner.os == 'macOS'
+        run: |
+          cargo build --release --bins --target aarch64-apple-darwin
+          cargo build --release --bins --target x86_64-apple-darwin
+          mkdir -p dist
+          for bin in reformers tool; do
+            lipo -create -output dist/$bin \
+              target/aarch64-apple-darwin/release/$bin target/x86_64-apple-darwin/release/$bin
+          done
+
+      - name: Package
+        shell: bash
+        run: |
+          dir="reformers-$TAG-${{ matrix.name }}"
+          mkdir "$dir"
+          cp dist/* "$dir"/
+          cp -R assets README.md "$dir"/
+          if [ "$RUNNER_OS" = Windows ]; then
+            7z a "$dir.zip" "$dir" > /dev/null
+            echo "ARCHIVE=$dir.zip" >> "$GITHUB_ENV"
+          else
+            tar czf "$dir.tar.gz" "$dir"
+            echo "ARCHIVE=$dir.tar.gz" >> "$GITHUB_ENV"
+          fi
+
+      - name: Attach to the release
+        if: github.event_name == 'release'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "$TAG" "$ARCHIVE" --clobber
+
+      - name: Keep the archive (manual runs)
+        if: github.event_name != 'release'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: ${{ env.ARCHIVE }}

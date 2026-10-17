@@ -89,4 +89,10 @@ Sound is synthesised at start-up, no sample files: the original's two AdLib FM p
 retuned with wheel speed, and the landing thud, played 3 octaves up so speakers can reproduce it),
 plus skid noise and checkpoint/lap chimes.
 
+## Releases
+
+Publishing a GitHub release runs `.github/workflows/release.yml`: it tests and builds Windows,
+macOS (universal) and Linux, and attaches an archive per platform (binaries, `assets/`, this
+README). Run the workflow by hand to build without a release; the archives are kept as artifacts.
+
 Issues are tracked on GitHub: https://github.com/kbence/reformers/issues
