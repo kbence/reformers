@@ -112,7 +112,7 @@ Per atom (`0x48db`–`0x497d`):
 4. `pos += vel`.
 
 Contact impulse `0x4a71`: vn = v·n; if vn < 0: v -= 1.25·vn·n (restitution 0.25), and pos is
-moved by 2·vn·n. If vn < −6.0 it calls `0x5864` (impact sound?). Then tangential friction
+moved by 2·vn·n. If vn < −6.0 it calls `0x5864` (impact sound, see below). Then tangential friction
 (next section).
 
 Terrain normal: four Q31 values A=`[0xe9a0]`, B=`[0xe9a4]`, C=`[0xe9a8]`, D=`[0xe9ac]` (sin/cos of the
@@ -202,3 +202,13 @@ it falls into the damped branch as a very soft spring (corr = e/64) that still e
 - `0x532e` vs `0x25c5` (two height samplers: maybe one includes the car-under-car case).
 - Car–car collision `0x5091` / `0x51bd`.
 - Step rate (timer setup at startup) — needed for real-time speed.
+
+## Sound (`0x57e0`–`0x592c`)
+
+AdLib / OPL2 FM at port `0x388` (`0x58fc` writes register `ah` = `al`); nothing else (no Sound
+Blaster DSP, PC speaker, music or samples). `0x57e0` initialises the chip, `0x588b` silences all
+channels (`0xb0`–`0xb8`). The only effect is the ground-impact thud: `0x4a71` calls `0x5864` with
+ax = 0 when vn < −6.0 (`cmp ebx, 0xfffa0000`, preceded by two `nop`s). `0x5864` loads a 16-byte FM
+patch (`[0xecd9 + ax·16]`, data segment, not decoded yet) into channel 8 via `0x589b` (operator
+registers `0x20`/`0x40`/`0x60`/`0x80`/`0xe0` + `[cs:0x592c + 8]` offset), then sets `0xa8`/`0xb8`
+(frequency, key-on).

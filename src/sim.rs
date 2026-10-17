@@ -123,17 +123,23 @@ pub struct Sim {
 }
 
 impl SimCar {
-    /// Places a parsed car at world (x, y) like `0x2454`: z = ground + 100.
+    /// Places a parsed car at world (x, y) like `0x2454`: z = ground + 100, facing the map's −y.
     pub fn spawn(car: &Car, terrain: &Terrain, x: u16, y: u16) -> SimCar {
+        Self::spawn_facing(car, terrain, x, y, 0.0)
+    }
+
+    /// Like `spawn`, turned `heading` radians clockwise on the map image (0 = −y, the original's facing).
+    pub fn spawn_facing(car: &Car, terrain: &Terrain, x: u16, y: u16, heading: f32) -> SimCar {
         let ground = height(terrain, x, y).0 as i32 + 0x64;
         let fx = |v: f32| (v * 65536.0) as i32;
+        let (sin, cos) = heading.sin_cos();
         let atoms = car
             .atoms
             .iter()
             .map(|a| Atom {
                 pos: [
-                    fx(a.pos[0]).wrapping_add(((x as u32) << 16) as i32),
-                    fx(a.pos[1]).wrapping_add(((y as u32) << 16) as i32),
+                    fx(a.pos[0] * cos - a.pos[1] * sin).wrapping_add(((x as u32) << 16) as i32),
+                    fx(a.pos[0] * sin + a.pos[1] * cos).wrapping_add(((y as u32) << 16) as i32),
                     fx(a.pos[2]) + (ground << 16),
                 ],
                 vel: [0; 3],

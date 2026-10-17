@@ -1,6 +1,7 @@
 //! Reformers, the game: `cargo run --release [-- --soft] [--car N]`.
-//! Arrows drive, Space brakes, R puts the car back on its wheels, 1–5 switch car, W toggles the spring
-//! wireframe, Esc opens the options overlay (resume, graphics, quit).
+//! Arrows drive, Space brakes, R puts the car back on its wheels (on the last checkpoint in a time
+//! trial), 1–5 switch car, W toggles the spring wireframe, Esc opens the options overlay (resume,
+//! graphics, quit). With `CHECK.PCX` present the map is a time trial: the timer starts at the start line.
 //! `--menu` starts with the overlay open; `--smooth` / `--untextured` / `--crt` preset the graphics options.
 //! `--shot out.png`: hold throttle + left, save a frame after 4 s and exit (for checking without a human).
 
@@ -8,11 +9,74 @@ use macroquad::prelude::*;
 use reformers::car::{self, Car, Prim};
 use reformers::sim::{Keys, Sim, SimCar, TICK_HZ};
 use reformers::terrain::{SIZE, Terrain};
+use reformers::track::{Event, Lap, Race, Track, format_time};
 use reformers::{assets, pcx};
+use std::path::PathBuf;
 
 const S: f32 = 256.0; // world units per render unit (one terrain cell)
 const CHUNK: usize = 32; // rows per mesh: macroquad meshes index with u16
-const SPAWN: (u16, u16) = (0x8000, 0x7a00);
+const SPAWN: (u16, u16) = (0x8000, 0x7a00); // without CHECK.PCX
+
+/// Best laps, one `key time split…` line per map + car, in the user's data dir.
+fn best_laps_file() -> Option<PathBuf> {
+    let env = |k: &str| std::env::var_os(k).map(PathBuf::from);
+    let base = env("XDG_DATA_HOME")
+        .or_else(|| env("HOME").map(|h| h.join(".local/share")))
+        .or_else(|| env("APPDATA"))?;
+    Some(base.join("reformers").join("best_laps.txt"))
+}
+
+fn load_best(key: &str) -> Option<Lap> {
+    let text = std::fs::read_to_string(best_laps_file()?).ok()?;
+    text.lines().find_map(|line| {
+        let mut words = line.split_whitespace();
+        if words.next()? != key {
+            return None;
+        }
+        let mut nums = words.map(|w| w.parse::<u64>().ok());
+        Some(Lap {
+            time: nums.next()??,
+            splits: nums.collect::<Option<_>>()?,
+        })
+    })
+}
+
+fn save_best(key: &str, lap: &Lap) {
+    let Some(path) = best_laps_file() else { return };
+    let old = std::fs::read_to_string(&path).unwrap_or_default();
+    let mut lines: Vec<String> = old
+        .lines()
+        .filter(|l| l.split_whitespace().next() != Some(key))
+        .map(String::from)
+        .collect();
+    let splits: Vec<String> = lap.splits.iter().map(u64::to_string).collect();
+    lines.push(format!("{key} {} {}", lap.time, splits.join(" ")));
+    let written = std::fs::create_dir_all(path.parent().unwrap())
+        .and_then(|_| std::fs::write(&path, lines.join("\n") + "\n"));
+    if let Err(e) = written {
+        eprintln!("can't save best lap to {}: {e}", path.display());
+    }
+}
+
+/// FNV-1a over the map files: best laps belong to this exact track.
+fn track_hash(files: &[&[u8]]) -> u64 {
+    files
+        .iter()
+        .flat_map(|f| f.iter())
+        .fold(0xcbf29ce484222325, |h, &b| {
+            (h ^ b as u64).wrapping_mul(0x100000001b3)
+        })
+}
+
+/// Which way the car points, radians clockwise from map-up (`SimCar::spawn_facing`'s convention).
+fn heading(car: &SimCar) -> f32 {
+    let a = car.atom_positions();
+    let fwd = [
+        a[6][0] + a[7][0] - a[4][0] - a[5][0],
+        a[6][1] + a[7][1] - a[4][1] - a[5][1],
+    ];
+    fwd[0].atan2(-fwd[1])
+}
 
 /// World (x, y, z-up) → render space (y-up). The world is left-handed (PCX rows run down),
 /// so y maps to +z; mapping it to −z would show the map mirrored.
@@ -533,7 +597,16 @@ async fn main() {
         .cloned()
         .unwrap_or("1".into());
     let read = |f: &str| assets::read(f).unwrap_or_else(|e| panic!("{e}"));
-    let mut sim = Sim::new(Terrain::load(&read("MAP.PCX"), &read("COL.PCX")).expect("map"));
+    let (map_pcx, col_pcx) = (read("MAP.PCX"), read("COL.PCX"));
+    let mut sim = Sim::new(Terrain::load(&map_pcx, &col_pcx).expect("map"));
+    let check_pcx = assets::read("CHECK.PCX").ok();
+    let track = check_pcx
+        .as_ref()
+        .map(|b| Track::load(b).unwrap_or_else(|e| panic!("{e}")));
+    let map_key = check_pcx
+        .as_ref()
+        .map(|c| track_hash(&[&map_pcx, &col_pcx, c]));
+    let best_key = |car: usize| map_key.map(|k| format!("{k:016x}-car{}", car + 1));
     // All five original cars, switchable with 1–5. Only CAR1/CAR2 ship a skin; the rest use TEXTURES.PCX like 0x1323.
     let cars: Vec<(Car, Skin)> = (1..=5)
         .map(|n| {
@@ -548,12 +621,28 @@ async fn main() {
     let mut wireframe = false;
     let mut speed = 0.0f32;
     sim.dig_everywhere = args.iter().any(|a| a == "--soft");
-    sim.cars.push(SimCar::spawn(
+    let (spawn, spawn_heading) = track
+        .as_ref()
+        .and_then(|t| t.spawn.as_ref())
+        .map_or((SPAWN, 0.0), |s| ((s.x, s.y), s.heading));
+    sim.cars.push(SimCar::spawn_facing(
         &cars[current].0,
         &sim.terrain,
-        SPAWN.0,
-        SPAWN.1,
+        spawn.0,
+        spawn.1,
+        spawn_heading,
     ));
+    let mut race = Race::new(best_key(current).and_then(|k| load_best(&k)));
+    let mut ticks = 0u64;
+    let mut banner: Option<(String, f64)> = None; // message, shown until
+    let gate_cells: Vec<(usize, usize, usize)> = track.as_ref().map_or(vec![], |t| {
+        (0..SIZE * SIZE)
+            .filter_map(|i| {
+                t.gate_at(i % SIZE, i / SIZE)
+                    .map(|g| (i % SIZE, i / SIZE, g))
+            })
+            .collect()
+    });
     let mut last_centre = sim.cars[0].centre();
 
     let chunks = SIZE.div_ceil(CHUNK);
@@ -675,12 +764,23 @@ async fn main() {
             .position(|&k| is_key_pressed(k))
         };
         if let Some(n) = pick {
+            // best laps are per car: a new car starts a new time trial
             current = n;
+            race = Race::new(best_key(current).and_then(|k| load_best(&k)));
         }
         if (!menu_open && is_key_pressed(KeyCode::R)) || pick.is_some() {
-            // upright again where the car is (spawns face the map's −y like the original)
+            // time trial: back to the last checkpoint, facing the next; else upright where the car is
             let [x, y, _] = sim.cars[0].centre();
-            sim.cars[0] = SimCar::spawn(&cars[current].0, &sim.terrain, x as u16, y as u16);
+            let ([x, y], h) = track
+                .as_ref()
+                .filter(|_| pick.is_none())
+                .and_then(|t| race.respawn(t))
+                .unwrap_or(([x, y], heading(&sim.cars[0])));
+            sim.cars[0] =
+                SimCar::spawn_facing(&cars[current].0, &sim.terrain, x as u16, y as u16, h);
+            if let Some(t) = &track {
+                race.place(t, [x, y]);
+            }
             roll = [0.0; 4];
         }
         let (model, skin) = (&cars[current].0, &cars[current].1);
@@ -698,6 +798,37 @@ async fn main() {
         while acc >= 1.0 / TICK_HZ as f32 {
             sim.tick(&[keys]);
             acc -= 1.0 / TICK_HZ as f32;
+            ticks += 1;
+            if let Some(t) = &track {
+                let [x, y, _] = sim.cars[0].centre();
+                let n = t.gates.len();
+                let msg = match race.update(t, [x, y], ticks) {
+                    Some(Event::Start) => Some("GO!".to_string()),
+                    Some(Event::Gate(g)) => Some(match race.split_delta() {
+                        Some(d) => format!(
+                            "checkpoint {g}/{}   {}{}",
+                            n - 1,
+                            if d < 0 { "-" } else { "+" },
+                            format_time(d.unsigned_abs())
+                        ),
+                        None => format!("checkpoint {g}/{}", n - 1),
+                    }),
+                    Some(Event::Lap { time, best }) => {
+                        if best && let (Some(k), Some(lap)) = (best_key(current), &race.best) {
+                            save_best(&k, lap);
+                        }
+                        Some(format!(
+                            "lap {}{}",
+                            format_time(time),
+                            if best { "   best!" } else { "" }
+                        ))
+                    }
+                    None => None,
+                };
+                if let Some(m) = msg {
+                    banner = Some((m, get_time() + 2.5));
+                }
+            }
             let spin = sim.cars[0].spin();
             for i in 0..4 {
                 // spin is rim travel per tick (16.16 world units)
@@ -783,6 +914,39 @@ async fn main() {
                 draw_line_3d(v(atoms[a]), v(atoms[b]), if broken { RED } else { WHITE });
             }
         }
+        // gates: a low wall on each painted cell, the next one bright; a pole marks the next gate
+        for &(x, y, g) in &gate_cells {
+            let (wx, wy) = ((x as f32 + 0.5) * S, (y as f32 + 0.5) * S);
+            let colour = if g == race.next {
+                Color::new(1.0, 0.85, 0.1, 0.5)
+            } else {
+                Color::new(1.0, 1.0, 1.0, 0.15)
+            };
+            let ground = sim.terrain.height_at(wx, wy);
+            draw_cube(
+                v([wx, wy, ground + 0.3 * S]),
+                vec3(1.0, 0.6, 1.0),
+                None,
+                colour,
+            );
+        }
+        if let Some(t) = &track {
+            let [x, y] = t.gates[race.next];
+            let ground = sim.terrain.height_at(x, y);
+            let bob = (get_time() * 3.0).sin() as f32 * 0.2;
+            draw_cube(
+                v([x, y, ground + 2.0 * S]),
+                vec3(0.12, 4.0, 0.12),
+                None,
+                YELLOW,
+            );
+            draw_cube(
+                v([x, y, ground + (4.3 + bob) * S]),
+                vec3(0.6, 0.6, 0.6),
+                None,
+                YELLOW,
+            );
+        }
         for p in sim.particle_positions() {
             draw_cube(
                 v(p),
@@ -823,7 +987,51 @@ async fn main() {
                 ""
             }
         );
+        let band = if track.is_some() { 64.0 } else { 32.0 };
+        draw_rectangle(
+            0.0,
+            0.0,
+            screen_width(),
+            band,
+            Color::new(0.0, 0.0, 0.0, 0.45),
+        );
         draw_text(&hud, 12.0, 22.0, 18.0, WHITE);
+        if let Some(t) = &track {
+            let n = t.gates.len();
+            let line = if race.started {
+                let passed = (race.next + n - 1) % n;
+                let opt = |l: Option<u64>| l.map_or("-:--.--".into(), format_time);
+                format!(
+                    "lap {}   {}   checkpoints {passed}/{}   last {}   best {}",
+                    race.laps + 1,
+                    format_time(race.lap_time(ticks)),
+                    n - 1,
+                    opt(race.last_lap),
+                    opt(race.best.as_ref().map(|b| b.time))
+                )
+            } else {
+                format!(
+                    "time trial: drive through the start line   best {}",
+                    race.best
+                        .as_ref()
+                        .map_or("-:--.--".into(), |b| format_time(b.time))
+                )
+            };
+            draw_text(&line, 12.0, 52.0, 30.0, YELLOW);
+        }
+        if let Some((msg, until)) = &banner
+            && get_time() < *until
+            && !menu_open
+        {
+            let size = measure_text(msg, None, 48, 1.0);
+            draw_text(
+                msg,
+                (screen_width() - size.width) / 2.0,
+                screen_height() * 0.2,
+                48.0,
+                YELLOW,
+            );
+        }
         // roof atom (8) below a floor atom (18): upside down
         if atoms[8][2] < atoms[18][2] && !menu_open {
             let msg = "upside down - press R";
@@ -846,5 +1054,45 @@ async fn main() {
             }
         }
         next_frame().await;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn best_laps_round_trip() {
+        let dir = std::env::temp_dir().join(format!("reformers-test-{}", std::process::id()));
+        // SAFETY: the only test in this binary touching the environment.
+        unsafe { std::env::set_var("XDG_DATA_HOME", &dir) };
+        assert!(load_best("a-car1").is_none());
+        save_best(
+            "a-car1",
+            &Lap {
+                time: 900,
+                splits: vec![100, 400],
+            },
+        );
+        save_best(
+            "b-car1",
+            &Lap {
+                time: 50,
+                splits: vec![],
+            },
+        );
+        save_best(
+            "a-car1",
+            &Lap {
+                time: 800,
+                splits: vec![90, 380],
+            },
+        ); // replaces, not appends
+        let a = load_best("a-car1").unwrap();
+        assert_eq!((a.time, a.splits), (800, vec![90, 380]));
+        assert_eq!(load_best("b-car1").unwrap().time, 50);
+        let text = std::fs::read_to_string(best_laps_file().unwrap()).unwrap();
+        assert_eq!(text.lines().count(), 2);
+        std::fs::remove_dir_all(dir).unwrap();
     }
 }
