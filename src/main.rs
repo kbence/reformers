@@ -27,6 +27,19 @@ fn data_dir() -> Option<PathBuf> {
     Some(base.join("reformers"))
 }
 
+fn settings_file() -> Option<PathBuf> {
+    Some(data_dir()?.join("settings.txt"))
+}
+
+fn save_settings(gfx: &Graphics) {
+    let Some(path) = settings_file() else { return };
+    let written = std::fs::create_dir_all(path.parent().unwrap())
+        .and_then(|_| std::fs::write(&path, gfx.to_text()));
+    if let Err(e) = written {
+        eprintln!("can't save settings to {}: {e}", path.display());
+    }
+}
+
 /// Best laps, one `key time split…` line per map + car, in the user's data dir.
 fn best_laps_file() -> Option<PathBuf> {
     Some(data_dir()?.join("best_laps.txt"))
@@ -551,8 +564,11 @@ const RESOLUTIONS: [(f32, f32); 4] = [
     (1920.0, 1200.0),
 ];
 
-/// Graphics options: one field + one menu row each.
+const CAMERAS: [&str; 4] = ["chase", "bumper", "orbit (Q/E)", "top-down"];
+
+/// Graphics options: one field + one menu row each; saved to settings.txt.
 struct Graphics {
+    camera: usize, // index into CAMERAS
     nearest: bool,
     textured: bool,
     crt: bool,
@@ -565,6 +581,7 @@ struct Graphics {
 #[derive(Clone, Copy, PartialEq)]
 enum Row {
     Resume,
+    Camera,
     Filter,
     Textures,
     Crt,
@@ -574,8 +591,9 @@ enum Row {
     Resolution,
     Quit,
 }
-const ROWS: [Row; 9] = [
+const ROWS: [Row; 10] = [
     Row::Resume,
+    Row::Camera,
     Row::Filter,
     Row::Textures,
     Row::Crt,
@@ -587,10 +605,47 @@ const ROWS: [Row; 9] = [
 ];
 
 impl Graphics {
+    fn to_text(&self) -> String {
+        format!(
+            "camera={}\nnearest={}\ntextured={}\ncrt={}\nminimap={}\nghost={}\nfullscreen={}\nresolution={}\n",
+            self.camera,
+            self.nearest,
+            self.textured,
+            self.crt,
+            self.minimap,
+            self.ghost,
+            self.fullscreen,
+            self.resolution
+        )
+    }
+
+    /// Applies `key=value` lines from `to_text`; unknown keys and bad values are skipped.
+    fn apply_text(&mut self, text: &str) {
+        for (k, v) in text.lines().filter_map(|l| l.split_once('=')) {
+            let (b, n) = (v.trim() == "true", v.trim().parse::<usize>().ok());
+            match k.trim() {
+                "camera" => self.camera = n.filter(|&n| n < CAMERAS.len()).unwrap_or(self.camera),
+                "nearest" => self.nearest = b,
+                "textured" => self.textured = b,
+                "crt" => self.crt = b,
+                "minimap" => self.minimap = b,
+                "ghost" => self.ghost = b,
+                "fullscreen" => self.fullscreen = b,
+                "resolution" => {
+                    self.resolution = n
+                        .filter(|&n| n < RESOLUTIONS.len())
+                        .unwrap_or(self.resolution)
+                }
+                _ => {}
+            }
+        }
+    }
+
     fn label(&self, row: Row) -> String {
         let on = |b: bool| if b { "on" } else { "off" };
         match row {
             Row::Resume => "Resume".into(),
+            Row::Camera => format!("Camera: {}  (C)", CAMERAS[self.camera]),
             Row::Filter => format!(
                 "Texture filter: {}",
                 if self.nearest { "nearest" } else { "smooth" }
@@ -622,6 +677,11 @@ impl Graphics {
             Row::Textures => self.textured = !self.textured,
             Row::Crt => self.crt = !self.crt,
             Row::Minimap => self.minimap = !self.minimap,
+            Row::Camera => {
+                let n = CAMERAS.len() as i32;
+                self.camera =
+                    (self.camera as i32 + if step == 0 { 1 } else { step }).rem_euclid(n) as usize;
+            }
             Row::Ghost => self.ghost = !self.ghost,
             Row::Fullscreen => {
                 self.fullscreen = !self.fullscreen;
@@ -870,14 +930,31 @@ async fn main() {
     let mut shown_colour = sim.terrain.colour.clone();
     let flag = |f: &str| args.iter().any(|a| a == f);
     let mut gfx = Graphics {
-        nearest: !flag("--smooth"),
-        textured: !flag("--untextured"),
-        crt: flag("--crt"),
-        minimap: !flag("--no-minimap"),
-        ghost: flag("--ghost"), // off by default
+        camera: 0,
+        nearest: true,
+        textured: true,
+        crt: false,
+        minimap: true,
+        ghost: false,
         fullscreen: false,
         resolution: 1,
     };
+    if let Some(text) = settings_file().and_then(|p| std::fs::read_to_string(p).ok()) {
+        gfx.apply_text(&text);
+    }
+    // launch flags win over the saved settings
+    gfx.nearest &= !flag("--smooth");
+    gfx.textured &= !flag("--untextured");
+    gfx.crt |= flag("--crt");
+    gfx.minimap &= !flag("--no-minimap");
+    gfx.ghost |= flag("--ghost");
+    if gfx.fullscreen {
+        set_fullscreen(true);
+    } else if gfx.resolution != 1 {
+        let (w, h) = RESOLUTIONS[gfx.resolution];
+        request_new_screen_size(w, h);
+    }
+    let mut orbit = 0.0f32; // orbit camera angle around the car
     let crt = load_material(
         ShaderSource::Glsl {
             vertex: CRT_VERTEX,
@@ -972,7 +1049,9 @@ async fn main() {
                     Row::Resume if enter => menu_open = false,
                     Row::Quit if enter => break,
                     row => {
-                        gfx.change(row, step);
+                        if gfx.change(row, step) {
+                            save_settings(&gfx);
+                        }
                     }
                 }
             }
@@ -991,6 +1070,9 @@ async fn main() {
             acc = 0.0;
         } else if is_key_pressed(KeyCode::W) {
             wireframe = !wireframe;
+        } else if is_key_pressed(KeyCode::C) {
+            gfx.camera = (gfx.camera + 1) % CAMERAS.len();
+            save_settings(&gfx);
         }
         let pick = if menu_open {
             None
@@ -1170,10 +1252,29 @@ async fn main() {
             ));
         }
         let target = if gfx.crt { scene_target.clone() } else { None };
+        let fwd = -back.normalize_or_zero();
+        orbit +=
+            (is_key_down(KeyCode::E) as i32 - is_key_down(KeyCode::Q) as i32) as f32 * dt * 2.0;
+        let (position, look_at, up) = match gfx.camera {
+            // bumper: low on the bonnet, looking down the road
+            1 => {
+                let p = centre + fwd * 0.25 + vec3(0.0, 0.45, 0.0);
+                (p, p + fwd * 4.0 - vec3(0.0, 0.25, 0.0), Vec3::Y)
+            }
+            2 => {
+                let (sin, cos) = orbit.sin_cos();
+                let mut p = centre + vec3(sin * 4.0, 2.0, cos * 4.0);
+                p.y = p.y.max(ground(p) + CAM_CLEARANCE);
+                (p, centre + vec3(0.0, 0.3, 0.0), Vec3::Y)
+            }
+            // top-down: map-up is up on screen, like the minimap
+            3 => (centre + vec3(0.0, 10.0, 0.001), centre, Vec3::NEG_Z),
+            _ => (cam_pos, centre + vec3(0.0, 0.3, 0.0), Vec3::Y),
+        };
         set_camera(&Camera3D {
-            position: cam_pos,
-            target: centre + vec3(0.0, 0.3, 0.0),
-            up: Vec3::Y,
+            position,
+            target: look_at,
+            up,
             render_target: target.clone(),
             ..Default::default()
         });
@@ -1188,6 +1289,8 @@ async fn main() {
         }
         gl_use_default_material();
         let me = &sim.cars[0];
+        // bumper camera sits inside the body: don't draw it
+        let own = if gfx.camera == 1 { 0 } else { 3 };
         for m in car_meshes(
             model,
             &atoms,
@@ -1196,8 +1299,11 @@ async fn main() {
             skin,
             &roll,
             gfx.textured,
-        ) {
-            draw_mesh(&m);
+        )
+        .iter()
+        .take(own)
+        {
+            draw_mesh(m);
         }
         // the best lap's ghost, in step with the lap timer
         if gfx.ghost
@@ -1259,7 +1365,7 @@ async fn main() {
                     top[g] + GATE_HEIGHT * S,
                     g == 0,
                     g == race.next,
-                    cam_pos,
+                    position,
                 );
             }
         }
@@ -1396,6 +1502,34 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn settings_round_trip() {
+        let mut a = Graphics {
+            camera: 2,
+            nearest: false,
+            textured: true,
+            crt: true,
+            minimap: false,
+            ghost: true,
+            fullscreen: false,
+            resolution: 3,
+        };
+        let mut b = Graphics {
+            camera: 0,
+            nearest: true,
+            textured: false,
+            crt: false,
+            minimap: true,
+            ghost: false,
+            fullscreen: true,
+            resolution: 0,
+        };
+        b.apply_text(&a.to_text());
+        assert_eq!(b.to_text(), a.to_text());
+        a.apply_text("camera=99\nresolution=x\nbogus=true\nno equals sign");
+        assert_eq!((a.camera, a.resolution), (2, 3), "bad values are skipped");
+    }
 
     #[test]
     fn best_laps_round_trip() {

@@ -19,9 +19,10 @@ cargo run --release
 | R | put the car back on its wheels (time trial: on the last checkpoint, facing the next) |
 | 1–5 | switch car |
 | W | spring wireframe |
+| C | camera: chase / bumper / orbit (Q/E rotate) / top-down |
 | Esc | options: resume, graphics, quit (pauses the game) |
 
-Graphics options: texture filter (nearest/smooth), textures on (MAPTEX.PCX material tiles, car
+Options (saved to `settings.txt` next to the best laps; flags override them): camera, texture filter (nearest/smooth), textures on (MAPTEX.PCX material tiles, car
 skins) or off (flat COL.PCX colours), CRT filter, minimap, ghost car, fullscreen, window resolution.
 
 Flags: `--car N` starting car; `--soft` makes all ground diggable so wheels dig tracks (the original
