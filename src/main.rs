@@ -404,6 +404,67 @@ fn car_meshes(
     [flat, textured, wheels]
 }
 
+/// Checkpoint posts reach this many cells above the highest ground on the gate's line.
+const GATE_HEIGHT: f32 = 2.0;
+
+/// A checkpoint arch: a post at each end of the line, from the ground to `top` (world z), and a
+/// banner between their tops; start/finish gets a chequered one. Dim and translucent unless `next`.
+fn draw_gate(t: &Terrain, ends: [[f32; 2]; 2], top: f32, start: bool, next: bool) {
+    let alpha = if next { 1.0 } else { 0.3 };
+    let post = Color::new(0.55, 0.55, 0.58, alpha);
+    for [x, y] in ends {
+        let ground = t.height_at(x, y);
+        draw_cylinder(
+            v([x, y, ground]),
+            0.12,
+            0.12,
+            (top - ground) / S,
+            None,
+            post,
+        );
+    }
+    // banner: a strip of quads 0.6 cells tall just under the post tops; start/finish is a chequer of
+    // 0.1-cell rows and 1/6-cell columns
+    let ([ax, ay], [bx, by]) = (ends[0], ends[1]);
+    let cols = if start {
+        (((bx - ax).hypot(by - ay) / S) * 6.0).ceil().max(1.0) as usize
+    } else {
+        1
+    };
+    let mut mesh = Mesh {
+        vertices: vec![],
+        indices: vec![],
+        texture: None,
+    };
+    let rows = if start { 6 } else { 1 };
+    let row_h = 0.6 / rows as f32;
+    for row in 0..rows {
+        for col in 0..cols {
+            let colour = match (start, (row + col) % 2) {
+                (true, 0) => Color::new(0.05, 0.05, 0.05, alpha),
+                (true, _) => Color::new(1.0, 1.0, 1.0, alpha),
+                (false, _) if next => Color::new(1.0, 0.85, 0.1, 1.0),
+                (false, _) => Color::new(1.0, 1.0, 1.0, alpha * 0.8),
+            };
+            let (f0, f1) = (col as f32 / cols as f32, (col + 1) as f32 / cols as f32);
+            let (z0, z1) = (
+                top - (0.7 - row as f32 * row_h) * S,
+                top - (0.7 - (row + 1) as f32 * row_h) * S,
+            );
+            let at = |f: f32, z: f32| {
+                let p = v([ax + (bx - ax) * f, ay + (by - ay) * f, z]);
+                Vertex::new(p.x, p.y, p.z, 0.0, 0.0, colour)
+            };
+            let base = mesh.vertices.len() as u16;
+            mesh.vertices
+                .extend([at(f0, z0), at(f1, z0), at(f1, z1), at(f0, z1)]);
+            mesh.indices
+                .extend([base, base + 1, base + 2, base, base + 2, base + 3]);
+        }
+    }
+    draw_mesh(&mesh);
+}
+
 const RESOLUTIONS: [(f32, f32); 4] = [
     (960.0, 600.0),
     (1280.0, 800.0),
@@ -914,38 +975,27 @@ async fn main() {
                 draw_line_3d(v(atoms[a]), v(atoms[b]), if broken { RED } else { WHITE });
             }
         }
-        // gates: a low wall on each painted cell, the next one bright; a pole marks the next gate
-        for &(x, y, g) in &gate_cells {
-            let (wx, wy) = ((x as f32 + 0.5) * S, (y as f32 + 0.5) * S);
-            let colour = if g == race.next {
-                Color::new(1.0, 0.85, 0.1, 0.5)
-            } else {
-                Color::new(1.0, 1.0, 1.0, 0.15)
-            };
-            let ground = sim.terrain.height_at(wx, wy);
-            draw_cube(
-                v([wx, wy, ground + 0.3 * S]),
-                vec3(1.0, 0.6, 1.0),
-                None,
-                colour,
-            );
-        }
+        // gates: an arch (two posts and a banner) over each painted line
         if let Some(t) = &track {
-            let [x, y] = t.gates[race.next];
-            let ground = sim.terrain.height_at(x, y);
-            let bob = (get_time() * 3.0).sin() as f32 * 0.2;
-            draw_cube(
-                v([x, y, ground + 2.0 * S]),
-                vec3(0.12, 4.0, 0.12),
-                None,
-                YELLOW,
-            );
-            draw_cube(
-                v([x, y, ground + (4.3 + bob) * S]),
-                vec3(0.6, 0.6, 0.6),
-                None,
-                YELLOW,
-            );
+            let mut top = vec![f32::MIN; t.gates.len()];
+            for &(x, y, g) in &gate_cells {
+                let ground = sim
+                    .terrain
+                    .height_at((x as f32 + 0.5) * S, (y as f32 + 0.5) * S);
+                top[g] = top[g].max(ground);
+            }
+            // the bright next gate first: translucent ones after it, so they don't hide it
+            let order =
+                std::iter::once(race.next).chain((0..t.gates.len()).filter(|&g| g != race.next));
+            for g in order {
+                draw_gate(
+                    &sim.terrain,
+                    t.ends[g],
+                    top[g] + GATE_HEIGHT * S,
+                    g == 0,
+                    g == race.next,
+                );
+            }
         }
         for p in sim.particle_positions() {
             draw_cube(

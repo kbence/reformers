@@ -31,8 +31,9 @@ preset graphics options; `--menu` starts paused.
 ## Time trial
 
 When `assets/CHECK.PCX` exists, the map is a time trial. Drive through the start line to start the
-clock, then through the checkpoints in order; any other order doesn't count. The next checkpoint
-glows yellow and has a pole above it. Best laps are saved per map and car in
+clock, then through the checkpoints in order; any other order doesn't count. The next checkpoint is
+the yellow arch (start/finish has a chequered banner); the others are dim. Each arch stands on the
+two ends of its painted line. Best laps are saved per map and car in
 `~/.local/share/reformers/best_laps.txt` (or `$XDG_DATA_HOME`, or `%APPDATA%` on Windows).
 
 `CHECK.PCX` is a 256×256 indexed image on the same grid as `MAP.PCX`/`COL.PCX` (the 64 px strip on

@@ -23,6 +23,8 @@ pub struct Track {
     pub spawn: Option<Spawn>,
     /// Gate centres (world x, y) in lap order; `gates[0]` is start/finish.
     pub gates: Vec<[f32; 2]>,
+    /// Each gate's two end cells (world x, y of the cell centres): where its posts stand.
+    pub ends: Vec<[[f32; 2]; 2]>,
     /// Per cell: lap-order index + 1 of the gate painted there, 0 = none.
     cells: Vec<u8>,
 }
@@ -104,7 +106,7 @@ impl Track {
         for (r, &s) in order.iter().enumerate() {
             rank[s] = r as u8 + 1;
         }
-        let cells = img
+        let cells: Vec<u8> = img
             .pixels
             .iter()
             .map(|&p| {
@@ -115,9 +117,27 @@ impl Track {
                 }
             })
             .collect();
+        // ends: the extreme cells along the longer side of the line's bounding box
+        let world = |(x, y): (usize, usize)| [(x as f32 + 0.5) * CELL, (y as f32 + 0.5) * CELL];
+        let ends = (1..=order.len() as u8)
+            .map(|g| {
+                let pts: Vec<(usize, usize)> = (0..SIZE * SIZE)
+                    .filter(|&i| cells[i] == g)
+                    .map(|i| (i % SIZE, i / SIZE))
+                    .collect();
+                let span = |f: fn(&(usize, usize)) -> usize| {
+                    pts.iter().map(f).max().unwrap() - pts.iter().map(f).min().unwrap()
+                };
+                let wide = span(|p| p.0) >= span(|p| p.1);
+                let key = |p: &&(usize, usize)| if wide { p.0 } else { p.1 };
+                let (a, b) = (pts.iter().min_by_key(key), pts.iter().max_by_key(key));
+                [world(*a.unwrap()), world(*b.unwrap())]
+            })
+            .collect();
         Ok(Track {
             spawn,
             gates: order.iter().map(|&s| centre(&gates[s])).collect(),
+            ends,
             cells,
         })
     }
@@ -334,6 +354,9 @@ mod tests {
         assert_eq!(t.gates[0], at(102.0, 60.0));
         assert_eq!(t.gates[1], at(102.0, 50.0));
         assert_eq!(t.gate_at(100, 70), Some(2));
+        assert_eq!(t.ends[0], [at(100.0, 60.0), at(104.0, 60.0)]);
+        let diag = track(&(0..5).map(|i| (50 + i, 90 - 2 * i, 32)).collect::<Vec<_>>()).unwrap();
+        assert_eq!(diag.ends[0], [at(54.0, 82.0), at(50.0, 90.0)]); // steeper than 45°: by y
         assert_eq!(t.gate_at(99, 70), None);
     }
 
