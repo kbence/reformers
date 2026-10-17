@@ -85,6 +85,20 @@ Shared game files live in `assets/` (also found next to the executable, or where
 They and the map images are the original author's copyrighted work; see `assets/READ.ME`. The
 `CHECK.PCX` time-trial track is Reformers' own.
 
+## Licence and the original files
+
+Reformers' code (and the `CHECK.PCX` track, sounds and web page) is MIT-licensed, see `LICENSE`. The
+original DEFORMERS / TEREP2 and TEREP1 files are Nagymáthé Dénes's copyrighted work and are **not**
+covered (see `assets/READ.ME`). Without them the game can't run, and the tests that need them skip
+themselves. To supply them, copy from the original demos:
+
+| Put | From |
+|---|---|
+| `assets/MAPTEX.PCX`, `TEXTURES.PCX`, `CAR1–5.DAT`, `CAR1.PCX`, `CAR2.PCX` | TEREP2 |
+| `assets/maps/terep2/MAP.PCX`, `COL.PCX` | TEREP2's `MAP.PCX`, `COL.PCX` |
+| `assets/maps/terep2-hills/MAP.PCX`, `COL.PCX` | TEREP2's `MAPHILL.PCX` (renamed), `COL.PCX` |
+| `assets/maps/terep1/MAP.BMP`, `COL.BMP` | TEREP1 |
+
 ## Tools
 
 ```bash

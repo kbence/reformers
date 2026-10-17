@@ -228,6 +228,7 @@ mod tests {
 
     #[test]
     fn parses_game_cars() {
+        crate::need_assets!();
         for n in 1..=5 {
             let car = parse(&crate::assets::read(&format!("CAR{n}.DAT")).unwrap()).unwrap();
             assert!(matches!(car.atoms.len(), 29 | 31), "CAR{n}");

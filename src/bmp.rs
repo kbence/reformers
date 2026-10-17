@@ -85,6 +85,7 @@ mod tests {
 
     #[test]
     fn decodes_terep1_maps() {
+        crate::need_assets!();
         for f in ["maps/terep1/MAP.BMP", "maps/terep1/COL.BMP"] {
             let img = decode(&crate::assets::read(f).unwrap()).unwrap();
             assert_eq!((img.width, img.height), (256, 256), "{f}");

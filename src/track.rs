@@ -546,6 +546,7 @@ mod tests {
 
     #[test]
     fn thin_gate_counts_at_top_speed() {
+        crate::need_assets!();
         let car = crate::car::parse(&crate::assets::read("CAR1.DAT").unwrap()).unwrap();
         let mut s = Sim::new(Terrain {
             height: vec![40; SIZE * SIZE],
@@ -582,6 +583,7 @@ mod tests {
 
     #[test]
     fn spawn_faces_heading() {
+        crate::need_assets!();
         let car = crate::car::parse(&crate::assets::read("CAR1.DAT").unwrap()).unwrap();
         for (k, want) in [[0.0, -1.0], [1.0, 0.0], [0.0, 1.0], [-1.0, 0.0]]
             .iter()
@@ -617,6 +619,7 @@ mod tests {
     /// shipped track can be lapped and that a full lap registers.
     #[test]
     fn shipped_track_laps() {
+        crate::need_assets!();
         let read = |f: &str| crate::assets::read(f).unwrap();
         let t = Track::load(&read("maps/terep2/CHECK.PCX")).unwrap();
         assert!(t.gates.len() >= 3);

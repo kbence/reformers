@@ -137,6 +137,7 @@ mod tests {
 
     #[test]
     fn decodes_game_maps() {
+        crate::need_assets!();
         for f in [
             "maps/terep2/MAP.PCX",
             "maps/terep2/COL.PCX",

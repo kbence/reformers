@@ -233,6 +233,7 @@ mod tests {
 
     #[test]
     fn two_cars_tick_together() {
+        crate::need_assets!();
         let read = |f: &str| crate::assets::read(f).unwrap();
         let track = Track::load(&read("maps/terep2/CHECK.PCX")).unwrap();
         let car = crate::car::parse(&read("CAR1.DAT")).unwrap();
@@ -289,6 +290,7 @@ mod tests {
     /// the recording from the same start: the same events at the same ticks, the same car.
     #[test]
     fn replay_re_drives_the_run() {
+        crate::need_assets!();
         let read = |f: &str| crate::assets::read(f).unwrap();
         let track = Track::load(&read("maps/terep2/CHECK.PCX")).unwrap();
         let car = crate::car::parse(&read("CAR1.DAT")).unwrap();

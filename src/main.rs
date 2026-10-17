@@ -2221,6 +2221,7 @@ mod tests {
 
     #[test]
     fn picks_maps() {
+        reformers::need_assets!();
         let args = |a: &[&str]| a.iter().map(|s| s.to_string()).collect::<Vec<_>>();
         assert_eq!(pick_map(&args(&["x"]), ""), "terep2");
         assert_eq!(pick_map(&args(&["x"]), "camera=1\nmap=terep1\n"), "terep1");

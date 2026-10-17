@@ -3,6 +3,7 @@ name = "reformers"
 version = "0.1.0"
 edition = "2024"
 default-run = "reformers"
+license = "MIT"
 
 [dependencies]
 macroquad = { version = "0.4.16", features = ["audio"] }

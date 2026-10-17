@@ -92,6 +92,7 @@ mod tests {
 
     #[test]
     fn loads_game_map() {
+        crate::need_assets!();
         let read = |f: &str| crate::assets::read(f).unwrap();
         let t = Terrain::load(&read("maps/terep2/MAP.PCX"), &read("maps/terep2/COL.PCX")).unwrap();
         let t1 = Terrain::load(&read("maps/terep1/MAP.BMP"), &read("maps/terep1/COL.BMP")).unwrap();

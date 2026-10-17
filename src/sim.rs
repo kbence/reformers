@@ -1007,6 +1007,7 @@ mod tests {
     /// between them (replays depend on its absence) fails here.
     #[test]
     fn scripted_drive_is_bit_exact() {
+        crate::need_assets!();
         let mut s = sim();
         for t in 0..TICK_HZ * 10 {
             s.tick(&[Keys {
@@ -1042,6 +1043,7 @@ mod tests {
 
     #[test]
     fn car_settles_and_drives() {
+        crate::need_assets!();
         let mut s = sim();
         for _ in 0..TICK_HZ * 3 {
             s.tick(&[Keys::default()]);
@@ -1071,6 +1073,7 @@ mod tests {
 
     #[test]
     fn digs_only_diggable_ground() {
+        crate::need_assets!();
         for soft in [false, true] {
             let mut s = sim();
             s.dig_everywhere = soft;
@@ -1102,6 +1105,7 @@ mod tests {
     /// the sin table and atan2 go through f64 libm, which could differ elsewhere.
     #[test]
     fn same_inputs_same_run() {
+        crate::need_assets!();
         let run = || {
             let mut s = sim();
             for t in 0..TICK_HZ * 8 {
@@ -1120,6 +1124,7 @@ mod tests {
 
     #[test]
     fn push_and_drag_change_speed() {
+        crate::need_assets!();
         let speed_after = |pad: &dyn Fn(&mut SimCar)| {
             let mut s = sim();
             let gas = Keys {
@@ -1154,6 +1159,7 @@ mod tests {
 
     #[test]
     fn soft_dirt_ruts_stop_at_the_floor() {
+        crate::need_assets!();
         let car = crate::car::parse(&crate::assets::read("CAR1.DAT").unwrap()).unwrap();
         for soft in [false, true] {
             let mut s = Sim::new(flat());
@@ -1179,6 +1185,7 @@ mod tests {
 
     #[test]
     fn crashes_dent_r_keeps_them_repair_clears() {
+        crate::need_assets!();
         let car = crate::car::parse(&crate::assets::read("CAR1.DAT").unwrap()).unwrap();
         let mut t = flat();
         for x in 0..SIZE {
@@ -1206,6 +1213,7 @@ mod tests {
 
     #[test]
     fn cars_collide_instead_of_passing_through() {
+        crate::need_assets!();
         let car = crate::car::parse(&crate::assets::read("CAR1.DAT").unwrap()).unwrap();
         let mut s = Sim::new(flat());
         // A drives north into B, parked 8 cells ahead facing the same way
@@ -1255,6 +1263,7 @@ mod tests {
 
     #[test]
     fn upside_down_only_on_the_roof() {
+        crate::need_assets!();
         let flat = || Terrain {
             height: vec![40; SIZE * SIZE],
             colour: vec![0x60; SIZE * SIZE],
@@ -1280,6 +1289,7 @@ mod tests {
 
     #[test]
     fn drives_straight_on_flat_ground() {
+        crate::need_assets!();
         let car = crate::car::parse(&crate::assets::read("CAR1.DAT").unwrap()).unwrap();
         let flat = Terrain {
             height: vec![40; SIZE * SIZE],

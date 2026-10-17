@@ -21,6 +21,18 @@ fn dirs() -> Vec<PathBuf> {
     d
 }
 
+/// Skips a test when the original game files aren't installed: they won't be in a public clone
+/// (see README, Maps and assets). Put it first in any test that reads them.
+#[macro_export]
+macro_rules! need_assets {
+    () => {
+        if $crate::assets::read("CAR1.DAT").is_err() {
+            eprintln!("skipped: the original game files aren't installed");
+            return;
+        }
+    };
+}
+
 #[cfg(target_arch = "wasm32")]
 static WEB_FILES: std::sync::Mutex<Vec<(String, Vec<u8>)>> = std::sync::Mutex::new(Vec::new());
 
