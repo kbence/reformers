@@ -5,6 +5,7 @@ edition = "2024"
 default-run = "reformers"
 
 [dependencies]
+gilrs = "0.11.2"
 macroquad = { version = "0.4.16", features = ["audio"] }
 
 # ponytail: the sim ports 32-bit asm that wraps everywhere; panicking on overflow would diverge from it.

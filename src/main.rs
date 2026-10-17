@@ -5,6 +5,7 @@
 //! `--menu` starts with the overlay open; `--smooth` / `--untextured` / `--crt` preset the graphics options.
 //! `--shot out.png`: hold throttle + left, save a frame after 4 s and exit (for checking without a human).
 
+use gilrs::{Axis, Button, EventType, Gilrs};
 use macroquad::audio::{
     PlaySoundParams, Sound, load_sound_from_bytes, play_sound, set_sound_volume,
 };
@@ -112,6 +113,62 @@ impl Audio {
             },
         );
     }
+}
+
+/// Keys the first gamepad holds this frame, as the keyboard keys they stand for: left stick or
+/// d-pad steers, right trigger or A throttles, left trigger or X reverses, B brakes.
+fn pad_down(stick_x: f32, rt: f32, lt: f32, held: impl Fn(Button) -> bool) -> Vec<KeyCode> {
+    [
+        (stick_x < -0.35 || held(Button::DPadLeft), KeyCode::Left),
+        (stick_x > 0.35 || held(Button::DPadRight), KeyCode::Right),
+        (rt > 0.3 || held(Button::South), KeyCode::Up),
+        (lt > 0.3 || held(Button::West), KeyCode::Down),
+        (held(Button::East), KeyCode::Space),
+    ]
+    .into_iter()
+    .filter_map(|(on, k)| on.then_some(k))
+    .collect()
+}
+
+/// A gamepad button pressed this frame, as the key it stands for (menu and actions).
+fn pad_pressed(b: Button) -> Option<KeyCode> {
+    Some(match b {
+        Button::Start => KeyCode::Escape,
+        Button::DPadUp => KeyCode::Up,
+        Button::DPadDown => KeyCode::Down,
+        Button::DPadLeft => KeyCode::Left,
+        Button::DPadRight => KeyCode::Right,
+        Button::South => KeyCode::Enter,
+        Button::North => KeyCode::R,
+        Button::Select => KeyCode::F,
+        Button::RightTrigger => KeyCode::C,
+        _ => return None,
+    })
+}
+
+/// Polls the first connected gamepad: (keys held, keys pressed this frame). Empty without one.
+fn poll_pad(gilrs: &mut Option<Gilrs>) -> (Vec<KeyCode>, Vec<KeyCode>) {
+    let Some(g) = gilrs else {
+        return (vec![], vec![]);
+    };
+    let mut pressed = vec![];
+    while let Some(ev) = g.next_event() {
+        if let EventType::ButtonPressed(b, _) = ev.event {
+            pressed.extend(pad_pressed(b));
+        }
+    }
+    let Some((_, pad)) = g.gamepads().next() else {
+        return (vec![], pressed);
+    };
+    let axis = |a| pad.axis_data(a).map_or(0.0, |d| d.value());
+    let trigger = |b| pad.button_data(b).map_or(0.0, |d| d.value());
+    let down = pad_down(
+        axis(Axis::LeftStickX),
+        trigger(Button::RightTrigger2),
+        trigger(Button::LeftTrigger2),
+        |b| pad.is_pressed(b),
+    );
+    (down, pressed)
 }
 
 fn settings_file() -> Option<PathBuf> {
@@ -1188,6 +1245,7 @@ async fn main() {
         gfx.volume = 0;
     }
     let audio = Audio::load().await;
+    let mut gilrs = Gilrs::new().ok();
     let (mut impacts, mut last_thud, mut skid) = (0u32, 0.0f64, 0.0f32);
     if gfx.fullscreen {
         set_fullscreen(true);
@@ -1223,6 +1281,9 @@ async fn main() {
     let started = get_time();
 
     loop {
+        let (pad_held, pad_hit) = poll_pad(&mut gilrs);
+        let pressed = |k: KeyCode| is_key_pressed(k) || pad_hit.contains(&k);
+        let down = |k: KeyCode| is_key_down(k) || pad_held.contains(&k);
         // hot reload: edit a map image, save, and it's here within a second
         if get_time() >= next_poll || gfx.map != map {
             next_poll = get_time() + 1.0;
@@ -1286,27 +1347,26 @@ async fn main() {
                 }
             }
         }
-        if is_key_pressed(KeyCode::Escape) {
+        if pressed(KeyCode::Escape) {
             menu_open = !menu_open;
             selected = 0;
         }
         if menu_open {
-            if is_key_pressed(KeyCode::Up) {
+            if pressed(KeyCode::Up) {
                 selected = (selected + ROWS.len() - 1) % ROWS.len();
             }
-            if is_key_pressed(KeyCode::Down) {
+            if pressed(KeyCode::Down) {
                 selected = (selected + 1) % ROWS.len();
             }
-            let step = if is_key_pressed(KeyCode::Left) {
+            let step = if pressed(KeyCode::Left) {
                 -1
-            } else if is_key_pressed(KeyCode::Right) {
+            } else if pressed(KeyCode::Right) {
                 1
             } else {
                 0
             };
-            let enter = is_key_pressed(KeyCode::Enter)
-                || is_key_pressed(KeyCode::KpEnter)
-                || is_key_pressed(KeyCode::Space);
+            let enter =
+                pressed(KeyCode::Enter) || pressed(KeyCode::KpEnter) || pressed(KeyCode::Space);
             if step != 0 || enter {
                 match ROWS[selected] {
                     Row::Resume if enter => menu_open = false,
@@ -1331,9 +1391,9 @@ async fn main() {
         if menu_open {
             // paused: no sim ticks, no time banked for later
             acc = 0.0;
-        } else if is_key_pressed(KeyCode::W) {
+        } else if pressed(KeyCode::W) {
             wireframe = !wireframe;
-        } else if is_key_pressed(KeyCode::C) {
+        } else if pressed(KeyCode::C) {
             gfx.camera = (gfx.camera + 1) % CAMERAS.len();
             save_settings(&gfx);
         }
@@ -1348,7 +1408,7 @@ async fn main() {
                 KeyCode::Key5,
             ]
             .iter()
-            .position(|&k| is_key_pressed(k))
+            .position(|&k| pressed(k))
         };
         if let Some(n) = pick {
             // best laps are per car: a new car starts a new time trial
@@ -1357,7 +1417,7 @@ async fn main() {
             ghost = load_ghost(&level, current);
             recording = Ghost::default();
         }
-        if !menu_open && is_key_pressed(KeyCode::F) {
+        if !menu_open && pressed(KeyCode::F) {
             // repair: a brand-new car where this one stands
             let [x, y, _] = sim.cars[0].centre();
             let h = heading(&sim.cars[0]);
@@ -1366,7 +1426,7 @@ async fn main() {
             roll = [0.0; 4];
             banner = Some(("repaired".into(), get_time() + 1.0));
         }
-        if (!menu_open && is_key_pressed(KeyCode::R)) || pick.is_some() || reset_zone {
+        if (!menu_open && pressed(KeyCode::R)) || pick.is_some() || reset_zone {
             reset_zone = false;
             // time trial: back to the last checkpoint, facing the next; else upright where the car is
             let [x, y, _] = sim.cars[0].centre();
@@ -1389,11 +1449,11 @@ async fn main() {
         }
         let (model, skin) = (&cars[current].0, &cars[current].1);
         let keys = Keys {
-            throttle: is_key_down(KeyCode::Up) || shot.is_some(),
-            reverse: is_key_down(KeyCode::Down),
-            left: is_key_down(KeyCode::Left) || (shot.is_some() && get_time() - started > 2.0),
-            right: is_key_down(KeyCode::Right),
-            brake: is_key_down(KeyCode::Space) || is_key_down(KeyCode::Kp5),
+            throttle: down(KeyCode::Up) || shot.is_some(),
+            reverse: down(KeyCode::Down),
+            left: down(KeyCode::Left) || (shot.is_some() && get_time() - started > 2.0),
+            right: down(KeyCode::Right),
+            brake: down(KeyCode::Space) || down(KeyCode::Kp5),
         };
         // Fixed 120 Hz sim like the original timer interrupt; drawing runs free.
         if !menu_open {
@@ -1559,8 +1619,7 @@ async fn main() {
         }
         let target = if gfx.crt { scene_target.clone() } else { None };
         let fwd = -back.normalize_or_zero();
-        orbit +=
-            (is_key_down(KeyCode::E) as i32 - is_key_down(KeyCode::Q) as i32) as f32 * dt * 2.0;
+        orbit += (down(KeyCode::E) as i32 - down(KeyCode::Q) as i32) as f32 * dt * 2.0;
         let (position, look_at, up) = match gfx.camera {
             // bumper: low on the bonnet, looking down the road
             1 => {
@@ -1823,6 +1882,22 @@ async fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pad_maps_to_keys() {
+        let none = |_| false;
+        assert!(
+            pad_down(0.2, 0.0, 0.0, none).is_empty(),
+            "inside the deadzone"
+        );
+        assert_eq!(pad_down(-0.9, 0.8, 0.0, none), [KeyCode::Left, KeyCode::Up]);
+        assert_eq!(
+            pad_down(0.0, 0.0, 0.0, |b| b == Button::East),
+            [KeyCode::Space]
+        );
+        assert_eq!(pad_pressed(Button::Start), Some(KeyCode::Escape));
+        assert_eq!(pad_pressed(Button::Mode), None);
+    }
 
     #[test]
     fn picks_maps() {

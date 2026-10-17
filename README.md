@@ -11,17 +11,17 @@ How the original works: [docs/re-notes.md](docs/re-notes.md).
 cargo run --release
 ```
 
-| Key | Action |
-|---|---|
-| ↑ / ↓ | throttle / reverse |
-| ← / → | steer |
-| Space | brake |
-| R | put the car back on its wheels (time trial: on the last checkpoint, facing the next); dents stay |
-| F | repair the car (a fresh one where it stands) |
-| 1–5 | switch car |
-| W | spring wireframe |
-| C | camera: chase / bumper / orbit (Q/E rotate) / top-down |
-| Esc | options: resume, graphics, quit (pauses the game) |
+| Key | Gamepad | Action |
+|---|---|---|
+| ↑ / ↓ | right trigger or A / left trigger or X | throttle / reverse |
+| ← / → | left stick or d-pad | steer |
+| Space | B | brake |
+| R | Y | put the car back on its wheels (time trial: on the last checkpoint, facing the next); dents stay |
+| F | Back | repair the car (a fresh one where it stands) |
+| 1–5 | | switch car |
+| C | right shoulder | camera: chase / bumper / orbit (Q/E rotate) / top-down |
+| W | | spring wireframe |
+| Esc | Start | options (pauses the game); d-pad and A in the menu |
 
 Options (saved to `settings.txt` next to the best laps; flags override them): sound volume, camera, fog (the original's distance fog), texture filter (nearest/smooth), textures on (MAPTEX.PCX material tiles, car
 skins) or off (flat COL.PCX colours), CRT filter, minimap, ghost car, fullscreen, window resolution.
