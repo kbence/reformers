@@ -1,0 +1,3 @@
+# Web build: quad-snd's audio functions come from macroquad's JS bundle, so they're imports.
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "link-arg=--allow-undefined"]

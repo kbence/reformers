@@ -5,6 +5,7 @@
 //! `--menu` starts with the overlay open; `--smooth` / `--untextured` / `--crt` preset the graphics options.
 //! `--shot out.png`: hold throttle + left, save a frame after 4 s and exit (for checking without a human).
 
+#[cfg(not(target_arch = "wasm32"))]
 use gilrs::{Axis, Button, EventType, Gilrs};
 use macroquad::audio::{
     PlaySoundParams, Sound, load_sound_from_bytes, play_sound, set_sound_volume,
@@ -115,6 +116,7 @@ impl Audio {
     }
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Keys the first gamepad holds this frame, as the keyboard keys they stand for: left stick or
 /// d-pad steers, right trigger or A throttles, left trigger or X reverses, B brakes.
 fn pad_down(stick_x: f32, rt: f32, lt: f32, held: impl Fn(Button) -> bool) -> Vec<KeyCode> {
@@ -130,6 +132,7 @@ fn pad_down(stick_x: f32, rt: f32, lt: f32, held: impl Fn(Button) -> bool) -> Ve
     .collect()
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// A gamepad button pressed this frame, as the key it stands for (menu and actions).
 fn pad_pressed(b: Button) -> Option<KeyCode> {
     Some(match b {
@@ -146,6 +149,7 @@ fn pad_pressed(b: Button) -> Option<KeyCode> {
     })
 }
 
+#[cfg(not(target_arch = "wasm32"))]
 /// Polls the first connected gamepad: (keys held, keys pressed this frame). Empty without one.
 fn poll_pad(gilrs: &mut Option<Gilrs>) -> (Vec<KeyCode>, Vec<KeyCode>) {
     let Some(g) = gilrs else {
@@ -169,6 +173,12 @@ fn poll_pad(gilrs: &mut Option<Gilrs>) -> (Vec<KeyCode>, Vec<KeyCode>) {
         |b| pad.is_pressed(b),
     );
     (down, pressed)
+}
+
+/// No gamepads on the web (see Cargo.toml).
+#[cfg(target_arch = "wasm32")]
+fn poll_pad(_: &mut Option<()>) -> (Vec<KeyCode>, Vec<KeyCode>) {
+    (vec![], vec![])
 }
 
 fn settings_file() -> Option<PathBuf> {
@@ -1146,6 +1156,7 @@ fn window_conf() -> macroquad::conf::Conf {
 
 #[macroquad::main(window_conf)]
 async fn main() {
+    assets::preload().await;
     let args: Vec<String> = std::env::args().collect();
     let car_n = args
         .iter()
@@ -1245,7 +1256,10 @@ async fn main() {
         gfx.volume = 0;
     }
     let audio = Audio::load().await;
+    #[cfg(not(target_arch = "wasm32"))]
     let mut gilrs = Gilrs::new().ok();
+    #[cfg(target_arch = "wasm32")]
+    let mut gilrs: Option<()> = None;
     let (mut impacts, mut last_thud, mut skid) = (0u32, 0.0f64, 0.0f32);
     if gfx.fullscreen {
         set_fullscreen(true);
@@ -1883,6 +1897,7 @@ async fn main() {
 mod tests {
     use super::*;
 
+    #[cfg(not(target_arch = "wasm32"))]
     #[test]
     fn pad_maps_to_keys() {
         let none = |_| false;

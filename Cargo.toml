@@ -5,8 +5,11 @@ edition = "2024"
 default-run = "reformers"
 
 [dependencies]
-gilrs = "0.11.2"
 macroquad = { version = "0.4.16", features = ["audio"] }
+
+# gamepads; not on the web, where macroquad's JS loader can't host gilrs' wasm-bindgen
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+gilrs = "0.11.2"
 
 # ponytail: the sim ports 32-bit asm that wraps everywhere; panicking on overflow would diverge from it.
 [profile.dev]

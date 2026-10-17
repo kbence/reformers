@@ -1,0 +1,17 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Reformers</title>
+  <style>
+    html, body, canvas { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
+    canvas:focus { outline: none; }
+  </style>
+</head>
+<body>
+  <canvas id="glcanvas" tabindex="1"></canvas>
+  <!-- macroquad 0.4.16's loader (js/mq_js_bundle.js from the crate, MIT/Apache-2.0) -->
+  <script src="mq_js_bundle.js"></script>
+  <script>load("reformers.wasm");</script>
+</body>
+</html>

@@ -89,6 +89,18 @@ Sound is synthesised at start-up, no sample files: the original's two AdLib FM p
 retuned with wheel speed, and the landing thud, played 3 octaves up so speakers can reproduce it),
 plus skid noise and checkpoint/lap chimes.
 
+## Web
+
+```bash
+web/build.sh                              # needs: rustup target add wasm32-unknown-unknown
+python3 -m http.server -d out/web 8000    # then open http://localhost:8000
+```
+
+The browser build loads every asset over HTTP at start (`assets/maps/index.txt` lists the maps,
+since the web can't list folders). No gamepads, no saved settings or best laps, and no hot reload
+there; the rest, CRT filter included, works the same. Hosting it publicly would hand out the
+original game files (see #1).
+
 ## Releases
 
 Publishing a GitHub release runs `.github/workflows/release.yml`: it tests and builds Windows,
