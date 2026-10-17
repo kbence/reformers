@@ -23,12 +23,12 @@ cargo run --release
 | C | camera: chase / bumper / orbit (Q/E rotate) / top-down |
 | Esc | options: resume, graphics, quit (pauses the game) |
 
-Options (saved to `settings.txt` next to the best laps; flags override them): camera, texture filter (nearest/smooth), textures on (MAPTEX.PCX material tiles, car
+Options (saved to `settings.txt` next to the best laps; flags override them): camera, fog (the original's distance fog), texture filter (nearest/smooth), textures on (MAPTEX.PCX material tiles, car
 skins) or off (flat COL.PCX colours), CRT filter, minimap, ghost car, fullscreen, window resolution.
 
 Flags: `--car N` starting car; `--soft` makes all ground diggable so wheels dig tracks (the original
 only digs ground of colour 0x0f, which no shipped map has); `--smooth`, `--untextured`, `--crt`,
-`--no-minimap`, `--ghost` preset the options; `--map NAME` picks a map; `--menu` starts paused.
+`--no-minimap`, `--ghost`, `--no-fog` preset the options; `--map NAME` picks a map; `--menu` starts paused.
 
 ## Time trial
 

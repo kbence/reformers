@@ -212,3 +212,18 @@ ax = 0 when vn < −6.0 (`cmp ebx, 0xfffa0000`, preceded by two `nop`s). `0x5864
 patch (`[0xecd9 + ax·16]`, data segment, not decoded yet) into channel 8 via `0x589b` (operator
 registers `0x20`/`0x40`/`0x60`/`0x80`/`0xe0` + `[cs:0x592c + 8]` offset), then sets `0xa8`/`0xb8`
 (frequency, key-on).
+
+## Fog and smoke tables (`FOG.DAT`, `SMOKE.DAT`)
+
+Both are palette remap tables (256 bytes each: colour in → colour out).
+
+- **`FOG.DAT`**: 18 tables, one per distance level. `0x1cde`/`0x1e3a` pick the level from a
+  polygon's depth: `cx = (z₁ + z₂) / 4`, and if `cx ≥ [0x5f5]` the table page is `0x1d + (cx >> 8)`,
+  so level = average depth / 512 world units. Levels 0–4 are the identity; 5–16 blend toward sky
+  blue (92, 188, 252); 17 is that colour everywhere. So fog starts ~10 cells out and is total by
+  ~34. Reformers does the same blend in a shader.
+- **`SMOKE.DAT`**: 4 tables of translucency, not dust. `0x2de0` darkens the car's shadow spans
+  through table 0; `0x38f8` treats polygon colours `0xf0`–`0xf3` as "see-through", remapping the
+  pixel behind through table `colour − 0xf0`: 0 darkens a lot (average brightness ×0.64), 1 a
+  little (×0.85), 2 lightens a little, 3 more (×1.2). Every car uses `0xf0` (the windows).
+  Dust stays as the sim's dirt particles.

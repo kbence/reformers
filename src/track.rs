@@ -591,7 +591,10 @@ mod tests {
             Terrain::load(&read("maps/terep2/MAP.PCX"), &read("maps/terep2/COL.PCX")).unwrap(),
         );
         s.set_soft_dirt(t.soft_dirt.clone());
-        assert!(t.soft_dirt.iter().any(|&d| d), "the shipped track has soft dirt");
+        assert!(
+            t.soft_dirt.iter().any(|&d| d),
+            "the shipped track has soft dirt"
+        );
         let sp = t.spawn.as_ref().unwrap();
         s.cars.push(SimCar::spawn_facing(
             &car, &s.terrain, sp.x, sp.y, sp.heading,

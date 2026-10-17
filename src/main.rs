@@ -5,6 +5,7 @@
 //! `--menu` starts with the overlay open; `--smooth` / `--untextured` / `--crt` preset the graphics options.
 //! `--shot out.png`: hold throttle + left, save a frame after 4 s and exit (for checking without a human).
 
+use macroquad::miniquad::{BlendFactor, BlendState, BlendValue, Equation};
 use macroquad::prelude::*;
 use reformers::car::{self, Car, Prim};
 use reformers::ghost::{self, Frame, Ghost};
@@ -268,12 +269,15 @@ attribute vec2 texcoord;
 attribute vec4 color0;
 varying lowp vec2 uv;
 varying lowp vec4 shade;
+varying mediump float fog;
 uniform mat4 Model;
 uniform mat4 Projection;
+uniform vec2 FogRange;
 void main() {
     gl_Position = Projection * Model * vec4(position, 1);
     uv = texcoord;
     shade = color0 / 255.0;
+    fog = clamp((gl_Position.w - FogRange.x) / (FogRange.y - FogRange.x), 0.0, 1.0);
 }
 ";
 
@@ -282,16 +286,61 @@ const TERRAIN_FRAGMENT: &str = "#version 100
 precision mediump float;
 varying lowp vec2 uv;
 varying lowp vec4 shade;
+varying mediump float fog;
 uniform sampler2D ColIdx;  // COL indices in red, nearest
 uniform sampler2D MapTex;
+uniform vec3 FogColor;
 void main() {
     vec2 cell = uv * 256.0;
     float idx = floor(texture2D(ColIdx, (floor(cell) + 0.5) / 256.0).r * 255.0 + 0.5);
     vec2 tile = vec2(mod(idx, 16.0), floor(idx / 16.0));
     vec2 st = (tile * 16.0 + 0.5 + fract(cell) * 15.0) / 256.0;  // stay inside the tile
-    gl_FragColor = vec4(texture2D(MapTex, st).rgb * shade.rgb, 1.0);
+    gl_FragColor = vec4(mix(texture2D(MapTex, st).rgb * shade.rgb, FogColor, fog), 1.0);
 }
 ";
+
+/// Everything else in 3D (flat terrain, cars, arches, pads, dirt): macroquad's default look plus fog.
+const FOG_FRAGMENT: &str = "#version 100
+precision mediump float;
+varying lowp vec2 uv;
+varying lowp vec4 shade;
+varying mediump float fog;
+uniform sampler2D Texture;
+uniform vec3 FogColor;
+void main() {
+    vec4 c = texture2D(Texture, uv) * shade;
+    gl_FragColor = vec4(mix(c.rgb, FogColor, fog), c.a);
+}
+";
+
+/// FOG.DAT: past ~10 cells the original remaps colours toward this sky blue, fully by ~34
+/// (table index = average depth / 512 world units; levels 5–17 change colours).
+const FOG_COLOUR: [f32; 3] = [92.0 / 255.0, 188.0 / 255.0, 252.0 / 255.0];
+const FOG_RANGE: [f32; 2] = [10.0, 34.0];
+
+fn fog_material(vertex: &'static str, fragment: &'static str, textures: Vec<String>) -> Material {
+    load_material(
+        ShaderSource::Glsl { vertex, fragment },
+        MaterialParams {
+            textures,
+            uniforms: vec![
+                UniformDesc::new("FogColor", UniformType::Float3),
+                UniformDesc::new("FogRange", UniformType::Float2),
+            ],
+            pipeline_params: PipelineParams {
+                depth_test: Comparison::LessOrEqual,
+                depth_write: true,
+                color_blend: Some(BlendState::new(
+                    Equation::Add,
+                    BlendFactor::Value(BlendValue::SourceAlpha),
+                    BlendFactor::OneMinusValue(BlendValue::SourceAlpha),
+                )),
+                ..Default::default()
+            },
+        },
+    )
+    .expect("fog shader")
+}
 
 /// Terrain rows for one chunk. Colour comes from the COL texture (uv at the cell centre);
 /// the vertex colour carries only the slope shading, which macroquad multiplies in.
@@ -446,6 +495,15 @@ fn car_meshes(
                 let shadow = verts.iter().all(|e| e % 2 == 1);
                 let c = if shadow {
                     Color::from_rgba(0, 0, 0, 110)
+                } else if *colour >= 0xf0 {
+                    // SMOKE.DAT: colours f0–f3 remap what's behind (0x38f8): darken a lot / a
+                    // little, lighten a little / a lot. Windows are f0.
+                    [
+                        Color::new(0.0, 0.0, 0.0, 0.36),
+                        Color::new(0.0, 0.0, 0.0, 0.15),
+                        Color::new(1.0, 1.0, 1.0, 0.08),
+                        Color::new(1.0, 1.0, 1.0, 0.2),
+                    ][(*colour as usize - 0xf0).min(3)]
                 } else {
                     let [r, g, b] = palette[*colour as usize];
                     Color::from_rgba(r, g, b, 255)
@@ -628,6 +686,7 @@ struct Graphics {
     crt: bool,
     minimap: bool,
     ghost: bool,
+    fog: bool,
     fullscreen: bool,
     resolution: usize, // index into RESOLUTIONS, windowed mode only
 }
@@ -640,19 +699,21 @@ enum Row {
     Filter,
     Textures,
     Crt,
+    Fog,
     Minimap,
     Ghost,
     Fullscreen,
     Resolution,
     Quit,
 }
-const ROWS: [Row; 11] = [
+const ROWS: [Row; 12] = [
     Row::Resume,
     Row::Map,
     Row::Camera,
     Row::Filter,
     Row::Textures,
     Row::Crt,
+    Row::Fog,
     Row::Minimap,
     Row::Ghost,
     Row::Fullscreen,
@@ -663,7 +724,7 @@ const ROWS: [Row; 11] = [
 impl Graphics {
     fn to_text(&self) -> String {
         format!(
-            "map={}\ncamera={}\nnearest={}\ntextured={}\ncrt={}\nminimap={}\nghost={}\nfullscreen={}\nresolution={}\n",
+            "map={}\ncamera={}\nnearest={}\ntextured={}\ncrt={}\nminimap={}\nghost={}\nfog={}\nfullscreen={}\nresolution={}\n",
             self.map,
             self.camera,
             self.nearest,
@@ -671,6 +732,7 @@ impl Graphics {
             self.crt,
             self.minimap,
             self.ghost,
+            self.fog,
             self.fullscreen,
             self.resolution
         )
@@ -688,6 +750,7 @@ impl Graphics {
                 "crt" => self.crt = b,
                 "minimap" => self.minimap = b,
                 "ghost" => self.ghost = b,
+                "fog" => self.fog = b,
                 "fullscreen" => self.fullscreen = b,
                 "resolution" => {
                     self.resolution = n
@@ -712,6 +775,7 @@ impl Graphics {
             Row::Textures => format!("Textures: {}", on(self.textured)),
             Row::Crt => format!("CRT filter: {}", on(self.crt)),
             Row::Minimap => format!("Minimap: {}", on(self.minimap)),
+            Row::Fog => format!("Fog: {}", on(self.fog)),
             Row::Ghost => format!("Ghost car: {}", on(self.ghost)),
             Row::Fullscreen => format!("Fullscreen: {}", on(self.fullscreen)),
             Row::Resolution => {
@@ -736,6 +800,7 @@ impl Graphics {
             Row::Textures => self.textured = !self.textured,
             Row::Crt => self.crt = !self.crt,
             Row::Minimap => self.minimap = !self.minimap,
+            Row::Fog => self.fog = !self.fog,
             Row::Map => {
                 let maps = assets::maps();
                 let i = maps.iter().position(|m| *m == self.map).unwrap_or(0) as i32;
@@ -986,22 +1051,12 @@ async fn main() {
     let mut meshes: Vec<Mesh> = (0..chunks).map(|c| chunk_mesh(&sim.terrain, c)).collect();
     let colour_tex = Texture2D::from_image(&colour_image(&sim.terrain));
     let mut maptex = tiles(&level, &sim.terrain.palette);
-    let terrain_material = load_material(
-        ShaderSource::Glsl {
-            vertex: TERRAIN_VERTEX,
-            fragment: TERRAIN_FRAGMENT,
-        },
-        MaterialParams {
-            textures: vec!["ColIdx".into(), "MapTex".into()],
-            pipeline_params: PipelineParams {
-                depth_test: Comparison::LessOrEqual,
-                depth_write: true,
-                ..Default::default()
-            },
-            ..Default::default()
-        },
-    )
-    .expect("terrain shader");
+    let terrain_material = fog_material(
+        TERRAIN_VERTEX,
+        TERRAIN_FRAGMENT,
+        vec!["ColIdx".into(), "MapTex".into()],
+    );
+    let fog = fog_material(TERRAIN_VERTEX, FOG_FRAGMENT, vec![]);
     terrain_material.set_texture("MapTex", maptex.clone());
     let index_tex = Texture2D::from_image(&index_image(&sim.terrain));
     index_tex.set_filter(FilterMode::Nearest);
@@ -1016,6 +1071,7 @@ async fn main() {
         crt: false,
         minimap: true,
         ghost: false,
+        fog: true,
         fullscreen: false,
         resolution: 1,
     };
@@ -1027,6 +1083,7 @@ async fn main() {
     gfx.crt |= flag("--crt");
     gfx.minimap &= !flag("--no-minimap");
     gfx.ghost |= flag("--ghost");
+    gfx.fog &= !flag("--no-fog");
     if gfx.fullscreen {
         set_fullscreen(true);
     } else if gfx.resolution != 1 {
@@ -1392,16 +1449,28 @@ async fn main() {
             render_target: target.clone(),
             ..Default::default()
         });
-        clear_background(Color::from_rgba(120, 160, 210, 255));
-        // untextured: plain COL colours (filtered per the option); textured: MAPTEX tiles per cell
-        if gfx.textured && level.maptex.is_some() {
-            gl_use_material(&terrain_material);
+        // fog off: push it past anything on screen
+        let range = if gfx.fog { FOG_RANGE } else { [1e6, 1e6 + 1.0] };
+        for m in [&fog, &terrain_material] {
+            m.set_uniform("FogColor", FOG_COLOUR);
+            m.set_uniform("FogRange", range);
         }
+        clear_background(if gfx.fog {
+            Color::new(FOG_COLOUR[0], FOG_COLOUR[1], FOG_COLOUR[2], 1.0)
+        } else {
+            Color::from_rgba(120, 160, 210, 255)
+        });
+        // untextured: plain COL colours (filtered per the option); textured: MAPTEX tiles per cell
+        gl_use_material(if gfx.textured && level.maptex.is_some() {
+            &terrain_material
+        } else {
+            &fog
+        });
         for m in &mut meshes {
             m.texture = Some(colour_tex.clone());
             draw_mesh(m);
         }
-        gl_use_default_material();
+        gl_use_material(&fog);
         let me = &sim.cars[0];
         // bumper camera sits inside the body: don't draw it
         let own = if gfx.camera == 1 { 0 } else { 3 };
@@ -1494,6 +1563,7 @@ async fn main() {
             );
         }
 
+        gl_use_default_material();
         set_default_camera();
         if let Some(t) = &target {
             crt.set_uniform("Resolution", vec2(screen_width(), screen_height()));
@@ -1646,6 +1716,7 @@ mod tests {
             crt: true,
             minimap: false,
             ghost: true,
+            fog: false,
             fullscreen: false,
             resolution: 3,
         };
@@ -1657,6 +1728,7 @@ mod tests {
             crt: false,
             minimap: true,
             ghost: false,
+            fog: true,
             fullscreen: true,
             resolution: 0,
         };
