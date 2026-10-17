@@ -49,12 +49,12 @@ pub struct Tick {
 }
 
 /// R: on the last checkpoint facing the next (time trial), else upright where it is.
-fn respawn(sim: &mut Sim, car: &Car, track: Option<&Track>, race: &mut Race) {
-    let [x, y, _] = sim.cars[0].centre();
+fn respawn(sim: &mut Sim, i: usize, car: &Car, track: Option<&Track>, race: &mut Race) {
+    let [x, y, _] = sim.cars[i].centre();
     let ([x, y], h) = track
         .and_then(|t| race.respawn(t))
-        .unwrap_or(([x, y], sim.cars[0].heading()));
-    sim.cars[0] = sim.cars[0].respawned(car, &sim.terrain, x as u16, y as u16, h);
+        .unwrap_or(([x, y], sim.cars[i].heading()));
+    sim.cars[i] = sim.cars[i].respawned(car, &sim.terrain, x as u16, y as u16, h);
     if let Some(t) = track {
         race.place(t, [x, y]);
     }
@@ -69,29 +69,54 @@ pub fn tick(
     input: u8,
     t: u64,
 ) -> Tick {
-    let mut respawned = false;
-    if input & REPAIR != 0 {
-        let [x, y, _] = sim.cars[0].centre();
-        let h = sim.cars[0].heading();
-        sim.cars[0] = SimCar::spawn_facing(car, &sim.terrain, x as u16, y as u16, h);
-        respawned = true;
+    tick_all(sim, &[car], track, std::slice::from_mut(race), &[input], t)
+        .pop()
+        .unwrap()
+}
+
+/// One tick of every car `i` (model `cars[i]`, time trial `races[i]`, input `inputs[i]`), all
+/// stepped together so they can collide.
+pub fn tick_all(
+    sim: &mut Sim,
+    cars: &[&Car],
+    track: Option<&Track>,
+    races: &mut [Race],
+    inputs: &[u8],
+    t: u64,
+) -> Vec<Tick> {
+    let mut respawned = vec![false; inputs.len()];
+    for (i, &input) in inputs.iter().enumerate() {
+        if input & REPAIR != 0 {
+            let [x, y, _] = sim.cars[i].centre();
+            let h = sim.cars[i].heading();
+            sim.cars[i] = SimCar::spawn_facing(cars[i], &sim.terrain, x as u16, y as u16, h);
+            respawned[i] = true;
+        }
+        if input & RESPAWN != 0 {
+            respawn(sim, i, cars[i], track, &mut races[i]);
+            respawned[i] = true;
+        }
     }
-    if input & RESPAWN != 0 {
-        respawn(sim, car, track, race);
-        respawned = true;
-    }
-    sim.tick(&[keys(input)]);
-    if let Some(tr) = track
-        && tr.apply_zone(&mut sim.cars[0])
-    {
-        respawn(sim, car, track, race);
-        respawned = true;
-    }
-    let event = track.and_then(|tr| {
-        let [x, y, _] = sim.cars[0].centre();
-        race.update(tr, [x, y], t)
-    });
-    Tick { event, respawned }
+    let keys: Vec<Keys> = inputs.iter().map(|&b| keys(b)).collect();
+    sim.tick(&keys);
+    (0..inputs.len())
+        .map(|i| {
+            if let Some(tr) = track
+                && tr.apply_zone(&mut sim.cars[i])
+            {
+                respawn(sim, i, cars[i], track, &mut races[i]);
+                respawned[i] = true;
+            }
+            let event = track.and_then(|tr| {
+                let [x, y, _] = sim.cars[i].centre();
+                races[i].update(tr, [x, y], t)
+            });
+            Tick {
+                event,
+                respawned: respawned[i],
+            }
+        })
+        .collect()
 }
 
 /// A recorded run: where and how it started, then one input byte per tick.
@@ -204,6 +229,60 @@ mod tests {
         assert_eq!(Replay::from_bytes(&b).unwrap(), r);
         assert!(Replay::from_bytes(&b[..b.len() - 1]).is_err());
         assert!(Replay::from_bytes(b"RFR0").is_err());
+    }
+
+    #[test]
+    fn two_cars_tick_together() {
+        let read = |f: &str| crate::assets::read(f).unwrap();
+        let track = Track::load(&read("maps/terep2/CHECK.PCX")).unwrap();
+        let car = crate::car::parse(&read("CAR1.DAT")).unwrap();
+        let sp = track.spawn.as_ref().unwrap();
+        let mut sim = Sim::new(
+            Terrain::load(&read("maps/terep2/MAP.PCX"), &read("maps/terep2/COL.PCX")).unwrap(),
+        );
+        sim.cars.push(SimCar::spawn_facing(
+            &car,
+            &sim.terrain,
+            sp.x,
+            sp.y,
+            sp.heading,
+        ));
+        sim.cars.push(SimCar::spawn_facing(
+            &car,
+            &sim.terrain,
+            sp.x + 384,
+            sp.y,
+            sp.heading,
+        ));
+        let mut races = [Race::new(None), Race::new(None)];
+        let gas = input(
+            Keys {
+                throttle: true,
+                ..Keys::default()
+            },
+            false,
+            false,
+        );
+        let mut started = [false; 2];
+        for t in 0..TICK_HZ as u64 * 6 {
+            // only car 0 drives at first; car 1 sets off two seconds later
+            let b1 = if t > TICK_HZ as u64 * 2 { gas } else { 0 };
+            for (i, o) in tick_all(
+                &mut sim,
+                &[&car, &car],
+                Some(&track),
+                &mut races,
+                &[gas, b1],
+                t,
+            )
+            .iter()
+            .enumerate()
+            {
+                started[i] |= o.event == Some(Event::Start);
+            }
+        }
+        assert_eq!(started, [true, true], "each car runs its own time trial");
+        assert!(races[0].lap_time(TICK_HZ as u64 * 6) > races[1].lap_time(TICK_HZ as u64 * 6));
     }
 
     /// Records a scripted run through the time trial (with R and F mixed in), then re-drives

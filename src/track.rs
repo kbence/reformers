@@ -326,6 +326,21 @@ impl Race {
         Some(Event::Lap { time, best })
     }
 
+    /// How far round the track the car is, for placings: completed laps × gates, plus gates
+    /// passed this lap, plus the share of the way from the last gate to the next one.
+    pub fn progress(&self, track: &Track, pos: [f32; 2]) -> f32 {
+        let n = track.gates.len().max(1);
+        if !self.started {
+            return 0.0;
+        }
+        let passed = (self.next + n - 1) % n;
+        let from = track.gates[self.last_gate.unwrap_or(0)];
+        let to = track.gates[self.next];
+        let dist = |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).hypot(a[1] - b[1]);
+        let part = 1.0 - (dist(pos, to) / dist(from, to).max(1.0)).min(1.0);
+        (self.laps as usize * n + passed) as f32 + part
+    }
+
     /// Ticks into the current lap (0 before the start).
     pub fn lap_time(&self, tick: u64) -> u64 {
         if self.started {
@@ -492,6 +507,28 @@ mod tests {
         tick += 10_000;
         assert_eq!(drive(&mut r, &mut tick, 125.0, 115.0), [Event::Gate(1)]);
         assert!(r.split_delta().unwrap() > 0);
+    }
+
+    #[test]
+    fn progress_orders_cars() {
+        let t = track(&[(100, 100, 32), (100, 60, 33), (100, 20, 34)]).unwrap();
+        let (mut a, mut b) = (Race::new(None), Race::new(None));
+        assert_eq!(a.progress(&t, at(100.0, 110.0)), 0.0, "not started");
+        for r in [&mut a, &mut b] {
+            r.place(&t, at(100.0, 101.0));
+            r.update(&t, at(100.0, 100.0), 1); // start
+        }
+        a.place(&t, at(100.0, 61.0));
+        a.update(&t, at(100.0, 60.0), 2); // a passes gate 1
+        let (pa, pb) = (
+            a.progress(&t, at(100.0, 50.0)),
+            b.progress(&t, at(100.0, 80.0)),
+        );
+        assert!(pa > pb, "a is ahead: {pa} vs {pb}");
+        assert!(
+            b.progress(&t, at(100.0, 70.0)) > pb,
+            "closer to the next gate is further on"
+        );
     }
 
     #[test]

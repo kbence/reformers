@@ -182,6 +182,67 @@ fn poll_pad(_: &mut Option<()>) -> (Vec<KeyCode>, Vec<KeyCode>) {
     (vec![], vec![])
 }
 
+/// Camera for following car `i`: (position, look-at, up). Updates that player's spring-arm
+/// chase position `cam` and arm share `arm` (see the chase case).
+fn follow_camera(
+    sim: &Sim,
+    i: usize,
+    mode: usize,
+    orbit: f32,
+    cam: &mut Vec3,
+    arm: &mut f32,
+    dt: f32,
+) -> (Vec3, Vec3, Vec3) {
+    let atoms = sim.cars[i].atom_positions();
+    let centre = v(sim.cars[i].centre());
+    let back = (v(atoms[4]) - v(atoms[6]) + v(atoms[5]) - v(atoms[7])) * vec3(1.0, 0.0, 1.0);
+    // Spring arm: shorten it where the ground is in the way (pull in at once, ease back out),
+    // and never let the camera sink below the ground under it.
+    let ground = |p: Vec3| sim.terrain.height_at(p.x * S, p.z * S) / S;
+    let pivot = centre + vec3(0.0, 0.5, 0.0);
+    let arm_dir = back.normalize_or_zero() * 3.0 + vec3(0.0, 0.8, 0.0);
+    let clear = (1..=20)
+        .map(|i| i as f32 / 20.0)
+        .find(|&f| {
+            let p = pivot + arm_dir * f;
+            p.y < ground(p) + CAM_CLEARANCE
+        })
+        .map_or(1.0, |hit| (hit - 0.1).max(0.15));
+    *arm = if clear < *arm {
+        clear
+    } else {
+        *arm + (clear - *arm) * (dt * 1.5).min(1.0)
+    };
+    *cam = cam.lerp(pivot + arm_dir * *arm, (dt * 6.0).min(1.0));
+    cam.y = cam.y.max(ground(*cam) + CAM_CLEARANCE);
+    let fwd = -back.normalize_or_zero();
+    match mode {
+        // bumper: low on the bonnet, looking down the road
+        1 => {
+            let p = centre + fwd * 0.25 + vec3(0.0, 0.45, 0.0);
+            (p, p + fwd * 4.0 - vec3(0.0, 0.25, 0.0), Vec3::Y)
+        }
+        2 => {
+            let (sin, cos) = orbit.sin_cos();
+            let mut p = centre + vec3(sin * 4.0, 2.0, cos * 4.0);
+            p.y = p.y.max(ground(p) + CAM_CLEARANCE);
+            (p, centre + vec3(0.0, 0.3, 0.0), Vec3::Y)
+        }
+        // top-down: map-up is up on screen, like the minimap
+        3 => (centre + vec3(0.0, 10.0, 0.001), centre, Vec3::NEG_Z),
+        _ => (*cam, centre + vec3(0.0, 0.3, 0.0), Vec3::Y),
+    }
+}
+
+/// Where player 2 joins: 1.5 cells to the right of `spawn`, facing the same way.
+fn beside(spawn: (u16, u16), heading: u16) -> (u16, u16) {
+    let a = heading as f32 / 65536.0 * std::f32::consts::TAU;
+    (
+        (spawn.0 as f32 + a.cos() * 384.0) as u16,
+        (spawn.1 as f32 + a.sin() * 384.0) as u16,
+    )
+}
+
 fn settings_file() -> Option<PathBuf> {
     Some(data_dir()?.join("settings.txt"))
 }
@@ -841,6 +902,8 @@ const CAMERAS: [&str; 4] = ["chase", "bumper", "orbit (Q/E)", "top-down"];
 struct Graphics {
     /// Map folder name (switching it in the menu loads that map).
     map: String,
+    /// 1, or 2 for split-screen (not saved: a session choice).
+    players: usize,
     camera: usize, // index into CAMERAS
     nearest: bool,
     textured: bool,
@@ -857,6 +920,7 @@ struct Graphics {
 enum Row {
     Resume,
     Map,
+    Players,
     Sound,
     Camera,
     Filter,
@@ -869,9 +933,10 @@ enum Row {
     Resolution,
     Quit,
 }
-const ROWS: [Row; 13] = [
+const ROWS: [Row; 14] = [
     Row::Resume,
     Row::Map,
+    Row::Players,
     Row::Sound,
     Row::Camera,
     Row::Filter,
@@ -933,6 +998,10 @@ impl Graphics {
         match row {
             Row::Resume => "Resume".into(),
             Row::Map => format!("Map: {}", self.map),
+            Row::Players => match self.players {
+                1 => "Players: 1".into(),
+                _ => "Players: 2  (P2: WASD, Shift brake, Tab R, G repair)".into(),
+            },
             Row::Sound => match self.volume {
                 0 => "Sound: off".into(),
                 v => format!("Sound: {v}/10"),
@@ -971,6 +1040,7 @@ impl Graphics {
             Row::Crt => self.crt = !self.crt,
             Row::Minimap => self.minimap = !self.minimap,
             Row::Fog => self.fog = !self.fog,
+            Row::Players => self.players = 3 - self.players,
             Row::Sound => {
                 self.volume =
                     (self.volume as i32 + if step == 0 { 1 } else { step }).rem_euclid(11) as u8
@@ -1015,12 +1085,14 @@ impl Graphics {
 }
 
 /// COL.PCX in the top-right corner with the gates (next one yellow, start white), the ghost and the car.
+#[allow(clippy::too_many_arguments)]
 fn draw_minimap(
     colour: &Texture2D,
     zones: &[(usize, usize, Zone)],
     track: Option<&Track>,
     next: usize,
     car: &SimCar,
+    others: &[SimCar],
     ghost: Option<[f32; 2]>,
     top: f32,
 ) {
@@ -1058,6 +1130,11 @@ fn draw_minimap(
             };
             draw_line(a.x, a.y, b.x, b.y, w, c);
         }
+    }
+    for o in others {
+        let [x, y, _] = o.centre();
+        let p = to_map([x, y]);
+        draw_circle(p.x, p.y, 4.0, SKYBLUE);
     }
     if let Some(g) = ghost {
         let g = to_map(g);
@@ -1283,6 +1360,11 @@ async fn main() {
     let flag = |f: &str| args.iter().any(|a| a == f);
     let mut gfx = Graphics {
         map: map.clone(),
+        players: if args.windows(2).any(|w| w[0] == "--players" && w[1] == "2") {
+            2
+        } else {
+            1
+        },
         camera: 0,
         nearest: true,
         textured: true,
@@ -1337,6 +1419,12 @@ async fn main() {
     let mut original = shown.clone();
     let mut cam_pos = v(sim.cars[0].centre()) + vec3(0.0, 2.0, 4.0);
     let mut arm = 1.0f32; // share of the full chase-camera arm that's clear of the ground
+    // player 2 (split screen): car, time trial, wheel roll, camera, R / F
+    let mut car2 = (current + 1) % 5;
+    let mut race2 = Race::new(None);
+    let mut roll2 = [0.0f32; 4];
+    let (mut cam2, mut arm2) = (cam_pos, 1.0f32);
+    let (mut pending_r2, mut pending_f2) = (false, false);
     let mut acc = 0.0;
     let shot = args
         .iter()
@@ -1383,6 +1471,12 @@ async fn main() {
                             sim.cars[0] =
                                 SimCar::spawn_facing(&cars[current].0, &sim.terrain, sx, sy, h);
                             roll = [0.0; 4];
+                            if sim.cars.len() > 1 {
+                                let (bx, by) = beside((sx, sy), h);
+                                sim.cars[1] =
+                                    SimCar::spawn_facing(&cars[car2].0, &sim.terrain, bx, by, h);
+                                roll2 = [0.0; 4];
+                            }
                         } else if z < sim.terrain.height_at(x, y) {
                             let h = sim.cars[0].heading();
                             sim.cars[0] = SimCar::spawn_facing(
@@ -1396,6 +1490,7 @@ async fn main() {
                         }
                         // a changed map is a different track: new time trial, its own best lap
                         race = Race::new(best_key(&level, current).and_then(|k| load_best(&k)));
+                        race2 = Race::new(best_key(&level, car2).and_then(|k| load_best(&k)));
                         ghost = load_ghost(&level, current);
                         recording = Ghost::default();
                         // a changed map starts a new run (a replay only re-drives the map it came from)
@@ -1461,7 +1556,7 @@ async fn main() {
         if menu_open {
             // paused: no sim ticks, no time banked for later
             acc = 0.0;
-        } else if pressed(KeyCode::W) {
+        } else if pressed(KeyCode::W) && gfx.players == 1 {
             wireframe = !wireframe;
         } else if pressed(KeyCode::C) {
             gfx.camera = (gfx.camera + 1) % CAMERAS.len();
@@ -1505,7 +1600,33 @@ async fn main() {
             pending_r |= pressed(KeyCode::R);
             pending_f |= pressed(KeyCode::F);
         }
-        if !menu_open && pressed(KeyCode::P) {
+        if gfx.players != sim.cars.len() {
+            // player 2 joins beside player 1 (or leaves); either way a new run starts
+            if gfx.players == 2 {
+                car2 = (current + 1) % 5;
+                let [x, y, _] = sim.cars[0].centre();
+                let h = sim.cars[0].heading();
+                let (bx, by) = beside((x as u16, y as u16), h);
+                sim.cars
+                    .push(SimCar::spawn_facing(&cars[car2].0, &sim.terrain, bx, by, h));
+                race2 = Race::new(best_key(&level, car2).and_then(|k| load_best(&k)));
+                (roll2, cam2, arm2) = ([0.0; 4], cam_pos, 1.0);
+                banner = Some((
+                    "player 2: WASD, Shift brake, Tab back on wheels, G repair".into(),
+                    get_time() + 4.0,
+                ));
+            } else {
+                sim.cars.truncate(1);
+            }
+            playing = None;
+            recording_run = new_run(&map, &level, current, sim.dig_everywhere, &sim.cars[0]);
+        }
+        if gfx.players == 2 && !menu_open {
+            pending_r2 |= pressed(KeyCode::Tab);
+            pending_f2 |= pressed(KeyCode::G);
+        }
+        // replays are single-player: player 2's inputs aren't in the run
+        if !menu_open && pressed(KeyCode::P) && sim.cars.len() == 1 {
             let name = format!("replays/run-{}.rfr", ticks);
             banner = Some((
                 save_replay(&name, &recording_run).map_or("can't save replays here".into(), |p| {
@@ -1521,6 +1642,13 @@ async fn main() {
             left: down(KeyCode::Left) || (shot.is_some() && get_time() - started > 2.0),
             right: down(KeyCode::Right),
             brake: down(KeyCode::Space) || down(KeyCode::Kp5),
+        };
+        let keys2 = Keys {
+            throttle: down(KeyCode::W),
+            reverse: down(KeyCode::S),
+            left: down(KeyCode::A),
+            right: down(KeyCode::D),
+            brake: down(KeyCode::LeftShift),
         };
         // Fixed 120 Hz sim like the original timer interrupt; drawing runs free.
         if !menu_open {
@@ -1542,14 +1670,59 @@ async fn main() {
             }
             (pending_r, pending_f) = (false, false);
             recording_run.inputs.push(byte);
-            let out = run::tick(
+            let mut inputs = vec![byte];
+            let mut races = vec![std::mem::replace(&mut race, Race::new(None))];
+            if sim.cars.len() > 1 {
+                inputs.push(run::input(keys2, pending_r2, pending_f2));
+                races.push(std::mem::replace(&mut race2, Race::new(None)));
+            }
+            (pending_r2, pending_f2) = (false, false);
+            let models = [&cars[current].0, &cars[car2].0];
+            let mut outs = run::tick_all(
                 &mut sim,
-                &cars[current].0,
+                &models[..inputs.len()],
                 level.track.as_ref(),
-                &mut race,
-                byte,
+                &mut races,
+                &inputs,
                 ticks,
             );
+            if races.len() > 1 {
+                race2 = races.pop().unwrap();
+            }
+            race = races.pop().unwrap();
+            let out2 = (outs.len() > 1).then(|| outs.pop().unwrap());
+            let out = outs.pop().unwrap();
+            if let Some(o) = out2 {
+                if o.respawned {
+                    roll2 = [0.0; 4];
+                }
+                if let (Some(t), Some(ev)) = (&level.track, &o.event) {
+                    if let Some(a) = &audio {
+                        a.chime(&o.event, gfx.volume as f32 / 10.0);
+                    }
+                    let msg = match ev {
+                        Event::Start => "P2: GO!".to_string(),
+                        Event::Gate(g) => format!("P2: checkpoint {g}/{}", t.gates.len() - 1),
+                        Event::Lap { time, best } => {
+                            if *best
+                                && let (Some(k), Some(b)) = (best_key(&level, car2), &race2.best)
+                            {
+                                save_best(&k, b);
+                            }
+                            format!(
+                                "P2: lap {}{}",
+                                format_time(*time),
+                                if *best { "   best!" } else { "" }
+                            )
+                        }
+                    };
+                    banner = Some((msg, get_time() + 2.5));
+                }
+                let spin = sim.cars[1].spin();
+                for i in 0..4 {
+                    roll2[i] += spin[i] as f32 / 65536.0 / cars[car2].0.atoms[i].radius;
+                }
+            }
             if out.respawned {
                 roll = [0.0; 4];
             }
@@ -1582,7 +1755,9 @@ async fn main() {
                         {
                             save_best(&k, b);
                             save_ghost(&k, &lap);
-                            save_replay(&format!("replay-{k}.rfr"), &recording_run);
+                            if sim.cars.len() == 1 {
+                                save_replay(&format!("replay-{k}.rfr"), &recording_run);
+                            }
                             ghost = lap;
                         }
                         Some(format!(
@@ -1666,31 +1841,8 @@ async fn main() {
             shown_colour.copy_from_slice(&sim.terrain.colour);
         }
 
-        // Chase camera behind the car (car-local +y is the rear).
         let atoms = sim.cars[0].atom_positions();
-        let centre = v(sim.cars[0].centre());
-        let back = (v(atoms[4]) - v(atoms[6]) + v(atoms[5]) - v(atoms[7])) * vec3(1.0, 0.0, 1.0);
-        // Spring arm: shorten it where the ground is in the way (pull in at once, ease back out),
-        // and never let the camera sink below the ground under it.
-        let ground = |p: Vec3| sim.terrain.height_at(p.x * S, p.z * S) / S;
-        let pivot = centre + vec3(0.0, 0.5, 0.0);
-        let arm_dir = back.normalize_or_zero() * 3.0 + vec3(0.0, 0.8, 0.0);
-        let clear = (1..=20)
-            .map(|i| i as f32 / 20.0)
-            .find(|&f| {
-                let p = pivot + arm_dir * f;
-                p.y < ground(p) + CAM_CLEARANCE
-            })
-            .map_or(1.0, |hit| (hit - 0.1).max(0.15));
         let dt = get_frame_time();
-        arm = if clear < arm {
-            clear
-        } else {
-            arm + (clear - arm) * (dt * 1.5).min(1.0)
-        };
-        cam_pos = cam_pos.lerp(pivot + arm_dir * arm, (dt * 6.0).min(1.0));
-        cam_pos.y = cam_pos.y.max(ground(cam_pos) + CAM_CLEARANCE);
-
         // With CRT on, the 3D scene goes to an offscreen target (with depth) sized to the window.
         let (sw, sh) = (screen_width() as u32, screen_height() as u32);
         if gfx.crt
@@ -1708,28 +1860,9 @@ async fn main() {
             ));
         }
         let target = if gfx.crt { scene_target.clone() } else { None };
-        let fwd = -back.normalize_or_zero();
         orbit += (down(KeyCode::E) as i32 - down(KeyCode::Q) as i32) as f32 * dt * 2.0;
-        let (position, look_at, up) = match gfx.camera {
-            // bumper: low on the bonnet, looking down the road
-            1 => {
-                let p = centre + fwd * 0.25 + vec3(0.0, 0.45, 0.0);
-                (p, p + fwd * 4.0 - vec3(0.0, 0.25, 0.0), Vec3::Y)
-            }
-            2 => {
-                let (sin, cos) = orbit.sin_cos();
-                let mut p = centre + vec3(sin * 4.0, 2.0, cos * 4.0);
-                p.y = p.y.max(ground(p) + CAM_CLEARANCE);
-                (p, centre + vec3(0.0, 0.3, 0.0), Vec3::Y)
-            }
-            // top-down: map-up is up on screen, like the minimap
-            3 => (centre + vec3(0.0, 10.0, 0.001), centre, Vec3::NEG_Z),
-            _ => (cam_pos, centre + vec3(0.0, 0.3, 0.0), Vec3::Y),
-        };
+        // views set their own cameras below; this one only points clear_background at the target
         set_camera(&Camera3D {
-            position,
-            target: look_at,
-            up,
             render_target: target.clone(),
             ..Default::default()
         });
@@ -1744,109 +1877,139 @@ async fn main() {
         } else {
             Color::from_rgba(120, 160, 210, 255)
         });
-        // untextured: plain COL colours (filtered per the option); textured: MAPTEX tiles per cell
-        gl_use_material(if gfx.textured && level.maptex.is_some() {
-            &terrain_material
-        } else {
-            &fog
-        });
-        for m in &mut meshes {
-            m.texture = Some(colour_tex.clone());
-            draw_mesh(m);
-        }
-        gl_use_material(&fog);
-        let me = &sim.cars[0];
-        // bumper camera sits inside the body: don't draw it
-        let own = if gfx.camera == 1 { 0 } else { 3 };
-        for m in car_meshes(
-            model,
-            &atoms,
-            me.steer_angle(),
-            &car_palette,
-            &sim.terrain,
-            skin,
-            &roll,
-            gfx.textured,
-        )
-        .iter()
-        .take(own)
-        {
-            draw_mesh(m);
-        }
-        // the best lap's ghost, in step with the lap timer
-        if gfx.ghost
-            && race.started
-            && let Some(f) = ghost.at(race.lap_time(ticks))
-        {
-            for mut m in car_meshes(
-                model,
-                &f.atoms,
-                f.steer,
-                &car_palette,
-                &sim.terrain,
-                skin,
-                &f.roll,
-                gfx.textured,
-            ) {
-                m.vertices
-                    .iter_mut()
-                    .for_each(|v| v.color[3] = (v.color[3] as u16 * 2 / 5) as u8);
-                draw_mesh(&m);
-            }
-        }
-        if wireframe {
-            for (a, b, broken) in sim.cars[0].spring_links() {
-                draw_line_3d(v(atoms[a]), v(atoms[b]), if broken { RED } else { WHITE });
-            }
-        }
-        // pads: a coloured film on the ground (reset zones stay invisible: they're cliffs and water)
-        for &(x, y, z) in &level.zone_cells {
-            let colour = match z {
-                Zone::Boost(_) => Color::new(0.2, 0.9, 1.0, 0.45),
-                Zone::Slow(_) => Color::new(0.35, 0.22, 0.08, 0.6),
-                Zone::Reset => continue,
+        // one view per player: side by side in two-player mode
+        let dpi = screen_dpi_scale();
+        let (fw, fh) = (screen_width() * dpi, screen_height() * dpi);
+        for view in 0..sim.cars.len() {
+            let (cam, arm_v) = if view == 0 {
+                (&mut cam_pos, &mut arm)
+            } else {
+                (&mut cam2, &mut arm2)
             };
-            let (wx, wy) = ((x as f32 + 0.5) * S, (y as f32 + 0.5) * S);
-            let ground = sim.terrain.height_at(wx, wy);
-            draw_cube(
-                v([wx, wy, ground + 2.0]),
-                vec3(1.0, 0.03, 1.0),
-                None,
-                colour,
-            );
-        }
-        // gates: an arch (two posts and a banner) over each painted line
-        if let Some(t) = &level.track {
-            let mut top = vec![f32::MIN; t.gates.len()];
-            for &(x, y, g) in &level.gate_cells {
-                let ground = sim
-                    .terrain
-                    .height_at((x as f32 + 0.5) * S, (y as f32 + 0.5) * S);
-                top[g] = top[g].max(ground);
+            let (position, look_at, up) =
+                follow_camera(&sim, view, gfx.camera, orbit, cam, arm_v, dt);
+            let split = sim.cars.len() > 1;
+            let w = if split { fw / 2.0 } else { fw };
+            set_camera(&Camera3D {
+                position,
+                target: look_at,
+                up,
+                render_target: target.clone(),
+                aspect: split.then_some(w / fh),
+                viewport: split.then_some(((view as f32 * w) as i32, 0, w as i32, fh as i32)),
+                ..Default::default()
+            });
+            // untextured: plain COL colours (filtered per the option); textured: MAPTEX tiles per cell
+            gl_use_material(if gfx.textured && level.maptex.is_some() {
+                &terrain_material
+            } else {
+                &fog
+            });
+            for m in &mut meshes {
+                m.texture = Some(colour_tex.clone());
+                draw_mesh(m);
             }
-            // the bright next gate first: translucent ones after it, so they don't hide it
-            let order =
-                std::iter::once(race.next).chain((0..t.gates.len()).filter(|&g| g != race.next));
-            for g in order {
-                draw_gate(
+            gl_use_material(&fog);
+            for (ci, c) in sim.cars.iter().enumerate() {
+                // bumper camera sits inside the viewer's body: don't draw it
+                let own = if gfx.camera == 1 && ci == view { 0 } else { 3 };
+                let (m, sk) = if ci == 0 {
+                    (model, skin)
+                } else {
+                    (&cars[car2].0, &cars[car2].1)
+                };
+                let r = if ci == 0 { &roll } else { &roll2 };
+                for mesh in car_meshes(
+                    m,
+                    &c.atom_positions(),
+                    c.steer_angle(),
+                    &car_palette,
                     &sim.terrain,
-                    t.ends[g],
-                    top[g] + GATE_HEIGHT * S,
-                    g == 0,
-                    g == race.next,
-                    position,
+                    sk,
+                    r,
+                    gfx.textured,
+                )
+                .iter()
+                .take(own)
+                {
+                    draw_mesh(mesh);
+                }
+            }
+            // the best lap's ghost, in step with the lap timer
+            if gfx.ghost
+                && view == 0
+                && race.started
+                && let Some(f) = ghost.at(race.lap_time(ticks))
+            {
+                for mut m in car_meshes(
+                    model,
+                    &f.atoms,
+                    f.steer,
+                    &car_palette,
+                    &sim.terrain,
+                    skin,
+                    &f.roll,
+                    gfx.textured,
+                ) {
+                    m.vertices
+                        .iter_mut()
+                        .for_each(|v| v.color[3] = (v.color[3] as u16 * 2 / 5) as u8);
+                    draw_mesh(&m);
+                }
+            }
+            if wireframe && view == 0 {
+                for (a, b, broken) in sim.cars[0].spring_links() {
+                    draw_line_3d(v(atoms[a]), v(atoms[b]), if broken { RED } else { WHITE });
+                }
+            }
+            // pads: a coloured film on the ground (reset zones stay invisible: they're cliffs and water)
+            for &(x, y, z) in &level.zone_cells {
+                let colour = match z {
+                    Zone::Boost(_) => Color::new(0.2, 0.9, 1.0, 0.45),
+                    Zone::Slow(_) => Color::new(0.35, 0.22, 0.08, 0.6),
+                    Zone::Reset => continue,
+                };
+                let (wx, wy) = ((x as f32 + 0.5) * S, (y as f32 + 0.5) * S);
+                let ground = sim.terrain.height_at(wx, wy);
+                draw_cube(
+                    v([wx, wy, ground + 2.0]),
+                    vec3(1.0, 0.03, 1.0),
+                    None,
+                    colour,
+                );
+            }
+            // gates: an arch (two posts and a banner) over each painted line
+            if let Some(t) = &level.track {
+                let mut top = vec![f32::MIN; t.gates.len()];
+                for &(x, y, g) in &level.gate_cells {
+                    let ground = sim
+                        .terrain
+                        .height_at((x as f32 + 0.5) * S, (y as f32 + 0.5) * S);
+                    top[g] = top[g].max(ground);
+                }
+                // the bright next gate first: translucent ones after it, so they don't hide it
+                let next = if view == 0 { race.next } else { race2.next };
+                let order = std::iter::once(next).chain((0..t.gates.len()).filter(|&g| g != next));
+                for g in order {
+                    draw_gate(
+                        &sim.terrain,
+                        t.ends[g],
+                        top[g] + GATE_HEIGHT * S,
+                        g == 0,
+                        g == next,
+                        position,
+                    );
+                }
+            }
+            for p in sim.particle_positions() {
+                draw_cube(
+                    v(p),
+                    vec3(0.04, 0.04, 0.04),
+                    None,
+                    Color::from_rgba(90, 60, 30, 255),
                 );
             }
         }
-        for p in sim.particle_positions() {
-            draw_cube(
-                v(p),
-                vec3(0.04, 0.04, 0.04),
-                None,
-                Color::from_rgba(90, 60, 30, 255),
-            );
-        }
-
         gl_use_default_material();
         set_default_camera();
         if let Some(t) = &target {
@@ -1868,8 +2031,13 @@ async fn main() {
             .zip(&original)
             .filter(|(a, b)| a != b)
             .count();
+        let help = if sim.cars.len() > 1 {
+            "P1"
+        } else {
+            "arrows drive  space brake  R flip upright  F repair  1-5 car  C camera  esc menu   |  "
+        };
         let hud = format!(
-            "arrows drive  space brake  R flip upright  F repair  1-5 car  C camera  esc menu   |   car {}  {:3.0} km/h   damage {:2.0}%   ruts {dents}{}",
+            "{help} car {}  {:3.0} km/h   damage {:2.0}%   ruts {dents}{}",
             current + 1,
             speed * 0.019 * 3.6, // ~210 world units per 4 m car
             sim.cars[0].damage() * 100.0,
@@ -1890,26 +2058,60 @@ async fn main() {
         draw_text(&hud, 12.0, 22.0, 18.0, WHITE);
         if let Some(t) = &level.track {
             let n = t.gates.len();
-            let line = if race.started {
-                let passed = (race.next + n - 1) % n;
-                let opt = |l: Option<u64>| l.map_or("-:--.--".into(), format_time);
-                format!(
-                    "lap {}   {}   checkpoints {passed}/{}   last {}   best {}",
-                    race.laps + 1,
-                    format_time(race.lap_time(ticks)),
-                    n - 1,
-                    opt(race.last_lap),
-                    opt(race.best.as_ref().map(|b| b.time))
-                )
-            } else {
-                format!(
-                    "time trial: drive through the start line   best {}",
-                    race.best
-                        .as_ref()
-                        .map_or("-:--.--".into(), |b| format_time(b.time))
-                )
+            let line = |race: &Race, place: &str| {
+                if race.started {
+                    let passed = (race.next + n - 1) % n;
+                    let opt = |l: Option<u64>| l.map_or("-:--.--".into(), format_time);
+                    format!(
+                        "{place}lap {}   {}   checkpoints {passed}/{}   last {}   best {}",
+                        race.laps + 1,
+                        format_time(race.lap_time(ticks)),
+                        n - 1,
+                        opt(race.last_lap),
+                        opt(race.best.as_ref().map(|b| b.time))
+                    )
+                } else {
+                    format!(
+                        "{place}time trial: drive through the start line   best {}",
+                        race.best
+                            .as_ref()
+                            .map_or("-:--.--".into(), |b| format_time(b.time))
+                    )
+                }
             };
-            draw_text(&line, 12.0, 52.0, 30.0, YELLOW);
+            if sim.cars.len() > 1 {
+                let at = |i: usize| {
+                    let [x, y, _] = sim.cars[i].centre();
+                    [x, y]
+                };
+                let p1_ahead = race.progress(t, at(0)) >= race2.progress(t, at(1));
+                let place = |first: bool| if first { "1st  " } else { "2nd  " };
+                let size = if screen_width() < 1400.0 { 20.0 } else { 26.0 };
+                draw_text(
+                    line(&race, &format!("P1 {}", place(p1_ahead))),
+                    12.0,
+                    52.0,
+                    size,
+                    YELLOW,
+                );
+                draw_text(
+                    line(&race2, &format!("P2 {}", place(!p1_ahead))),
+                    screen_width() / 2.0 + 12.0,
+                    52.0,
+                    size,
+                    SKYBLUE,
+                );
+                draw_line(
+                    screen_width() / 2.0,
+                    0.0,
+                    screen_width() / 2.0,
+                    screen_height(),
+                    2.0,
+                    BLACK,
+                );
+            } else {
+                draw_text(line(&race, ""), 12.0, 52.0, 30.0, YELLOW);
+            }
         }
         if let Some((r, i)) = &playing {
             let msg = format!(
@@ -1943,6 +2145,7 @@ async fn main() {
                 level.track.as_ref(),
                 race.next,
                 &sim.cars[0],
+                &sim.cars[1..],
                 ghost_at,
                 band,
             );
@@ -1958,6 +2161,17 @@ async fn main() {
                 screen_height() * 0.2,
                 48.0,
                 YELLOW,
+            );
+        }
+        if sim.cars.len() > 1 && sim.cars[1].upside_down() && !menu_open {
+            let msg = "P2 upside down - Tab";
+            let size = measure_text(msg, None, 36, 1.0);
+            draw_text(
+                msg,
+                screen_width() * 0.75 - size.width / 2.0,
+                screen_height() * 0.3,
+                36.0,
+                SKYBLUE,
             );
         }
         if sim.cars[0].upside_down() && !menu_open {
@@ -2026,6 +2240,7 @@ mod tests {
     fn settings_round_trip() {
         let mut a = Graphics {
             map: "terep1".into(),
+            players: 1,
             camera: 2,
             nearest: false,
             textured: true,
@@ -2039,6 +2254,7 @@ mod tests {
         };
         let mut b = Graphics {
             map: "x".into(),
+            players: 1,
             camera: 0,
             nearest: true,
             textured: false,

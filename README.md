@@ -31,6 +31,14 @@ Flags: `--car N` starting car; `--soft` makes all ground diggable so wheels dig 
 only digs ground of colour 0x0f, which no shipped map has); `--smooth`, `--untextured`, `--crt`,
 `--no-minimap`, `--ghost`, `--no-fog`, `--mute` preset the options; `--map NAME` picks a map; `--menu` starts paused.
 
+## Two players
+
+Split screen on one keyboard: Esc menu → Players, or `--players 2`. Player 2 drives with WASD, Left
+Shift brakes, Tab puts the car back on its wheels, G repairs, and joins beside player 1. Both run
+their own time trial with placings (1st/2nd by laps, checkpoints and distance to the next). The
+cars collide: the original has collision code but never fills its hull table, so Reformers uses
+each car's bounding box (see docs/re-notes.md). Replays are single-player.
+
 ## Time trial
 
 When a map has a `CHECK.PCX`, it's a time trial. Drive through the start line to start the

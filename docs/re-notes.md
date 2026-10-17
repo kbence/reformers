@@ -179,7 +179,15 @@ Springs (`0x4e0a`–`0x5008`), for each spring a→b:
 - **Type 0 (slack link):** no force inside [min, max]; outside, correct halfway to the bound.
 - **Type ≥ 2 (damped spring, suspension):** corr = (rest − L)/(type/2) + (prev − L)/2, prev := L.
 
-Car–car collision (not ported): `0x500b` checks car pairs whose first atoms are within 0x200 on each axis, then `0x51bd` (not decoded).
+Car–car collision (`0x500b`–`0x52c5`): for every ordered pair of cars whose first atoms are within
+0x200 on each axis, `0x5091` builds car A's planes from a triangle list at `[0xec1b]` (count, then
+atom-index triples): point = atom a, normal = (a − b) × (a − c) with each difference `>> 14`. Then
+`0x51bd` takes each atom P of car B: if it is behind every plane (all dot products < 0) it adds the
+normal of the plane it is least deep behind to P's velocity, then splits another half-normal
+between P and A's nearest atom. **But nothing ever writes `[0xec1b]`: the count stays 0, so the
+shipped game builds no planes and cars pass through each other.** Reformers keeps the response and
+uses each car's oriented bounding box (axes from the wheels, extents from the atoms) as the hull;
+an atom inside is pushed out through the face it came in by, half its depth per tick.
 
 ## Terrain deformation (`0x0bbf`–`0x0c6c`)
 
@@ -200,7 +208,6 @@ it falls into the damped branch as a very soft spring (corr = e/64) that still e
 - Which material is which (grass, road, water…): compare COL.PCX colour rows with MAPTEX.PCX.
 - Exact sign conventions in the wheel slip → spin transfer (step 3/4 above).
 - `0x532e` vs `0x25c5` (two height samplers: maybe one includes the car-under-car case).
-- Car–car collision `0x5091` / `0x51bd`.
 - Step rate (timer setup at startup) — needed for real-time speed.
 
 ## Sound (`0x57e0`–`0x592c`)
