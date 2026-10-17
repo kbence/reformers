@@ -5,6 +5,9 @@
 //! `--menu` starts with the overlay open; `--smooth` / `--untextured` / `--crt` preset the graphics options.
 //! `--shot out.png`: hold throttle + left, save a frame after 4 s and exit (for checking without a human).
 
+use macroquad::audio::{
+    PlaySoundParams, Sound, load_sound_from_bytes, play_sound, set_sound_volume,
+};
 use macroquad::miniquad::{BlendFactor, BlendState, BlendValue, Equation};
 use macroquad::prelude::*;
 use reformers::car::{self, Car, Prim};
@@ -12,7 +15,7 @@ use reformers::ghost::{self, Frame, Ghost};
 use reformers::sim::{Keys, Sim, SimCar, TICK_HZ};
 use reformers::terrain::{SIZE, Terrain};
 use reformers::track::{Event, Lap, Race, Track, Zone, format_time};
-use reformers::{assets, pcx};
+use reformers::{assets, pcx, sound};
 use std::path::PathBuf;
 
 const S: f32 = 256.0; // world units per render unit (one terrain cell)
@@ -26,6 +29,89 @@ fn data_dir() -> Option<PathBuf> {
         .or_else(|| env("HOME").map(|h| h.join(".local/share")))
         .or_else(|| env("APPDATA"))?;
     Some(base.join("reformers"))
+}
+
+/// Engine loop pitches, ×1.25 apart around the original's idle note; crossfaded by speed.
+const ENGINE_STEPS: [f32; 7] = [0.75, 0.94, 1.17, 1.46, 1.83, 2.29, 2.86];
+
+/// The game's sounds, synthesised by `sound` at start-up.
+struct Audio {
+    engine: Vec<Sound>, // one looping tone per ENGINE_STEPS
+    skid: Sound,
+    thud: Sound,
+    checkpoint: Sound,
+    lap: Sound,
+    best: Sound,
+}
+
+impl Audio {
+    async fn load() -> Option<Audio> {
+        async fn load(samples: Vec<f32>) -> Option<Sound> {
+            load_sound_from_bytes(&sound::wav(&samples)).await.ok()
+        }
+        let mut engine = vec![];
+        for k in ENGINE_STEPS {
+            engine.push(load(sound::engine_loop(sound::engine_idle_hz() * k)).await?);
+        }
+        let audio = Audio {
+            engine,
+            skid: load(sound::skid_loop()).await?,
+            thud: load(sound::thud()).await?,
+            checkpoint: load(sound::chime(&[(880.0, 0.3)])).await?,
+            lap: load(sound::chime(&[(660.0, 0.15), (990.0, 0.4)])).await?,
+            best: load(sound::chime(&[(660.0, 0.12), (880.0, 0.12), (1320.0, 0.5)])).await?,
+        };
+        for s in audio.engine.iter().chain([&audio.skid]) {
+            play_sound(
+                s,
+                PlaySoundParams {
+                    looped: true,
+                    volume: 0.0,
+                },
+            );
+        }
+        Some(audio)
+    }
+
+    /// Engine at `pitch` × the idle note (louder on the throttle), skid at `skid` 0–1, scaled by
+    /// `vol`; `vol` 0 silences the loops (paused or muted).
+    fn update(&self, pitch: f32, throttle: bool, skid: f32, vol: f32) {
+        let at = ENGINE_STEPS
+            .iter()
+            .position(|&k| k > pitch)
+            .unwrap_or(ENGINE_STEPS.len() - 1)
+            .max(1);
+        let (lo, hi) = (ENGINE_STEPS[at - 1], ENGINE_STEPS[at]);
+        let w = ((pitch / lo).ln() / (hi / lo).ln()).clamp(0.0, 1.0);
+        let loud = vol * if throttle { 0.4 } else { 0.18 };
+        for (i, s) in self.engine.iter().enumerate() {
+            let g = if i == at - 1 {
+                1.0 - w
+            } else if i == at {
+                w
+            } else {
+                0.0
+            };
+            set_sound_volume(s, loud * g);
+        }
+        set_sound_volume(&self.skid, vol * 0.5 * skid);
+    }
+
+    fn chime(&self, ev: &Option<Event>, vol: f32) {
+        let s = match ev {
+            Some(Event::Start | Event::Gate(_)) => &self.checkpoint,
+            Some(Event::Lap { best: true, .. }) => &self.best,
+            Some(Event::Lap { .. }) => &self.lap,
+            None => return,
+        };
+        play_sound(
+            s,
+            PlaySoundParams {
+                looped: false,
+                volume: vol,
+            },
+        );
+    }
 }
 
 fn settings_file() -> Option<PathBuf> {
@@ -687,6 +773,7 @@ struct Graphics {
     minimap: bool,
     ghost: bool,
     fog: bool,
+    volume: u8, // 0 (mute) – 10
     fullscreen: bool,
     resolution: usize, // index into RESOLUTIONS, windowed mode only
 }
@@ -695,6 +782,7 @@ struct Graphics {
 enum Row {
     Resume,
     Map,
+    Sound,
     Camera,
     Filter,
     Textures,
@@ -706,9 +794,10 @@ enum Row {
     Resolution,
     Quit,
 }
-const ROWS: [Row; 12] = [
+const ROWS: [Row; 13] = [
     Row::Resume,
     Row::Map,
+    Row::Sound,
     Row::Camera,
     Row::Filter,
     Row::Textures,
@@ -724,7 +813,7 @@ const ROWS: [Row; 12] = [
 impl Graphics {
     fn to_text(&self) -> String {
         format!(
-            "map={}\ncamera={}\nnearest={}\ntextured={}\ncrt={}\nminimap={}\nghost={}\nfog={}\nfullscreen={}\nresolution={}\n",
+            "map={}\ncamera={}\nnearest={}\ntextured={}\ncrt={}\nminimap={}\nghost={}\nfog={}\nvolume={}\nfullscreen={}\nresolution={}\n",
             self.map,
             self.camera,
             self.nearest,
@@ -733,6 +822,7 @@ impl Graphics {
             self.minimap,
             self.ghost,
             self.fog,
+            self.volume,
             self.fullscreen,
             self.resolution
         )
@@ -751,6 +841,7 @@ impl Graphics {
                 "minimap" => self.minimap = b,
                 "ghost" => self.ghost = b,
                 "fog" => self.fog = b,
+                "volume" => self.volume = n.filter(|&n| n <= 10).map_or(self.volume, |n| n as u8),
                 "fullscreen" => self.fullscreen = b,
                 "resolution" => {
                     self.resolution = n
@@ -767,6 +858,10 @@ impl Graphics {
         match row {
             Row::Resume => "Resume".into(),
             Row::Map => format!("Map: {}", self.map),
+            Row::Sound => match self.volume {
+                0 => "Sound: off".into(),
+                v => format!("Sound: {v}/10"),
+            },
             Row::Camera => format!("Camera: {}  (C)", CAMERAS[self.camera]),
             Row::Filter => format!(
                 "Texture filter: {}",
@@ -801,6 +896,10 @@ impl Graphics {
             Row::Crt => self.crt = !self.crt,
             Row::Minimap => self.minimap = !self.minimap,
             Row::Fog => self.fog = !self.fog,
+            Row::Sound => {
+                self.volume =
+                    (self.volume as i32 + if step == 0 { 1 } else { step }).rem_euclid(11) as u8
+            }
             Row::Map => {
                 let maps = assets::maps();
                 let i = maps.iter().position(|m| *m == self.map).unwrap_or(0) as i32;
@@ -1072,6 +1171,7 @@ async fn main() {
         minimap: true,
         ghost: false,
         fog: true,
+        volume: 7,
         fullscreen: false,
         resolution: 1,
     };
@@ -1084,6 +1184,11 @@ async fn main() {
     gfx.minimap &= !flag("--no-minimap");
     gfx.ghost |= flag("--ghost");
     gfx.fog &= !flag("--no-fog");
+    if flag("--mute") {
+        gfx.volume = 0;
+    }
+    let audio = Audio::load().await;
+    let (mut impacts, mut last_thud, mut skid) = (0u32, 0.0f64, 0.0f32);
     if gfx.fullscreen {
         set_fullscreen(true);
     } else if gfx.resolution != 1 {
@@ -1304,7 +1409,11 @@ async fn main() {
             if let Some(t) = &level.track {
                 let [x, y, _] = sim.cars[0].centre();
                 let n = t.gates.len();
-                let msg = match race.update(t, [x, y], ticks) {
+                let ev = race.update(t, [x, y], ticks);
+                if let Some(a) = &audio {
+                    a.chime(&ev, gfx.volume as f32 / 10.0);
+                }
+                let msg = match ev {
                     Some(Event::Start) => {
                         recording = Ghost::default();
                         Some("GO!".to_string())
@@ -1351,6 +1460,32 @@ async fn main() {
                 });
             }
         }
+        if let Some(a) = &audio {
+            let vol = if menu_open {
+                0.0
+            } else {
+                gfx.volume as f32 / 10.0
+            };
+            let rim = sim.cars[0]
+                .spin()
+                .iter()
+                .map(|s| (*s as f32 / 65536.0).abs())
+                .sum::<f32>()
+                / 4.0;
+            skid += ((sim.particle_positions().count() as f32 / 40.0).min(1.0) - skid) * 0.2;
+            a.update(0.75 + rim * 0.15, keys.throttle, skid, vol);
+            if sim.impacts > impacts && get_time() - last_thud > 0.15 && vol > 0.0 {
+                play_sound(
+                    &a.thud,
+                    PlaySoundParams {
+                        looped: false,
+                        volume: vol * 0.9,
+                    },
+                );
+                last_thud = get_time();
+            }
+        }
+        impacts = sim.impacts;
         let c = sim.cars[0].centre();
         let moved = ((c[0] - last_centre[0]).powi(2) + (c[1] - last_centre[1]).powi(2)).sqrt();
         if !menu_open {
@@ -1717,6 +1852,7 @@ mod tests {
             minimap: false,
             ghost: true,
             fog: false,
+            volume: 3,
             fullscreen: false,
             resolution: 3,
         };
@@ -1729,6 +1865,7 @@ mod tests {
             minimap: true,
             ghost: false,
             fog: true,
+            volume: 10,
             fullscreen: true,
             resolution: 0,
         };

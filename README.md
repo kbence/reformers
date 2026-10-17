@@ -23,12 +23,12 @@ cargo run --release
 | C | camera: chase / bumper / orbit (Q/E rotate) / top-down |
 | Esc | options: resume, graphics, quit (pauses the game) |
 
-Options (saved to `settings.txt` next to the best laps; flags override them): camera, fog (the original's distance fog), texture filter (nearest/smooth), textures on (MAPTEX.PCX material tiles, car
+Options (saved to `settings.txt` next to the best laps; flags override them): sound volume, camera, fog (the original's distance fog), texture filter (nearest/smooth), textures on (MAPTEX.PCX material tiles, car
 skins) or off (flat COL.PCX colours), CRT filter, minimap, ghost car, fullscreen, window resolution.
 
 Flags: `--car N` starting car; `--soft` makes all ground diggable so wheels dig tracks (the original
 only digs ground of colour 0x0f, which no shipped map has); `--smooth`, `--untextured`, `--crt`,
-`--no-minimap`, `--ghost`, `--no-fog` preset the options; `--map NAME` picks a map; `--menu` starts paused.
+`--no-minimap`, `--ghost`, `--no-fog`, `--mute` preset the options; `--map NAME` picks a map; `--menu` starts paused.
 
 ## Time trial
 
@@ -81,7 +81,12 @@ They and the map images are the original author's copyrighted work; see `assets/
 ```bash
 cargo run --release --bin tool -- drive "t:3 tl:2 b:1" out/run   # headless drive → out/run.pgm, out/run_dents.pgm
 cargo run --release --bin tool -- assets/maps/terep2/MAP.PCX out/map.pgm --map  # PCX → PGM/PPM/raw f32/raw RGB
+cargo run --release --bin tool -- sounds out/sounds                 # the synthesised sounds as WAVs
 cargo test
 ```
+
+Sound is synthesised at start-up, no sample files: the original's two AdLib FM patches (the engine,
+retuned with wheel speed, and the landing thud, played 3 octaves up so speakers can reproduce it),
+plus skid noise and checkpoint/lap chimes.
 
 Issues are tracked on GitHub: https://github.com/kbence/reformers/issues

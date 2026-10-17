@@ -4,5 +4,6 @@ pub mod car;
 pub mod ghost;
 pub mod pcx;
 pub mod sim;
+pub mod sound;
 pub mod terrain;
 pub mod track;

@@ -10,6 +10,9 @@ fn main() {
     if args.first().is_some_and(|a| a == "drive") {
         return drive(&args[1..]);
     }
+    if args.first().is_some_and(|a| a == "sounds") {
+        return sounds(args.get(1).map_or("out", |s| s.as_str()));
+    }
     let (input, output) = match &args[..] {
         [i, o] | [i, o, _] => (i, o),
         _ => {
@@ -140,4 +143,30 @@ fn drive(args: &[String]) {
 fn fail(msg: &str) -> ! {
     eprintln!("{msg}");
     exit(1);
+}
+
+/// `tool sounds [dir]`: writes the game's synthesised sounds as WAVs, to listen to them on their own.
+fn sounds(dir: &str) {
+    use reformers::sound;
+    let all = [
+        ("engine_idle", sound::engine_loop(sound::engine_idle_hz())),
+        (
+            "engine_fast",
+            sound::engine_loop(sound::engine_idle_hz() * 2.3),
+        ),
+        ("thud", sound::thud()),
+        (
+            "thud_original_pitch",
+            sound::render_patch(&sound::THUD_PATCH, sound::opl_hz(0x180, 0), 0.05, 0.6),
+        ),
+        ("skid", sound::skid_loop()),
+        ("checkpoint", sound::chime(&[(880.0, 0.3)])),
+    ];
+    std::fs::create_dir_all(dir).unwrap_or_else(|e| fail(&format!("{dir}: {e}")));
+    for (name, samples) in all {
+        let path = format!("{dir}/{name}.wav");
+        std::fs::write(&path, sound::wav(&samples))
+            .unwrap_or_else(|e| fail(&format!("{path}: {e}")));
+        println!("{path}");
+    }
 }

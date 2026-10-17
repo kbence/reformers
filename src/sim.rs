@@ -125,6 +125,8 @@ pub struct Sim {
     /// Soft dirt (CHECK.PCX): cells that dig on every pass, down to `rut_floor`. Not in the original.
     soft_dirt: Vec<bool>,
     rut_floor: Vec<u8>,
+    /// Hard landings so far (vn < −6.0, where `0x4a71` calls the thud sound `0x5864`).
+    pub impacts: u32,
 }
 
 /// How deep soft dirt ruts can get, in MAP height steps (16 world units each).
@@ -443,6 +445,7 @@ impl Sim {
             soft: vec![true; SIZE * SIZE],
             soft_dirt: vec![false; SIZE * SIZE],
             rut_floor: vec![0; SIZE * SIZE],
+            impacts: 0,
         }
     }
 
@@ -627,6 +630,10 @@ impl Sim {
         if vn >= 0 {
             return;
         }
+        if vn <= -0x6_0000 {
+            self.impacts += 1;
+        }
+        let at = &mut self.cars[ci].atoms[i];
         let ecx = vn + (vn >> 2);
         let dx = hi(na, ecx);
         at.vel[0] += dx;

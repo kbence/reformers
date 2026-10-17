@@ -205,11 +205,18 @@ it falls into the damped branch as a very soft spring (corr = e/64) that still e
 
 ## Sound (`0x57e0`–`0x592c`)
 
+Data-segment offsets map to file offsets as `0x200 + offset` (DS = CS in the unpacked EXE).
+
 AdLib / OPL2 FM at port `0x388` (`0x58fc` writes register `ah` = `al`); nothing else (no Sound
-Blaster DSP, PC speaker, music or samples). `0x57e0` initialises the chip, `0x588b` silences all
-channels (`0xb0`–`0xb8`). The only effect is the ground-impact thud: `0x4a71` calls `0x5864` with
+Blaster DSP, PC speaker, music or samples). `0x57e0` initialises the chip (waveform select on,
+BD = 0xC0), keys every channel off, loads the **engine** patch `[0xecb8]` (`20 00 fb 05 00 | 20 00
+fb 05 00 | 0a`: sustaining, both operators MULT ½, feedback 5) into channels 0 and 1, and keys
+channel 1 on at A1 = 0x00, B1 = 0x2f (~291 Hz); it returns `0x5831` as the per-frame callback that
+retunes a channel from `bx` (A0+ch = bl, B0+ch = bh | 0x20), i.e. the engine pitch. `0x588b`
+silences all channels (`0xb0`–`0xb8`). The other effect is the ground-impact thud: `0x4a71` calls `0x5864` with
 ax = 0 when vn < −6.0 (`cmp ebx, 0xfffa0000`, preceded by two `nop`s). `0x5864` loads a 16-byte FM
-patch (`[0xecd9 + ax·16]`, data segment, not decoded yet) into channel 8 via `0x589b` (operator
+patch (`[0xecd9 + ax·16]`: `00 00 f7 a8 00 | 00 00 f3 6a 00 | 02`, percussive, then A8 = 0x80,
+B8 = 0x21: block 0, ~18 Hz) into channel 8 via `0x589b` (operator
 registers `0x20`/`0x40`/`0x60`/`0x80`/`0xe0` + `[cs:0x592c + 8]` offset), then sets `0xa8`/`0xb8`
 (frequency, key-on).
 
