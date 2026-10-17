@@ -21,6 +21,7 @@ cargo run --release
 | 1–5 | | switch car |
 | C | right shoulder | camera: chase / bumper / orbit (Q/E rotate) / top-down |
 | W | | spring wireframe |
+| P | | save this run as a replay |
 | Esc | Start | options (pauses the game); d-pad and A in the menu |
 
 Options (saved to `settings.txt` next to the best laps; flags override them): sound volume, camera, fog (the original's distance fog), texture filter (nearest/smooth), textures on (MAPTEX.PCX material tiles, car
@@ -88,6 +89,16 @@ cargo test
 Sound is synthesised at start-up, no sample files: the original's two AdLib FM patches (the engine,
 retuned with wheel speed, and the landing thud, played 3 octaves up so speakers can reproduce it),
 plus skid noise and checkpoint/lap chimes.
+
+## Replays
+
+A run is one input byte per tick from the moment the car is placed (the game start, a map or car
+change), and the sim is deterministic, so a replay re-drives it exactly. P saves the current run to
+`replays/` in the data dir; a best lap also saves the run it ended as `replay-<map>-car<N>.rfr` next
+to the best laps. Play one with `--replay FILE`: it picks the replay's map, car and start, drives
+by itself, and hands you the keys when it ends. A replay only plays on the exact map files it was
+recorded on. The physics avoids platform-dependent maths (a sine table, integer spawn rotation), and a
+pinned test (`scripted_drive_is_bit_exact`) runs on every OS in the release workflow to catch drift.
 
 ## Web
 

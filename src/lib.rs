@@ -3,6 +3,7 @@ pub mod bmp;
 pub mod car;
 pub mod ghost;
 pub mod pcx;
+pub mod run;
 pub mod sim;
 pub mod sound;
 pub mod terrain;

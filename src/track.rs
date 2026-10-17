@@ -33,8 +33,8 @@ const CELL: f32 = 256.0; // world units per cell
 pub struct Spawn {
     pub x: u16,
     pub y: u16,
-    /// Radians clockwise from image-up (the original's spawn direction).
-    pub heading: f32,
+    /// Clockwise from image-up (the original's spawn direction), 0x10000 per turn.
+    pub heading: u16,
 }
 
 pub struct Track {
@@ -117,7 +117,7 @@ impl Track {
                 Some(Spawn {
                     x: x as u16,
                     y: y as u16,
-                    heading: setting as f32 * std::f32::consts::FRAC_PI_2,
+                    heading: setting as u16 * 0x4000,
                 })
             }
             None => None,
@@ -343,14 +343,14 @@ impl Race {
     }
 
     /// Where R puts the car: on the last gate passed facing the next one, else the spawn.
-    pub fn respawn(&self, track: &Track) -> Option<([f32; 2], f32)> {
+    pub fn respawn(&self, track: &Track) -> Option<([f32; 2], u16)> {
         match self.last_gate {
             Some(g) => {
                 let ([x, y], [nx, ny]) = (track.gates[g], track.gates[self.next]);
                 let heading = if g == self.next {
-                    0.0
+                    0
                 } else {
-                    (nx - x).atan2(-(ny - y))
+                    crate::sim::heading_of((nx - x) as i32, (ny - y) as i32)
                 };
                 Some(([x, y], heading))
             }
@@ -418,7 +418,7 @@ mod tests {
         let t = track(&paint).unwrap();
         let s = t.spawn.as_ref().unwrap();
         assert_eq!((s.x, s.y), (11 * 256, 21 * 256)); // centroid (10.5, 20.5) + half a cell
-        assert_eq!(s.heading, std::f32::consts::FRAC_PI_2);
+        assert_eq!(s.heading, 0x4000);
         assert_eq!(t.gates.len(), 3);
         assert_eq!(t.gates[0], at(102.0, 60.0));
         assert_eq!(t.gates[1], at(102.0, 50.0));
@@ -499,15 +499,12 @@ mod tests {
         let t = track(&[(100, 100, 32), (150, 100, 33), (20, 20, 18)]).unwrap();
         let mut r = Race::new(None);
         let (p, h) = r.respawn(&t).unwrap();
-        assert_eq!((p, h), (at(20.0, 20.0), std::f32::consts::PI)); // spawn, facing down
+        assert_eq!((p, h), (at(20.0, 20.0), 0x8000)); // spawn, facing down
         r.place(&t, at(100.0, 101.0));
         r.update(&t, at(100.0, 100.0), 1);
         let (p, h) = r.respawn(&t).unwrap();
         assert_eq!(p, at(100.0, 100.0));
-        assert!(
-            (h - std::f32::consts::FRAC_PI_2).abs() < 1e-6,
-            "next gate is to the right: {h}"
-        );
+        assert_eq!(h, 0x4000, "next gate is to the right");
     }
 
     #[test]
@@ -558,7 +555,7 @@ mod tests {
                 colour: vec![0x60; SIZE * SIZE],
                 palette: [[0; 3]; 256],
             });
-            let heading = k as f32 * std::f32::consts::FRAC_PI_2;
+            let heading = k as u16 * 0x4000;
             s.cars.push(SimCar::spawn_facing(
                 &car, &s.terrain, 0x8000, 0x8000, heading,
             ));
@@ -624,10 +621,13 @@ mod tests {
             let dot = fwd[0] * to[0] + fwd[1] * to[1];
             let speed = ((x - last[0]).powi(2) + (y - last[1]).powi(2)).sqrt();
             last = [x, y];
+            // steering pulses with a duty proportional to the angle error, like tapping the arrows
+            let err = cross.atan2(dot);
+            let steer = ((tick % 12) as f32) < (err.abs() / 0.35).min(1.0) * 12.0;
             let keys = Keys {
-                throttle: speed < 8.0,
-                right: cross > 0.1 * dot.max(0.0),
-                left: cross < -0.1 * dot.max(0.0),
+                throttle: speed < 7.0,
+                right: steer && err > 0.0,
+                left: steer && err < 0.0,
                 ..Keys::default()
             };
             s.tick(&[keys]);

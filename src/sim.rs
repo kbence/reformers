@@ -29,13 +29,90 @@ fn q31(a: i32, b: i32) -> i32 {
     hi(a, b).wrapping_shl(1)
 }
 
-/// Q15 sine of a 0x10000-per-turn angle, like `0x2aad` (table at DS 0xd10c).
+/// Quarter-wave Q15 sine table, 1024 steps (DS 0xd10c): round(sin(i·π/2048)·32768), capped.
+const SIN_QUARTER: [i16; 1025] = [
+    0, 50, 101, 151, 201, 251, 302, 352, 402, 452, 503, 553, 603, 653, 704, 754, 804, 854, 905,
+    955, 1005, 1055, 1106, 1156, 1206, 1256, 1307, 1357, 1407, 1457, 1507, 1558, 1608, 1658, 1708,
+    1758, 1809, 1859, 1909, 1959, 2009, 2060, 2110, 2160, 2210, 2260, 2310, 2360, 2411, 2461, 2511,
+    2561, 2611, 2661, 2711, 2761, 2811, 2861, 2912, 2962, 3012, 3062, 3112, 3162, 3212, 3262, 3312,
+    3362, 3412, 3462, 3512, 3562, 3612, 3662, 3712, 3762, 3812, 3861, 3911, 3961, 4011, 4061, 4111,
+    4161, 4211, 4260, 4310, 4360, 4410, 4460, 4510, 4559, 4609, 4659, 4709, 4758, 4808, 4858, 4907,
+    4957, 5007, 5057, 5106, 5156, 5205, 5255, 5305, 5354, 5404, 5453, 5503, 5553, 5602, 5652, 5701,
+    5751, 5800, 5850, 5899, 5948, 5998, 6047, 6097, 6146, 6195, 6245, 6294, 6343, 6393, 6442, 6491,
+    6541, 6590, 6639, 6688, 6737, 6787, 6836, 6885, 6934, 6983, 7032, 7081, 7130, 7180, 7229, 7278,
+    7327, 7376, 7425, 7473, 7522, 7571, 7620, 7669, 7718, 7767, 7816, 7864, 7913, 7962, 8011, 8059,
+    8108, 8157, 8206, 8254, 8303, 8351, 8400, 8449, 8497, 8546, 8594, 8643, 8691, 8740, 8788, 8836,
+    8885, 8933, 8982, 9030, 9078, 9127, 9175, 9223, 9271, 9319, 9368, 9416, 9464, 9512, 9560, 9608,
+    9656, 9704, 9752, 9800, 9848, 9896, 9944, 9992, 10040, 10088, 10135, 10183, 10231, 10279,
+    10326, 10374, 10422, 10469, 10517, 10565, 10612, 10660, 10707, 10755, 10802, 10850, 10897,
+    10945, 10992, 11039, 11087, 11134, 11181, 11228, 11276, 11323, 11370, 11417, 11464, 11511,
+    11558, 11605, 11652, 11699, 11746, 11793, 11840, 11887, 11934, 11980, 12027, 12074, 12121,
+    12167, 12214, 12261, 12307, 12354, 12400, 12447, 12493, 12540, 12586, 12633, 12679, 12725,
+    12772, 12818, 12864, 12910, 12957, 13003, 13049, 13095, 13141, 13187, 13233, 13279, 13325,
+    13371, 13417, 13463, 13508, 13554, 13600, 13646, 13691, 13737, 13783, 13828, 13874, 13919,
+    13965, 14010, 14056, 14101, 14146, 14192, 14237, 14282, 14327, 14373, 14418, 14463, 14508,
+    14553, 14598, 14643, 14688, 14733, 14778, 14823, 14867, 14912, 14957, 15002, 15046, 15091,
+    15136, 15180, 15225, 15269, 15314, 15358, 15402, 15447, 15491, 15535, 15580, 15624, 15668,
+    15712, 15756, 15800, 15844, 15888, 15932, 15976, 16020, 16064, 16108, 16151, 16195, 16239,
+    16282, 16326, 16369, 16413, 16456, 16500, 16543, 16587, 16630, 16673, 16717, 16760, 16803,
+    16846, 16889, 16932, 16975, 17018, 17061, 17104, 17147, 17190, 17233, 17275, 17318, 17361,
+    17403, 17446, 17488, 17531, 17573, 17616, 17658, 17700, 17743, 17785, 17827, 17869, 17911,
+    17953, 17995, 18037, 18079, 18121, 18163, 18205, 18247, 18288, 18330, 18372, 18413, 18455,
+    18496, 18538, 18579, 18621, 18662, 18703, 18745, 18786, 18827, 18868, 18909, 18950, 18991,
+    19032, 19073, 19114, 19155, 19195, 19236, 19277, 19317, 19358, 19399, 19439, 19479, 19520,
+    19560, 19601, 19641, 19681, 19721, 19761, 19801, 19841, 19881, 19921, 19961, 20001, 20041,
+    20081, 20120, 20160, 20200, 20239, 20279, 20318, 20357, 20397, 20436, 20475, 20515, 20554,
+    20593, 20632, 20671, 20710, 20749, 20788, 20827, 20865, 20904, 20943, 20981, 21020, 21059,
+    21097, 21136, 21174, 21212, 21251, 21289, 21327, 21365, 21403, 21441, 21479, 21517, 21555,
+    21593, 21631, 21668, 21706, 21744, 21781, 21819, 21856, 21894, 21931, 21968, 22006, 22043,
+    22080, 22117, 22154, 22191, 22228, 22265, 22302, 22339, 22375, 22412, 22449, 22485, 22522,
+    22558, 22595, 22631, 22668, 22704, 22740, 22776, 22812, 22848, 22884, 22920, 22956, 22992,
+    23028, 23064, 23099, 23135, 23170, 23206, 23241, 23277, 23312, 23348, 23383, 23418, 23453,
+    23488, 23523, 23558, 23593, 23628, 23663, 23697, 23732, 23767, 23801, 23836, 23870, 23905,
+    23939, 23973, 24008, 24042, 24076, 24110, 24144, 24178, 24212, 24246, 24279, 24313, 24347,
+    24380, 24414, 24448, 24481, 24514, 24548, 24581, 24614, 24647, 24680, 24713, 24746, 24779,
+    24812, 24845, 24878, 24910, 24943, 24976, 25008, 25041, 25073, 25105, 25138, 25170, 25202,
+    25234, 25266, 25298, 25330, 25362, 25394, 25425, 25457, 25489, 25520, 25552, 25583, 25615,
+    25646, 25677, 25708, 25739, 25771, 25802, 25833, 25863, 25894, 25925, 25956, 25986, 26017,
+    26048, 26078, 26108, 26139, 26169, 26199, 26229, 26259, 26290, 26320, 26349, 26379, 26409,
+    26439, 26468, 26498, 26528, 26557, 26586, 26616, 26645, 26674, 26704, 26733, 26762, 26791,
+    26820, 26848, 26877, 26906, 26935, 26963, 26992, 27020, 27049, 27077, 27105, 27133, 27162,
+    27190, 27218, 27246, 27273, 27301, 27329, 27357, 27384, 27412, 27440, 27467, 27494, 27522,
+    27549, 27576, 27603, 27630, 27657, 27684, 27711, 27738, 27765, 27791, 27818, 27844, 27871,
+    27897, 27924, 27950, 27976, 28002, 28028, 28054, 28080, 28106, 28132, 28158, 28183, 28209,
+    28234, 28260, 28285, 28311, 28336, 28361, 28386, 28411, 28436, 28461, 28486, 28511, 28536,
+    28560, 28585, 28610, 28634, 28658, 28683, 28707, 28731, 28755, 28779, 28803, 28827, 28851,
+    28875, 28899, 28922, 28946, 28970, 28993, 29016, 29040, 29063, 29086, 29109, 29132, 29155,
+    29178, 29201, 29224, 29247, 29269, 29292, 29314, 29337, 29359, 29381, 29404, 29426, 29448,
+    29470, 29492, 29514, 29535, 29557, 29579, 29600, 29622, 29643, 29665, 29686, 29707, 29729,
+    29750, 29771, 29792, 29813, 29833, 29854, 29875, 29895, 29916, 29936, 29957, 29977, 29997,
+    30018, 30038, 30058, 30078, 30098, 30118, 30137, 30157, 30177, 30196, 30216, 30235, 30254,
+    30274, 30293, 30312, 30331, 30350, 30369, 30388, 30407, 30425, 30444, 30462, 30481, 30499,
+    30518, 30536, 30554, 30572, 30590, 30608, 30626, 30644, 30662, 30680, 30697, 30715, 30732,
+    30750, 30767, 30784, 30801, 30819, 30836, 30853, 30869, 30886, 30903, 30920, 30936, 30953,
+    30969, 30986, 31002, 31018, 31034, 31050, 31067, 31082, 31098, 31114, 31130, 31146, 31161,
+    31177, 31192, 31207, 31223, 31238, 31253, 31268, 31283, 31298, 31313, 31328, 31342, 31357,
+    31372, 31386, 31400, 31415, 31429, 31443, 31457, 31471, 31485, 31499, 31513, 31527, 31540,
+    31554, 31568, 31581, 31594, 31608, 31621, 31634, 31647, 31660, 31673, 31686, 31699, 31711,
+    31724, 31737, 31749, 31761, 31774, 31786, 31798, 31810, 31822, 31834, 31846, 31858, 31870,
+    31881, 31893, 31904, 31916, 31927, 31938, 31950, 31961, 31972, 31983, 31994, 32005, 32015,
+    32026, 32037, 32047, 32058, 32068, 32078, 32088, 32099, 32109, 32119, 32129, 32138, 32148,
+    32158, 32167, 32177, 32186, 32196, 32205, 32214, 32224, 32233, 32242, 32251, 32259, 32268,
+    32277, 32286, 32294, 32303, 32311, 32319, 32328, 32336, 32344, 32352, 32360, 32368, 32376,
+    32383, 32391, 32398, 32406, 32413, 32421, 32428, 32435, 32442, 32449, 32456, 32463, 32470,
+    32477, 32483, 32490, 32496, 32503, 32509, 32515, 32522, 32528, 32534, 32540, 32546, 32551,
+    32557, 32563, 32568, 32574, 32579, 32585, 32590, 32595, 32600, 32605, 32610, 32615, 32620,
+    32625, 32629, 32634, 32638, 32643, 32647, 32651, 32656, 32660, 32664, 32668, 32672, 32675,
+    32679, 32683, 32686, 32690, 32693, 32697, 32700, 32703, 32706, 32709, 32712, 32715, 32718,
+    32721, 32723, 32726, 32729, 32731, 32733, 32736, 32738, 32740, 32742, 32744, 32746, 32748,
+    32749, 32751, 32753, 32754, 32756, 32757, 32758, 32759, 32760, 32761, 32762, 32763, 32764,
+    32765, 32766, 32766, 32767, 32767, 32767, 32767, 32767, 32767, 32767,
+];
+
+/// Q15 sine of a 0x10000-per-turn angle, like `0x2aad` (table at DS 0xd10c). A table rather
+/// than libm `sin`, so every platform gets the same numbers (replays depend on it).
 fn sin15(angle: u16) -> i16 {
-    let quarter = |i: u16| {
-        ((i as f64 * std::f64::consts::FRAC_PI_2 / 1024.0).sin() * 32768.0)
-            .round()
-            .min(32767.0) as i16
-    };
+    let quarter = |i: u16| SIN_QUARTER[i as usize];
     let mut a = angle & 0x7fff;
     if a & 0x4000 != 0 {
         a = 0x8000 - a;
@@ -46,6 +123,13 @@ fn sin15(angle: u16) -> i16 {
 fn cos15(angle: u16) -> i16 {
     sin15(angle.wrapping_add(0x4000))
 }
+/// Direction of the world vector (dx, dy) as a heading: 0x10000 per turn, clockwise from
+/// map-up (−y), the convention of `SimCar::spawn_facing`.
+pub fn heading_of(dx: i32, dy: i32) -> u16 {
+    let t = (dx as f64).atan2(-(dy as f64)) / std::f64::consts::TAU * 65536.0;
+    t.round() as i64 as u16
+}
+
 /// `0x2b08`: angle of (x = bx, y = ax) in 0x10000-per-turn units.
 fn atan2(ax: i16, bx: i16) -> u16 {
     let t = (ax as f64).atan2(bx as f64) / std::f64::consts::TAU * 65536.0;
@@ -135,22 +219,33 @@ pub const MAX_RUT: u8 = 6;
 impl SimCar {
     /// Places a parsed car at world (x, y) like `0x2454`: z = ground + 100, facing the map's −y.
     pub fn spawn(car: &Car, terrain: &Terrain, x: u16, y: u16) -> SimCar {
-        Self::spawn_facing(car, terrain, x, y, 0.0)
+        Self::spawn_facing(car, terrain, x, y, 0)
     }
 
-    /// Like `spawn`, turned `heading` radians clockwise on the map image (0 = −y, the original's facing).
-    pub fn spawn_facing(car: &Car, terrain: &Terrain, x: u16, y: u16, heading: f32) -> SimCar {
+    /// Like `spawn`, turned `heading` clockwise on the map image (0x10000 per turn, 0 = −y, the
+    /// original's facing). Integer rotation through the sine table: the same on every platform.
+    pub fn spawn_facing(car: &Car, terrain: &Terrain, x: u16, y: u16, heading: u16) -> SimCar {
         let ground = height(terrain, x, y).0 as i32 + 0x64;
-        let fx = |v: f32| (v * 65536.0) as i32;
-        let (sin, cos) = heading.sin_cos();
+        let fx = |v: f32| (v * 65536.0) as i64;
+        // the table's ±32767 is ±1.0 here, so the four axis directions rotate exactly
+        let unit = |v: i16| {
+            if v.abs() == 32767 {
+                v.signum() as i64 * 32768
+            } else {
+                v as i64
+            }
+        };
+        let (sin, cos) = (unit(sin15(heading)), unit(cos15(heading)));
         let atoms = car
             .atoms
             .iter()
             .map(|a| Atom {
                 pos: [
-                    fx(a.pos[0] * cos - a.pos[1] * sin).wrapping_add(((x as u32) << 16) as i32),
-                    fx(a.pos[0] * sin + a.pos[1] * cos).wrapping_add(((y as u32) << 16) as i32),
-                    fx(a.pos[2]) + (ground << 16),
+                    (((fx(a.pos[0]) * cos - fx(a.pos[1]) * sin) >> 15) as i32)
+                        .wrapping_add(((x as u32) << 16) as i32),
+                    (((fx(a.pos[0]) * sin + fx(a.pos[1]) * cos) >> 15) as i32)
+                        .wrapping_add(((y as u32) << 16) as i32),
+                    fx(a.pos[2]) as i32 + (ground << 16),
                 ],
                 vel: [0; 3],
                 radius: a.radius as u16,
@@ -199,6 +294,40 @@ impl SimCar {
         }
     }
 
+    /// The car's oriented bounding box for car–car contact: centre (an offset from atom 0), unit
+    /// axes forward / right / up, and half-extents, in 16.16 units. The original meant to use a
+    /// hull of atom triangles (`0x5091`, table `[0xec1b]`), but the shipped game never fills it.
+    fn bounds(&self) -> ([f64; 3], [[f64; 3]; 3], [f64; 3]) {
+        let d = |i: usize| {
+            [0, 1, 2].map(|k| self.atoms[i].pos[k].wrapping_sub(self.atoms[0].pos[k]) as f64)
+        };
+        let dot = |a: [f64; 3], b: [f64; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+        let sub = |a: [f64; 3], b: [f64; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+        let add = |a: [f64; 3], b: [f64; 3]| [a[0] + b[0], a[1] + b[1], a[2] + b[2]];
+        let unit = |v: [f64; 3]| {
+            let l = dot(v, v).sqrt().max(1.0);
+            v.map(|c| c / l)
+        };
+        let n = self.atoms.len();
+        let centre = (0..n).map(d).fold([0.0; 3], add).map(|c| c / n as f64);
+        // axes from the wheels (0, 1 front, 2, 3 rear), which share a plane; body atoms don't
+        let fwd = unit(sub(add(d(0), d(1)), add(d(2), d(3))));
+        let across = sub(d(1), d(0));
+        let side = unit(sub(across, fwd.map(|c| c * dot(across, fwd))));
+        let up = [
+            fwd[1] * side[2] - fwd[2] * side[1],
+            fwd[2] * side[0] - fwd[0] * side[2],
+            fwd[0] * side[1] - fwd[1] * side[0],
+        ];
+        let axes = [fwd, side, up];
+        let ext = axes.map(|ax| {
+            (0..n)
+                .map(|i| dot(sub(d(i), centre), ax).abs())
+                .fold(0.0, f64::max)
+        });
+        (centre, axes, ext)
+    }
+
     /// World position of the car: midpoint of atoms 4 and 6, like `0x0e28`. x, y are unsigned 16.16.
     pub fn centre(&self) -> [f32; 3] {
         let (a, b) = (self.atoms[4].pos, self.atoms[6].pos);
@@ -227,6 +356,17 @@ impl SimCar {
         self.springs.iter().map(|s| (s.a, s.b, s.kind & 0x80 != 0))
     }
 
+    /// Which way the car points (front axle minus rear), as a `spawn_facing` heading.
+    pub fn heading(&self) -> u16 {
+        let d =
+            |i: usize, j: usize, k: usize| self.atoms[i].pos[k].wrapping_sub(self.atoms[j].pos[k]);
+        let (dx, dy) = (
+            (d(6, 4, 0) >> 1).wrapping_add(d(7, 5, 0) >> 1),
+            (d(6, 4, 1) >> 1).wrapping_add(d(7, 5, 1) >> 1),
+        );
+        heading_of(dx, dy)
+    }
+
     /// Current steering angle in radians (positive = right).
     pub fn steer_angle(&self) -> f32 {
         self.steer_now as f32 / 65536.0 * std::f32::consts::TAU
@@ -244,7 +384,7 @@ impl SimCar {
             self.atoms[i].pos[k].wrapping_sub(self.atoms[j].pos[k]) as f64
         };
         let fwd = [d(6, 4, 0) + d(7, 5, 0), d(6, 4, 1) + d(7, 5, 1)];
-        let len = fwd[0].hypot(fwd[1]).max(1.0);
+        let len = (fwd[0] * fwd[0] + fwd[1] * fwd[1]).sqrt().max(1.0); // not libm hypot: IEEE sqrt is exact everywhere
         let dv = fwd.map(|f| (f / len * accel as f64) as i32);
         for a in &mut self.atoms {
             a.vel[0] = a.vel[0].wrapping_add(dv[0]);
@@ -274,7 +414,7 @@ impl SimCar {
 
     /// Upright again at (x, y) facing `heading`, keeping the damage: the bent and broken springs
     /// carry over, so the dents pull back into shape within a few ticks. (A fresh `spawn` repairs.)
-    pub fn respawned(&self, car: &Car, terrain: &Terrain, x: u16, y: u16, heading: f32) -> SimCar {
+    pub fn respawned(&self, car: &Car, terrain: &Terrain, x: u16, y: u16, heading: u16) -> SimCar {
         let mut c = SimCar::spawn_facing(car, terrain, x, y, heading);
         c.springs.clone_from(&self.springs);
         c
@@ -488,7 +628,65 @@ impl Sim {
             self.springs(i);
             self.atoms(i);
         }
+        self.collide_cars();
         self.step_particles();
+    }
+
+    /// `0x500b` / `0x51bd`: for each pair of cars within 0x200 units of each other, push car B's
+    /// atoms that are inside car A out across A's nearest box face (least penetration), and kick
+    /// A's nearest atom back by half as much, like the original's response.
+    fn collide_cars(&mut self) {
+        for ia in 0..self.cars.len() {
+            for ib in 0..self.cars.len() {
+                let (pa, pb) = (self.cars[ia].atoms[0].pos, self.cars[ib].atoms[0].pos);
+                if ia == ib || (0..3).any(|k| (pa[k].wrapping_sub(pb[k]) >> 16).abs() > 0x200) {
+                    continue;
+                }
+                let (centre, axes, ext) = self.cars[ia].bounds();
+                let va = self.cars[ia].atoms[0].vel;
+                let to_local =
+                    |rel: [f64; 3]| axes.map(|ax| rel[0] * ax[0] + rel[1] * ax[1] + rel[2] * ax[2]);
+                let mut kicks = vec![];
+                for (j, p) in self.cars[ib].atoms.iter().enumerate() {
+                    let rel = [0, 1, 2].map(|k| p.pos[k].wrapping_sub(pa[k]) as f64 - centre[k]);
+                    let local = to_local(rel);
+                    let pen = [0, 1, 2].map(|k| ext[k] - local[k].abs());
+                    if pen.iter().any(|&d| d <= 0.0) {
+                        continue;
+                    }
+                    // out through the face it came in by: the axis it was still outside on a tick
+                    // ago (relative to A); if none, the shallowest
+                    let before =
+                        to_local([0, 1, 2].map(|k| rel[k] - p.vel[k].wrapping_sub(va[k]) as f64));
+                    let entered = |k: usize| before[k].abs() >= ext[k];
+                    let k = (0..3)
+                        .filter(|&k| entered(k))
+                        .min_by(|&a, &b| pen[a].total_cmp(&pen[b]))
+                        .unwrap_or_else(|| {
+                            (0..3).min_by(|&a, &b| pen[a].total_cmp(&pen[b])).unwrap()
+                        });
+                    // out across face k, half the depth per tick
+                    let push = axes[k].map(|c| (c * local[k].signum() * pen[k] / 2.0) as i32);
+                    let qa = (0..self.cars[ia].atoms.len())
+                        .min_by_key(|&i| {
+                            let q = self.cars[ia].atoms[i].pos;
+                            (0..3)
+                                .map(|k| (q[k].wrapping_sub(p.pos[k]) >> 16).abs())
+                                .sum::<i32>()
+                        })
+                        .unwrap();
+                    kicks.push((j, qa, push));
+                }
+                for (j, qa, push) in kicks {
+                    for k in 0..3 {
+                        let v = &mut self.cars[ib].atoms[j].vel[k];
+                        *v = v.wrapping_add(push[k]);
+                        let v = &mut self.cars[ia].atoms[qa].vel[k];
+                        *v = v.wrapping_sub(push[k] >> 1);
+                    }
+                }
+            }
+        }
     }
 
     /// Spring pass (`0x4e0a`), once per tick.
@@ -791,6 +989,47 @@ mod tests {
     }
 
     #[test]
+    fn sine_table_matches_sin() {
+        for (i, &v) in SIN_QUARTER.iter().enumerate() {
+            let want = (i as f64 * std::f64::consts::FRAC_PI_2 / 1024.0).sin() * 32768.0;
+            assert!(
+                (v as f64 - want.min(32767.0)).abs() <= 1.0,
+                "entry {i}: {v} vs {want}"
+            );
+        }
+        assert_eq!(heading_of(0, -5), 0);
+        assert_eq!(heading_of(5, 0), 0x4000, "right of map-up is clockwise");
+        assert_eq!(heading_of(0, 5), 0x8000);
+    }
+
+    /// A scripted 10 s drive, pinned to its exact end state. Same build, same numbers on every
+    /// platform: the release workflow runs this on Windows, macOS and Linux, so float drift
+    /// between them (replays depend on its absence) fails here.
+    #[test]
+    fn scripted_drive_is_bit_exact() {
+        let mut s = sim();
+        for t in 0..TICK_HZ * 10 {
+            s.tick(&[Keys {
+                throttle: t % 300 < 220,
+                left: t % 170 < 40,
+                right: t % 230 > 180,
+                brake: t % 500 > 470,
+                ..Keys::default()
+            }]);
+        }
+        let hash = s.cars[0]
+            .atoms
+            .iter()
+            .flat_map(|a| a.pos.into_iter().chain(a.vel))
+            .chain(s.terrain.height.iter().map(|&h| h as i32))
+            .fold(0xcbf29ce484222325u64, |h, v| {
+                (h ^ v as u32 as u64).wrapping_mul(0x100000001b3)
+            });
+        assert_eq!(hash, GOLDEN, "{hash:#018x}");
+    }
+    const GOLDEN: u64 = 0x4711da3abcdc297f;
+
+    #[test]
     fn trig_matches_original_conventions() {
         assert_eq!(sin15(0), 0);
         assert_eq!(sin15(0x4000), 32767);
@@ -957,12 +1196,61 @@ mod tests {
         }
         let hit = s.cars[0].damage();
         assert!(hit > 0.0, "crashing into the wall dents the car");
-        let kept = s.cars[0].respawned(&car, &s.terrain, 0x8000, 0x9000, 0.0);
+        let kept = s.cars[0].respawned(&car, &s.terrain, 0x8000, 0x9000, 0);
         assert_eq!(kept.damage(), hit, "R keeps the dents");
         assert_eq!(
             SimCar::spawn(&car, &s.terrain, 0x8000, 0x9000).damage(),
             0.0
         );
+    }
+
+    #[test]
+    fn cars_collide_instead_of_passing_through() {
+        let car = crate::car::parse(&crate::assets::read("CAR1.DAT").unwrap()).unwrap();
+        let mut s = Sim::new(flat());
+        // A drives north into B, parked 8 cells ahead facing the same way
+        s.cars.push(SimCar::spawn(&car, &s.terrain, 0x8000, 0x8c00));
+        s.cars.push(SimCar::spawn(&car, &s.terrain, 0x8000, 0x8400));
+        let b0 = s.cars[1].centre();
+        let gas = Keys {
+            throttle: true,
+            ..Keys::default()
+        };
+        for _ in 0..TICK_HZ * 6 {
+            s.tick(&[gas, Keys::default()]);
+        }
+        let (a, b) = (s.cars[0].centre(), s.cars[1].centre());
+        assert!(a[1] > b[1], "A stays behind B: a.y {} b.y {}", a[1], b[1]);
+        assert!(
+            b0[1] - b[1] > 256.0,
+            "B got shunted north: {} → {}",
+            b0[1],
+            b[1]
+        );
+        for c in &s.cars {
+            assert!(c.centre()[2].abs() < 4000.0, "nothing flew off");
+        }
+
+        // two cars flat out at each other: they set off veering ~10° (the existing handling), so
+        // this is a scrape more than a head-on; it must stay stable, nothing launched
+        let mut s = Sim::new(flat());
+        s.cars
+            .push(SimCar::spawn_facing(&car, &s.terrain, 0x8000, 0x8300, 0));
+        s.cars.push(SimCar::spawn_facing(
+            &car, &s.terrain, 0x8000, 0x7d00, 0x8000,
+        ));
+        for _ in 0..TICK_HZ * 6 {
+            s.tick(&[gas, gas]);
+        }
+        for c in &s.cars {
+            let [x, y, z] = c.centre();
+            assert!(
+                (0x6000 as f32..0xa000 as f32).contains(&x)
+                    && (0x6000 as f32..0xa000 as f32).contains(&y),
+                "stayed near: {x} {y}"
+            );
+            assert!(z.abs() < 4000.0, "nothing flew off: z {z}");
+        }
     }
 
     #[test]
@@ -976,7 +1264,7 @@ mod tests {
             let mut car =
                 crate::car::parse(&crate::assets::read(&format!("CAR{n}.DAT")).unwrap()).unwrap();
             let s = Sim::new(flat());
-            for h in [0.0, 1.0, 2.5] {
+            for h in [0u16, 0x2800, 0x6600] {
                 let c = SimCar::spawn_facing(&car, &s.terrain, 0x8000, 0x8000, h);
                 assert!(!c.upside_down(), "CAR{n} upright, heading {h}");
             }

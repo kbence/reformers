@@ -14,6 +14,7 @@ use macroquad::miniquad::{BlendFactor, BlendState, BlendValue, Equation};
 use macroquad::prelude::*;
 use reformers::car::{self, Car, Prim};
 use reformers::ghost::{self, Frame, Ghost};
+use reformers::run::{self, Replay};
 use reformers::sim::{Keys, Sim, SimCar, TICK_HZ};
 use reformers::terrain::{SIZE, Terrain};
 use reformers::track::{Event, Lap, Race, Track, Zone, format_time};
@@ -207,6 +208,20 @@ fn load_ghost(level: &Level, car: usize) -> Ghost {
         .unwrap_or_default()
 }
 
+/// Writes a replay into the data dir (`name` may include a subfolder); returns where.
+fn save_replay(name: &str, replay: &Replay) -> Option<PathBuf> {
+    let path = data_dir()?.join(name);
+    let written = std::fs::create_dir_all(path.parent()?)
+        .and_then(|_| std::fs::write(&path, replay.to_bytes()));
+    match written {
+        Ok(()) => Some(path),
+        Err(e) => {
+            eprintln!("can't save replay to {}: {e}", path.display());
+            None
+        }
+    }
+}
+
 fn save_ghost(key: &str, ghost: &Ghost) {
     let Some(dir) = data_dir() else { return };
     let written = std::fs::create_dir_all(&dir)
@@ -253,6 +268,8 @@ struct Level {
     track: Option<Track>,
     /// Identifies these exact files, so best laps belong to one track; None without a time trial.
     key: Option<u64>,
+    /// Hash of MAP + COL (+ CHECK): replays only replay on the files they were recorded on.
+    hash: u64,
     /// (x, y, gate) for every painted gate cell.
     gate_cells: Vec<(usize, usize, usize)>,
     /// (x, y, zone) for every painted zone cell.
@@ -326,7 +343,8 @@ fn load_level(name: &str) -> Result<(Terrain, Level), String> {
     });
     let level = Level {
         track,
-        key: check.map(|c| track_hash(&[&map, &col, &c])),
+        key: check.as_ref().map(|c| track_hash(&[&map, &col, c])),
+        hash: track_hash(&[&map, &col, check.as_deref().unwrap_or_default()]),
         gate_cells,
         zone_cells,
         maptex,
@@ -346,16 +364,6 @@ fn track_hash(files: &[&[u8]]) -> u64 {
         .fold(0xcbf29ce484222325, |h, &b| {
             (h ^ b as u64).wrapping_mul(0x100000001b3)
         })
-}
-
-/// Which way the car points, radians clockwise from map-up (`SimCar::spawn_facing`'s convention).
-fn heading(car: &SimCar) -> f32 {
-    let a = car.atom_positions();
-    let fwd = [
-        a[6][0] + a[7][0] - a[4][0] - a[5][0],
-        a[6][1] + a[7][1] - a[4][1] - a[5][1],
-    ];
-    fwd[0].atan2(-fwd[1])
 }
 
 /// World (x, y, z-up) → render space (y-up). The world is left-handed (PCX rows run down),
@@ -1057,7 +1065,7 @@ fn draw_minimap(
     }
     let [x, y, _] = car.centre();
     let p = to_map([x, y]);
-    let (sin, cos) = heading(car).sin_cos();
+    let (sin, cos) = (car.heading() as f32 / 65536.0 * std::f32::consts::TAU).sin_cos();
     let nose = p + vec2(sin, -cos) * 9.0;
     draw_line(p.x, p.y, nose.x, nose.y, 2.0, RED);
     draw_circle(p.x, p.y, 4.0, RED);
@@ -1168,7 +1176,20 @@ async fn main() {
     let saved = settings_file()
         .and_then(|p| std::fs::read_to_string(p).ok())
         .unwrap_or_default();
-    let mut map = pick_map(&args, &saved);
+    // --replay FILE: re-drive a recorded run (its map, car and start), then hand over the keys
+    let replay = args
+        .iter()
+        .position(|a| a == "--replay")
+        .and_then(|i| args.get(i + 1))
+        .map(|f| {
+            let bytes = std::fs::read(f).unwrap_or_else(|e| panic!("{f}: {e}"));
+            Replay::from_bytes(&bytes).unwrap_or_else(|e| panic!("{f}: {e}"))
+        });
+    let mut map = match &replay {
+        Some(r) if assets::maps().contains(&r.map) => r.map.clone(),
+        Some(r) => panic!("the replay is on map {:?}, which isn't installed", r.map),
+        None => pick_map(&args, &saved),
+    };
     let (terrain, mut level) = load_level(&map).unwrap_or_else(|e| panic!("{e}"));
     let mut sim = Sim::new(terrain);
     if let Some(t) = &level.track {
@@ -1198,7 +1219,21 @@ async fn main() {
         .track
         .as_ref()
         .and_then(|t| t.spawn.as_ref())
-        .map_or((SPAWN, 0.0), |s| ((s.x, s.y), s.heading));
+        .map_or((SPAWN, 0), |s| ((s.x, s.y), s.heading));
+    let (spawn, spawn_heading) = match &replay {
+        Some(r) => {
+            if r.key != level.hash {
+                panic!(
+                    "the replay was recorded on a different version of map {:?}",
+                    r.map
+                );
+            }
+            current = (r.car.clamp(1, 5) - 1) as usize;
+            sim.dig_everywhere = r.soft;
+            ((r.start[0], r.start[1]), r.start[2])
+        }
+        None => (spawn, spawn_heading),
+    };
     sim.cars.push(SimCar::spawn_facing(
         &cars[current].0,
         &sim.terrain,
@@ -1210,7 +1245,23 @@ async fn main() {
     let mut ghost = load_ghost(&level, current);
     let mut recording = Ghost::default(); // this lap so far
     let mut ticks = 0u64;
-    let mut reset_zone = false; // drove into a reset zone: respawn like R next frame
+    // this run's inputs since the car was placed (a replay), and the replay being played back
+    let new_run = |map: &str, level: &Level, car: usize, soft: bool, c: &SimCar| {
+        let [x, y, _] = c.centre();
+        Replay {
+            map: map.to_string(),
+            key: level.hash,
+            car: car as u8 + 1,
+            soft,
+            start: [x as u16, y as u16, c.heading()],
+            inputs: vec![],
+        }
+    };
+    let mut recording_run = new_run(&map, &level, current, sim.dig_everywhere, &sim.cars[0]);
+    recording_run.start = [spawn.0, spawn.1, spawn_heading]; // exactly where it was placed
+    let mut playing = replay.map(|r| (r, 0usize));
+    let mut pristine = sim.terrain.clone(); // the map as loaded, for starting new runs on it
+    let (mut pending_r, mut pending_f) = (false, false);
     let mut banner: Option<(String, f64)> = None; // message, shown until
     let mut last_centre = sim.cars[0].centre();
 
@@ -1328,12 +1379,12 @@ async fn main() {
                                 .track
                                 .as_ref()
                                 .and_then(|t| t.spawn.as_ref())
-                                .map_or((SPAWN, 0.0), |s| ((s.x, s.y), s.heading));
+                                .map_or((SPAWN, 0), |s| ((s.x, s.y), s.heading));
                             sim.cars[0] =
                                 SimCar::spawn_facing(&cars[current].0, &sim.terrain, sx, sy, h);
                             roll = [0.0; 4];
                         } else if z < sim.terrain.height_at(x, y) {
-                            let h = heading(&sim.cars[0]);
+                            let h = sim.cars[0].heading();
                             sim.cars[0] = SimCar::spawn_facing(
                                 &cars[current].0,
                                 &sim.terrain,
@@ -1347,6 +1398,11 @@ async fn main() {
                         race = Race::new(best_key(&level, current).and_then(|k| load_best(&k)));
                         ghost = load_ghost(&level, current);
                         recording = Ghost::default();
+                        // a changed map starts a new run (a replay only re-drives the map it came from)
+                        pristine = sim.terrain.clone();
+                        playing = None;
+                        recording_run =
+                            new_run(&map, &level, current, sim.dig_everywhere, &sim.cars[0]);
                         let msg = if switched {
                             format!("map: {map}")
                         } else {
@@ -1425,41 +1481,38 @@ async fn main() {
             .position(|&k| pressed(k))
         };
         if let Some(n) = pick {
-            // best laps are per car: a new car starts a new time trial
+            // a new car is a new run: on the map as loaded, its own time trial and best lap
             current = n;
+            playing = None;
+            let [x, y, _] = sim.cars[0].centre();
+            let h = sim.cars[0].heading();
+            if sim.terrain.height != pristine.height || sim.terrain.colour != pristine.colour {
+                sim.set_terrain(pristine.clone());
+                if let Some(t) = &level.track {
+                    sim.set_soft_dirt(t.soft_dirt.clone());
+                }
+            }
+            sim.cars[0] =
+                SimCar::spawn_facing(&cars[current].0, &sim.terrain, x as u16, y as u16, h);
+            recording_run = new_run(&map, &level, current, sim.dig_everywhere, &sim.cars[0]);
             race = Race::new(best_key(&level, current).and_then(|k| load_best(&k)));
             ghost = load_ghost(&level, current);
             recording = Ghost::default();
-        }
-        if !menu_open && pressed(KeyCode::F) {
-            // repair: a brand-new car where this one stands
-            let [x, y, _] = sim.cars[0].centre();
-            let h = heading(&sim.cars[0]);
-            sim.cars[0] =
-                SimCar::spawn_facing(&cars[current].0, &sim.terrain, x as u16, y as u16, h);
             roll = [0.0; 4];
-            banner = Some(("repaired".into(), get_time() + 1.0));
         }
-        if (!menu_open && pressed(KeyCode::R)) || pick.is_some() || reset_zone {
-            reset_zone = false;
-            // time trial: back to the last checkpoint, facing the next; else upright where the car is
-            let [x, y, _] = sim.cars[0].centre();
-            let ([x, y], h) = level
-                .track
-                .as_ref()
-                .filter(|_| pick.is_none())
-                .and_then(|t| race.respawn(t))
-                .unwrap_or(([x, y], heading(&sim.cars[0])));
-            // R keeps the dents (F repairs); a newly picked car comes fresh
-            sim.cars[0] = if pick.is_some() {
-                SimCar::spawn_facing(&cars[current].0, &sim.terrain, x as u16, y as u16, h)
-            } else {
-                sim.cars[0].respawned(&cars[current].0, &sim.terrain, x as u16, y as u16, h)
-            };
-            if let Some(t) = &level.track {
-                race.place(t, [x, y]);
-            }
-            roll = [0.0; 4];
+        // R and F act on the next tick, so a replay reproduces them exactly
+        if !menu_open && playing.is_none() {
+            pending_r |= pressed(KeyCode::R);
+            pending_f |= pressed(KeyCode::F);
+        }
+        if !menu_open && pressed(KeyCode::P) {
+            let name = format!("replays/run-{}.rfr", ticks);
+            banner = Some((
+                save_replay(&name, &recording_run).map_or("can't save replays here".into(), |p| {
+                    format!("saved {}", p.display())
+                }),
+                get_time() + 3.0,
+            ));
         }
         let (model, skin) = (&cars[current].0, &cars[current].1);
         let keys = Keys {
@@ -1474,16 +1527,38 @@ async fn main() {
             acc += get_frame_time().min(0.25);
         }
         while acc >= 1.0 / TICK_HZ as f32 {
-            sim.tick(&[keys]);
             acc -= 1.0 / TICK_HZ as f32;
             ticks += 1;
-            if let Some(t) = &level.track {
-                reset_zone |= t.apply_zone(&mut sim.cars[0]);
+            let byte = match &mut playing {
+                Some((r, i)) => {
+                    *i += 1;
+                    r.inputs[*i - 1]
+                }
+                None => run::input(keys, pending_r, pending_f),
+            };
+            if playing.as_ref().is_some_and(|(r, i)| *i >= r.inputs.len()) {
+                playing = None;
+                banner = Some(("replay over: you're driving".into(), get_time() + 3.0));
+            }
+            (pending_r, pending_f) = (false, false);
+            recording_run.inputs.push(byte);
+            let out = run::tick(
+                &mut sim,
+                &cars[current].0,
+                level.track.as_ref(),
+                &mut race,
+                byte,
+                ticks,
+            );
+            if out.respawned {
+                roll = [0.0; 4];
+            }
+            if byte & run::REPAIR != 0 {
+                banner = Some(("repaired".into(), get_time() + 1.0));
             }
             if let Some(t) = &level.track {
-                let [x, y, _] = sim.cars[0].centre();
                 let n = t.gates.len();
-                let ev = race.update(t, [x, y], ticks);
+                let ev = out.event;
                 if let Some(a) = &audio {
                     a.chime(&ev, gfx.volume as f32 / 10.0);
                 }
@@ -1507,6 +1582,7 @@ async fn main() {
                         {
                             save_best(&k, b);
                             save_ghost(&k, &lap);
+                            save_replay(&format!("replay-{k}.rfr"), &recording_run);
                             ghost = lap;
                         }
                         Some(format!(
@@ -1834,6 +1910,21 @@ async fn main() {
                 )
             };
             draw_text(&line, 12.0, 52.0, 30.0, YELLOW);
+        }
+        if let Some((r, i)) = &playing {
+            let msg = format!(
+                "REPLAY  {} / {}",
+                format_time(*i as u64),
+                format_time(r.inputs.len() as u64)
+            );
+            let size = measure_text(&msg, None, 30, 1.0);
+            draw_text(
+                &msg,
+                (screen_width() - size.width) / 2.0,
+                band + 36.0,
+                30.0,
+                RED,
+            );
         }
         if gfx.minimap {
             // ghost dot: midpoint of the axle atoms 4 and 6, like `SimCar::centre`

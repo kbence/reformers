@@ -5,6 +5,7 @@ use crate::pcx;
 
 pub const SIZE: usize = 256;
 
+#[derive(Clone)]
 pub struct Terrain {
     /// Raw MAP indices, mutable: the game digs by decrementing them.
     pub height: Vec<u8>,
