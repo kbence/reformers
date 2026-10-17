@@ -226,6 +226,18 @@ impl SimCar {
         self.spin
     }
 
+    /// Roof down: the car's up axis (front × right, from the wheel atoms 4–7) points into the ground.
+    /// Unlike comparing two atoms' heights, pitching or a steep slope doesn't trip it.
+    pub fn upside_down(&self) -> bool {
+        // x, y are unsigned 16.16 held in i32: take wrapping differences, never absolute values
+        let d = |i: usize, j: usize, k: usize| {
+            self.atoms[i].pos[k].wrapping_sub(self.atoms[j].pos[k]) as f64
+        };
+        let fwd = [d(6, 4, 0) + d(7, 5, 0), d(6, 4, 1) + d(7, 5, 1)];
+        let side = [d(7, 6, 0), d(7, 6, 1)];
+        fwd[0] * side[1] - fwd[1] * side[0] < 0.0
+    }
+
     pub fn broken_springs(&self) -> usize {
         self.springs.iter().filter(|s| s.kind & 0x80 != 0).count()
     }
@@ -374,6 +386,13 @@ impl Sim {
             dig_everywhere: false,
             soft: vec![true; SIZE * SIZE],
         }
+    }
+
+    /// Swaps in a new map (hot reload): clears dirt particles and the soft-ground marks.
+    pub fn set_terrain(&mut self, terrain: Terrain) {
+        self.terrain = terrain;
+        self.particles.clear();
+        self.soft = vec![true; SIZE * SIZE];
     }
 
     /// Live dirt particle positions in world units.
@@ -753,6 +772,31 @@ mod tests {
                 s.terrain.height.iter().zip(&before).all(|(a, b)| a <= b),
                 "digging only lowers"
             );
+        }
+    }
+
+    #[test]
+    fn upside_down_only_on_the_roof() {
+        let flat = || Terrain {
+            height: vec![40; SIZE * SIZE],
+            colour: vec![0x60; SIZE * SIZE],
+            palette: [[0; 3]; 256],
+        };
+        for n in 1..=5 {
+            let mut car =
+                crate::car::parse(&crate::assets::read(&format!("CAR{n}.DAT")).unwrap()).unwrap();
+            let s = Sim::new(flat());
+            for h in [0.0, 1.0, 2.5] {
+                let c = SimCar::spawn_facing(&car, &s.terrain, 0x8000, 0x8000, h);
+                assert!(!c.upside_down(), "CAR{n} upright, heading {h}");
+            }
+            // roll 180° about the length axis: x → −x, z → −z
+            car.atoms.iter_mut().for_each(|a| {
+                a.pos[0] = -a.pos[0];
+                a.pos[2] = -a.pos[2];
+            });
+            let c = SimCar::spawn(&car, &s.terrain, 0x8000, 0x8000);
+            assert!(c.upside_down(), "CAR{n} on its roof");
         }
     }
 

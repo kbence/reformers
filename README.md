@@ -22,11 +22,11 @@ cargo run --release
 | Esc | options: resume, graphics, quit (pauses the game) |
 
 Graphics options: texture filter (nearest/smooth), textures on (MAPTEX.PCX material tiles, car
-skins) or off (flat COL.PCX colours), CRT filter, fullscreen, window resolution.
+skins) or off (flat COL.PCX colours), CRT filter, minimap, fullscreen, window resolution.
 
 Flags: `--car N` starting car; `--soft` makes all ground diggable so wheels dig tracks (the original
-only digs ground of colour 0x0f, which no shipped map has); `--smooth`, `--untextured`, `--crt`
-preset graphics options; `--menu` starts paused.
+only digs ground of colour 0x0f, which no shipped map has); `--smooth`, `--untextured`, `--crt`,
+`--no-minimap` preset graphics options; `--menu` starts paused.
 
 ## Time trial
 
@@ -48,6 +48,10 @@ the right is a legend and is ignored), so tracks can be painted in any paint pro
 | 48–255 | reserved | – |
 
 Respawns put the car on a checkpoint's centre, so centre each line on the drivable road.
+
+The game watches `MAP.PCX`, `COL.PCX` and `CHECK.PCX` while it runs: save one in your paint program
+and the map reloads within a second (the time trial restarts). A file that fails to load shows an
+error and the previous map stays.
 
 ## Assets
 

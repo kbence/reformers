@@ -14,7 +14,8 @@ use reformers::{assets, pcx};
 use std::path::PathBuf;
 
 const S: f32 = 256.0; // world units per render unit (one terrain cell)
-const CHUNK: usize = 32; // rows per mesh: macroquad meshes index with u16
+const CHUNK: usize = 32;
+const CAM_CLEARANCE: f32 = 0.3; // render units the camera keeps above the ground // rows per mesh: macroquad meshes index with u16
 const SPAWN: (u16, u16) = (0x8000, 0x7a00); // without CHECK.PCX
 
 /// Best laps, one `key time split…` line per map + car, in the user's data dir.
@@ -56,6 +57,43 @@ fn save_best(key: &str, lap: &Lap) {
     if let Err(e) = written {
         eprintln!("can't save best lap to {}: {e}", path.display());
     }
+}
+
+/// The map: what MAP.PCX + COL.PCX + the optional CHECK.PCX describe beyond the terrain itself.
+struct Level {
+    track: Option<Track>,
+    /// Identifies these exact files, so best laps belong to one track; None without a time trial.
+    key: Option<u64>,
+    /// (x, y, gate) for every painted gate cell.
+    gate_cells: Vec<(usize, usize, usize)>,
+}
+
+/// Map files whose changes reload the map while the game runs.
+const WATCHED: [&str; 3] = ["MAP.PCX", "COL.PCX", "CHECK.PCX"];
+
+fn load_level() -> Result<(Terrain, Level), String> {
+    let (map, col) = (assets::read("MAP.PCX")?, assets::read("COL.PCX")?);
+    let terrain = Terrain::load(&map, &col).map_err(|e| format!("MAP.PCX/COL.PCX: {e}"))?;
+    let check = assets::read("CHECK.PCX").ok();
+    let track = check.as_deref().map(Track::load).transpose()?;
+    let gate_cells = track.as_ref().map_or(vec![], |t| {
+        (0..SIZE * SIZE)
+            .filter_map(|i| {
+                t.gate_at(i % SIZE, i / SIZE)
+                    .map(|g| (i % SIZE, i / SIZE, g))
+            })
+            .collect()
+    });
+    let level = Level {
+        track,
+        key: check.map(|c| track_hash(&[&map, &col, &c])),
+        gate_cells,
+    };
+    Ok((terrain, level))
+}
+
+fn best_key(level: &Level, car: usize) -> Option<String> {
+    level.key.map(|k| format!("{k:016x}-car{}", car + 1))
 }
 
 /// FNV-1a over the map files: best laps belong to this exact track.
@@ -477,6 +515,7 @@ struct Graphics {
     nearest: bool,
     textured: bool,
     crt: bool,
+    minimap: bool,
     fullscreen: bool,
     resolution: usize, // index into RESOLUTIONS, windowed mode only
 }
@@ -487,15 +526,17 @@ enum Row {
     Filter,
     Textures,
     Crt,
+    Minimap,
     Fullscreen,
     Resolution,
     Quit,
 }
-const ROWS: [Row; 7] = [
+const ROWS: [Row; 8] = [
     Row::Resume,
     Row::Filter,
     Row::Textures,
     Row::Crt,
+    Row::Minimap,
     Row::Fullscreen,
     Row::Resolution,
     Row::Quit,
@@ -512,6 +553,7 @@ impl Graphics {
             ),
             Row::Textures => format!("Textures: {}", on(self.textured)),
             Row::Crt => format!("CRT filter: {}", on(self.crt)),
+            Row::Minimap => format!("Minimap: {}", on(self.minimap)),
             Row::Fullscreen => format!("Fullscreen: {}", on(self.fullscreen)),
             Row::Resolution => {
                 let (w, h) = RESOLUTIONS[self.resolution];
@@ -534,6 +576,7 @@ impl Graphics {
             Row::Filter => self.nearest = !self.nearest,
             Row::Textures => self.textured = !self.textured,
             Row::Crt => self.crt = !self.crt,
+            Row::Minimap => self.minimap = !self.minimap,
             Row::Fullscreen => {
                 self.fullscreen = !self.fullscreen;
                 set_fullscreen(self.fullscreen);
@@ -555,6 +598,42 @@ impl Graphics {
         }
         true
     }
+}
+
+/// COL.PCX in the top-right corner with the gates (next one yellow, start white) and the car.
+fn draw_minimap(colour: &Texture2D, track: Option<&Track>, next: usize, car: &SimCar, top: f32) {
+    let size = (screen_width().min(screen_height()) * 0.28).round();
+    let (x0, y0) = (screen_width() - size - 12.0, top + 12.0);
+    let to_map = |[x, y]: [f32; 2]| vec2(x0 + x / 65536.0 * size, y0 + y / 65536.0 * size);
+    draw_rectangle(
+        x0 - 3.0,
+        y0 - 3.0,
+        size + 6.0,
+        size + 6.0,
+        Color::new(0.0, 0.0, 0.0, 0.6),
+    );
+    let params = DrawTextureParams {
+        dest_size: Some(vec2(size, size)),
+        ..Default::default()
+    };
+    draw_texture_ex(colour, x0, y0, Color::new(1.0, 1.0, 1.0, 0.85), params);
+    if let Some(t) = track {
+        for (g, ends) in t.ends.iter().enumerate() {
+            let (a, b) = (to_map(ends[0]), to_map(ends[1]));
+            let (w, c) = match g {
+                _ if g == next => (4.0, YELLOW),
+                0 => (2.5, WHITE),
+                _ => (2.0, Color::new(1.0, 1.0, 1.0, 0.5)),
+            };
+            draw_line(a.x, a.y, b.x, b.y, w, c);
+        }
+    }
+    let [x, y, _] = car.centre();
+    let p = to_map([x, y]);
+    let (sin, cos) = heading(car).sin_cos();
+    let nose = p + vec2(sin, -cos) * 9.0;
+    draw_line(p.x, p.y, nose.x, nose.y, 2.0, RED);
+    draw_circle(p.x, p.y, 4.0, RED);
 }
 
 fn draw_overlay(gfx: &Graphics, selected: usize) {
@@ -658,16 +737,10 @@ async fn main() {
         .cloned()
         .unwrap_or("1".into());
     let read = |f: &str| assets::read(f).unwrap_or_else(|e| panic!("{e}"));
-    let (map_pcx, col_pcx) = (read("MAP.PCX"), read("COL.PCX"));
-    let mut sim = Sim::new(Terrain::load(&map_pcx, &col_pcx).expect("map"));
-    let check_pcx = assets::read("CHECK.PCX").ok();
-    let track = check_pcx
-        .as_ref()
-        .map(|b| Track::load(b).unwrap_or_else(|e| panic!("{e}")));
-    let map_key = check_pcx
-        .as_ref()
-        .map(|c| track_hash(&[&map_pcx, &col_pcx, c]));
-    let best_key = |car: usize| map_key.map(|k| format!("{k:016x}-car{}", car + 1));
+    let (terrain, mut level) = load_level().unwrap_or_else(|e| panic!("{e}"));
+    let mut sim = Sim::new(terrain);
+    let mut stamps = WATCHED.map(assets::modified);
+    let mut next_poll = 0.0;
     // All five original cars, switchable with 1–5. Only CAR1/CAR2 ship a skin; the rest use TEXTURES.PCX like 0x1323.
     let cars: Vec<(Car, Skin)> = (1..=5)
         .map(|n| {
@@ -682,7 +755,8 @@ async fn main() {
     let mut wireframe = false;
     let mut speed = 0.0f32;
     sim.dig_everywhere = args.iter().any(|a| a == "--soft");
-    let (spawn, spawn_heading) = track
+    let (spawn, spawn_heading) = level
+        .track
         .as_ref()
         .and_then(|t| t.spawn.as_ref())
         .map_or((SPAWN, 0.0), |s| ((s.x, s.y), s.heading));
@@ -693,23 +767,16 @@ async fn main() {
         spawn.1,
         spawn_heading,
     ));
-    let mut race = Race::new(best_key(current).and_then(|k| load_best(&k)));
+    let mut race = Race::new(best_key(&level, current).and_then(|k| load_best(&k)));
     let mut ticks = 0u64;
     let mut banner: Option<(String, f64)> = None; // message, shown until
-    let gate_cells: Vec<(usize, usize, usize)> = track.as_ref().map_or(vec![], |t| {
-        (0..SIZE * SIZE)
-            .filter_map(|i| {
-                t.gate_at(i % SIZE, i / SIZE)
-                    .map(|g| (i % SIZE, i / SIZE, g))
-            })
-            .collect()
-    });
     let mut last_centre = sim.cars[0].centre();
 
     let chunks = SIZE.div_ceil(CHUNK);
     let mut meshes: Vec<Mesh> = (0..chunks).map(|c| chunk_mesh(&sim.terrain, c)).collect();
     let colour_tex = Texture2D::from_image(&colour_image(&sim.terrain));
-    let maptex = maptex_texture(&read("MAPTEX.PCX"), &sim.terrain.palette);
+    let maptex_pcx = read("MAPTEX.PCX");
+    let mut maptex = maptex_texture(&maptex_pcx, &sim.terrain.palette);
     let terrain_material = load_material(
         ShaderSource::Glsl {
             vertex: TERRAIN_VERTEX,
@@ -736,6 +803,7 @@ async fn main() {
         nearest: !flag("--smooth"),
         textured: !flag("--untextured"),
         crt: flag("--crt"),
+        minimap: !flag("--no-minimap"),
         fullscreen: false,
         resolution: 1,
     };
@@ -754,8 +822,9 @@ async fn main() {
     let mut menu_open = args.iter().any(|a| a == "--menu");
     let mut selected = 0usize;
     let mut shown = sim.terrain.height.clone();
-    let original = shown.clone();
+    let mut original = shown.clone();
     let mut cam_pos = v(sim.cars[0].centre()) + vec3(0.0, 2.0, 4.0);
+    let mut arm = 1.0f32; // share of the full chase-camera arm that's clear of the ground
     let mut acc = 0.0;
     let shot = args
         .iter()
@@ -765,6 +834,45 @@ async fn main() {
     let started = get_time();
 
     loop {
+        // hot reload: edit a map image, save, and it's here within a second
+        if get_time() >= next_poll {
+            next_poll = get_time() + 1.0;
+            let now = WATCHED.map(assets::modified);
+            if now != stamps {
+                stamps = now;
+                match load_level() {
+                    Ok((terrain, new)) => {
+                        sim.set_terrain(terrain);
+                        level = new;
+                        meshes = (0..chunks).map(|c| chunk_mesh(&sim.terrain, c)).collect();
+                        colour_tex.update(&colour_image(&sim.terrain));
+                        index_tex.update(&index_image(&sim.terrain));
+                        maptex = maptex_texture(&maptex_pcx, &sim.terrain.palette);
+                        terrain_material.set_texture("MapTex", maptex.clone());
+                        shown.copy_from_slice(&sim.terrain.height);
+                        original.copy_from_slice(&sim.terrain.height);
+                        shown_colour.copy_from_slice(&sim.terrain.colour);
+                        // buried by the new heights: back on top, same spot and heading
+                        let [x, y, z] = sim.cars[0].centre();
+                        if z < sim.terrain.height_at(x, y) {
+                            let h = heading(&sim.cars[0]);
+                            sim.cars[0] = SimCar::spawn_facing(
+                                &cars[current].0,
+                                &sim.terrain,
+                                x as u16,
+                                y as u16,
+                                h,
+                            );
+                            roll = [0.0; 4];
+                        }
+                        // a changed map is a different track: new time trial, its own best lap
+                        race = Race::new(best_key(&level, current).and_then(|k| load_best(&k)));
+                        banner = Some(("map reloaded".into(), get_time() + 1.5));
+                    }
+                    Err(e) => banner = Some((format!("reload failed: {e}"), get_time() + 5.0)),
+                }
+            }
+        }
         if is_key_pressed(KeyCode::Escape) {
             menu_open = !menu_open;
             selected = 0;
@@ -827,19 +935,20 @@ async fn main() {
         if let Some(n) = pick {
             // best laps are per car: a new car starts a new time trial
             current = n;
-            race = Race::new(best_key(current).and_then(|k| load_best(&k)));
+            race = Race::new(best_key(&level, current).and_then(|k| load_best(&k)));
         }
         if (!menu_open && is_key_pressed(KeyCode::R)) || pick.is_some() {
             // time trial: back to the last checkpoint, facing the next; else upright where the car is
             let [x, y, _] = sim.cars[0].centre();
-            let ([x, y], h) = track
+            let ([x, y], h) = level
+                .track
                 .as_ref()
                 .filter(|_| pick.is_none())
                 .and_then(|t| race.respawn(t))
                 .unwrap_or(([x, y], heading(&sim.cars[0])));
             sim.cars[0] =
                 SimCar::spawn_facing(&cars[current].0, &sim.terrain, x as u16, y as u16, h);
-            if let Some(t) = &track {
+            if let Some(t) = &level.track {
                 race.place(t, [x, y]);
             }
             roll = [0.0; 4];
@@ -860,7 +969,7 @@ async fn main() {
             sim.tick(&[keys]);
             acc -= 1.0 / TICK_HZ as f32;
             ticks += 1;
-            if let Some(t) = &track {
+            if let Some(t) = &level.track {
                 let [x, y, _] = sim.cars[0].centre();
                 let n = t.gates.len();
                 let msg = match race.update(t, [x, y], ticks) {
@@ -875,7 +984,9 @@ async fn main() {
                         None => format!("checkpoint {g}/{}", n - 1),
                     }),
                     Some(Event::Lap { time, best }) => {
-                        if best && let (Some(k), Some(lap)) = (best_key(current), &race.best) {
+                        if best
+                            && let (Some(k), Some(lap)) = (best_key(&level, current), &race.best)
+                        {
                             save_best(&k, lap);
                         }
                         Some(format!(
@@ -930,8 +1041,26 @@ async fn main() {
         let atoms = sim.cars[0].atom_positions();
         let centre = v(sim.cars[0].centre());
         let back = (v(atoms[4]) - v(atoms[6]) + v(atoms[5]) - v(atoms[7])) * vec3(1.0, 0.0, 1.0);
-        let want = centre + back.normalize_or_zero() * 3.0 + vec3(0.0, 1.3, 0.0);
-        cam_pos = cam_pos.lerp(want, (get_frame_time() * 4.0).min(1.0));
+        // Spring arm: shorten it where the ground is in the way (pull in at once, ease back out),
+        // and never let the camera sink below the ground under it.
+        let ground = |p: Vec3| sim.terrain.height_at(p.x * S, p.z * S) / S;
+        let pivot = centre + vec3(0.0, 0.5, 0.0);
+        let arm_dir = back.normalize_or_zero() * 3.0 + vec3(0.0, 0.8, 0.0);
+        let clear = (1..=20)
+            .map(|i| i as f32 / 20.0)
+            .find(|&f| {
+                let p = pivot + arm_dir * f;
+                p.y < ground(p) + CAM_CLEARANCE
+            })
+            .map_or(1.0, |hit| (hit - 0.1).max(0.15));
+        let dt = get_frame_time();
+        arm = if clear < arm {
+            clear
+        } else {
+            arm + (clear - arm) * (dt * 1.5).min(1.0)
+        };
+        cam_pos = cam_pos.lerp(pivot + arm_dir * arm, (dt * 6.0).min(1.0));
+        cam_pos.y = cam_pos.y.max(ground(cam_pos) + CAM_CLEARANCE);
 
         // With CRT on, the 3D scene goes to an offscreen target (with depth) sized to the window.
         let (sw, sh) = (screen_width() as u32, screen_height() as u32);
@@ -976,9 +1105,9 @@ async fn main() {
             }
         }
         // gates: an arch (two posts and a banner) over each painted line
-        if let Some(t) = &track {
+        if let Some(t) = &level.track {
             let mut top = vec![f32::MIN; t.gates.len()];
-            for &(x, y, g) in &gate_cells {
+            for &(x, y, g) in &level.gate_cells {
                 let ground = sim
                     .terrain
                     .height_at((x as f32 + 0.5) * S, (y as f32 + 0.5) * S);
@@ -1037,7 +1166,7 @@ async fn main() {
                 ""
             }
         );
-        let band = if track.is_some() { 64.0 } else { 32.0 };
+        let band = if level.track.is_some() { 64.0 } else { 32.0 };
         draw_rectangle(
             0.0,
             0.0,
@@ -1046,7 +1175,7 @@ async fn main() {
             Color::new(0.0, 0.0, 0.0, 0.45),
         );
         draw_text(&hud, 12.0, 22.0, 18.0, WHITE);
-        if let Some(t) = &track {
+        if let Some(t) = &level.track {
             let n = t.gates.len();
             let line = if race.started {
                 let passed = (race.next + n - 1) % n;
@@ -1069,6 +1198,15 @@ async fn main() {
             };
             draw_text(&line, 12.0, 52.0, 30.0, YELLOW);
         }
+        if gfx.minimap {
+            draw_minimap(
+                &colour_tex,
+                level.track.as_ref(),
+                race.next,
+                &sim.cars[0],
+                band,
+            );
+        }
         if let Some((msg, until)) = &banner
             && get_time() < *until
             && !menu_open
@@ -1082,8 +1220,7 @@ async fn main() {
                 YELLOW,
             );
         }
-        // roof atom (8) below a floor atom (18): upside down
-        if atoms[8][2] < atoms[18][2] && !menu_open {
+        if sim.cars[0].upside_down() && !menu_open {
             let msg = "upside down - press R";
             let size = measure_text(msg, None, 40, 1.0);
             draw_text(

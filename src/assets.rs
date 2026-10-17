@@ -20,6 +20,15 @@ fn dirs() -> Vec<PathBuf> {
     d
 }
 
+/// When an asset was last modified (None if missing), for hot reload. Same lookup as `read`.
+pub fn modified(name: &str) -> Option<std::time::SystemTime> {
+    dirs()
+        .iter()
+        .find_map(|d| std::fs::metadata(d.join(name)).ok())?
+        .modified()
+        .ok()
+}
+
 /// Reads an asset by file name, e.g. `read("MAP.PCX")`.
 pub fn read(name: &str) -> Result<Vec<u8>, String> {
     let dirs = dirs();
