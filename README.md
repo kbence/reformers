@@ -43,4 +43,4 @@ cargo run --release --bin tool -- assets/MAP.PCX out/map.pgm --map  # PCX → PG
 cargo test
 ```
 
-Tickets live in `.tickets/` (managed with `tk`).
+Issues are tracked on GitHub: https://github.com/kbence/reformers/issues
