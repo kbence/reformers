@@ -70,6 +70,8 @@ struct Spring {
     shift: u8,
     min: u16,
     max: u16,
+    /// Total yield so far (×64 units, like `rest`): how bent this spring is. Not in the original.
+    bent: u16,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -120,7 +122,13 @@ pub struct Sim {
     /// For `dig_everywhere`: cells still "colour 0x0f". A landing darkens 0x0f → 0x0e in the
     /// original, which stops later particles from that cell digging; this mirrors that.
     soft: Vec<bool>,
+    /// Soft dirt (CHECK.PCX): cells that dig on every pass, down to `rut_floor`. Not in the original.
+    soft_dirt: Vec<bool>,
+    rut_floor: Vec<u8>,
 }
+
+/// How deep soft dirt ruts can get, in MAP height steps (16 world units each).
+pub const MAX_RUT: u8 = 6;
 
 impl SimCar {
     /// Places a parsed car at world (x, y) like `0x2454`: z = ground + 100, facing the map's −y.
@@ -168,6 +176,7 @@ impl SimCar {
                 shift: s.shift,
                 min: (s.min * 64.0) as u16,
                 max: (s.max * 64.0) as u16,
+                bent: 0,
             })
             .collect();
         let mode = match car.drive {
@@ -259,6 +268,30 @@ impl SimCar {
         let fwd = [d(6, 4, 0) + d(7, 5, 0), d(6, 4, 1) + d(7, 5, 1)];
         let side = [d(7, 6, 0), d(7, 6, 1)];
         fwd[0] * side[1] - fwd[1] * side[0] < 0.0
+    }
+
+    /// Upright again at (x, y) facing `heading`, keeping the damage: the bent and broken springs
+    /// carry over, so the dents pull back into shape within a few ticks. (A fresh `spawn` repairs.)
+    pub fn respawned(&self, car: &Car, terrain: &Terrain, x: u16, y: u16, heading: f32) -> SimCar {
+        let mut c = SimCar::spawn_facing(car, terrain, x, y, heading);
+        c.springs.clone_from(&self.springs);
+        c
+    }
+
+    /// 0.0 (as built) to 1.0: rigid springs bent by 8 units or more, or broken, count fully.
+    pub fn damage(&self) -> f32 {
+        let rigid: Vec<&Spring> = self.springs.iter().filter(|s| s.kind & 0x7f == 1).collect();
+        let hurt: f32 = rigid
+            .iter()
+            .map(|s| {
+                if s.kind & 0x80 != 0 {
+                    1.0
+                } else {
+                    (s.bent as f32 / (8.0 * 64.0)).min(1.0)
+                }
+            })
+            .sum();
+        hurt / rigid.len().max(1) as f32
     }
 
     pub fn broken_springs(&self) -> usize {
@@ -408,6 +441,8 @@ impl Sim {
             cfg: (0x0800, -0x1000),
             dig_everywhere: false,
             soft: vec![true; SIZE * SIZE],
+            soft_dirt: vec![false; SIZE * SIZE],
+            rut_floor: vec![0; SIZE * SIZE],
         }
     }
 
@@ -416,6 +451,18 @@ impl Sim {
         self.terrain = terrain;
         self.particles.clear();
         self.soft = vec![true; SIZE * SIZE];
+        self.set_soft_dirt(vec![false; SIZE * SIZE]);
+    }
+
+    /// Marks soft dirt cells; ruts there stop `MAX_RUT` steps below today's heights.
+    pub fn set_soft_dirt(&mut self, cells: Vec<bool>) {
+        self.rut_floor = self
+            .terrain
+            .height
+            .iter()
+            .map(|h| h.saturating_sub(MAX_RUT))
+            .collect();
+        self.soft_dirt = cells;
     }
 
     /// Live dirt particle positions in world units.
@@ -495,6 +542,9 @@ impl Sim {
                 }
                 if (e as i16) > cfg.0 {
                     let y = e >> 4; // 0x4fe3: yield
+                    s.bent = s
+                        .bent
+                        .saturating_add(y.unsigned_abs().min(u16::MAX as u32) as u16);
                     s.rest = (rest - y) as i16;
                     s.aux = s.rest as u16;
                     (len, y)
@@ -663,7 +713,7 @@ impl Sim {
         }
         let at = self.cars[ci].atoms[i];
         let cell = ((at.pos[1] as u32 >> 24) as usize) * SIZE + (at.pos[0] as u32 >> 24) as usize;
-        let colour = if self.dig_everywhere && self.soft[cell] {
+        let colour = if (self.dig_everywhere && self.soft[cell]) || self.soft_dirt[cell] {
             DIG_COLOUR as u16
         } else {
             c.colour as u16
@@ -702,9 +752,11 @@ impl Sim {
                         *col -= 1; // darker mark
                     }
                     self.soft[cell(x, y)] = false;
-                    let h =
-                        &mut self.terrain.height[cell(x.wrapping_add(0x80), y.wrapping_add(0x80))];
-                    *h = h.saturating_sub(1); // the dent; the asm's `dec byte` wraps 0 → 255 (a spike), never hit in the shipped game
+                    let dent = cell(x.wrapping_add(0x80), y.wrapping_add(0x80));
+                    let h = &mut self.terrain.height[dent];
+                    if !self.soft_dirt[dent] || *h > self.rut_floor[dent] {
+                        *h = h.saturating_sub(1); // the dent; the asm's `dec byte` wraps 0 → 255 (a spike), never hit in the shipped game
+                    }
                     p.colour = 1;
                     p.vel = [0, 0, 0x2710];
                 } else {
@@ -844,6 +896,66 @@ mod tests {
         let slowed = speed_after(&|c| c.drag(4));
         assert!(boosted > plain * 1.2, "boost {boosted} vs {plain}");
         assert!(slowed < plain * 0.8, "slow {slowed} vs {plain}");
+    }
+
+    fn flat() -> Terrain {
+        Terrain {
+            height: vec![40; SIZE * SIZE],
+            colour: vec![0x60; SIZE * SIZE],
+            palette: [[0; 3]; 256],
+        }
+    }
+
+    #[test]
+    fn soft_dirt_ruts_stop_at_the_floor() {
+        let car = crate::car::parse(&crate::assets::read("CAR1.DAT").unwrap()).unwrap();
+        for soft in [false, true] {
+            let mut s = Sim::new(flat());
+            s.set_soft_dirt(vec![soft; SIZE * SIZE]);
+            s.cars.push(SimCar::spawn(&car, &s.terrain, 0x8000, 0x8000));
+            let gas = Keys {
+                throttle: true,
+                left: true,
+                ..Keys::default()
+            };
+            for _ in 0..TICK_HZ * 40 {
+                s.tick(&[gas]); // circling over the same ground again and again
+            }
+            let deepest = s.terrain.height.iter().map(|&h| 40 - h).max().unwrap();
+            if soft {
+                assert!(deepest > 1, "ruts deepen with every pass, got {deepest}");
+                assert!(deepest <= MAX_RUT, "ruts stop at the floor, got {deepest}");
+            } else {
+                assert_eq!(deepest, 0, "hard ground doesn't dig");
+            }
+        }
+    }
+
+    #[test]
+    fn crashes_dent_r_keeps_them_repair_clears() {
+        let car = crate::car::parse(&crate::assets::read("CAR1.DAT").unwrap()).unwrap();
+        let mut t = flat();
+        for x in 0..SIZE {
+            t.height[100 * SIZE + x] = 200; // a wall across the road
+        }
+        let mut s = Sim::new(t);
+        s.cars.push(SimCar::spawn(&car, &s.terrain, 0x8000, 0x8000)); // row 128, facing the wall
+        assert_eq!(s.cars[0].damage(), 0.0);
+        let gas = Keys {
+            throttle: true,
+            ..Keys::default()
+        };
+        for _ in 0..TICK_HZ * 12 {
+            s.tick(&[gas]);
+        }
+        let hit = s.cars[0].damage();
+        assert!(hit > 0.0, "crashing into the wall dents the car");
+        let kept = s.cars[0].respawned(&car, &s.terrain, 0x8000, 0x9000, 0.0);
+        assert_eq!(kept.damage(), hit, "R keeps the dents");
+        assert_eq!(
+            SimCar::spawn(&car, &s.terrain, 0x8000, 0x9000).damage(),
+            0.0
+        );
     }
 
     #[test]

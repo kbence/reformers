@@ -16,7 +16,8 @@ cargo run --release
 | ↑ / ↓ | throttle / reverse |
 | ← / → | steer |
 | Space | brake |
-| R | put the car back on its wheels (time trial: on the last checkpoint, facing the next) |
+| R | put the car back on its wheels (time trial: on the last checkpoint, facing the next); dents stay |
+| F | repair the car (a fresh one where it stands) |
 | 1–5 | switch car |
 | W | spring wireframe |
 | C | camera: chase / bumper / orbit (Q/E rotate) / top-down |
@@ -51,7 +52,8 @@ the right is a legend and is ignored), so tracks can be painted in any paint pro
 | 48–63 | reset zone: driving in puts the car back like R (paint it over cliffs and water) | – |
 | 64–79 | boost pad (cyan on the ground) | strength |
 | 80–95 | slow zone, mud (brown on the ground) | strength |
-| 96–255 | reserved | – |
+| 96–111 | soft dirt: wheels dig ruts on every pass, up to 6 height steps deep; they stay until the map reloads | – |
+| 112–255 | reserved | – |
 
 Respawns put the car on a checkpoint's centre, so centre each line on the drivable road.
 

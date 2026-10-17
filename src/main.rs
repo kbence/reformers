@@ -939,6 +939,9 @@ async fn main() {
     let mut map = pick_map(&args, &saved);
     let (terrain, mut level) = load_level(&map).unwrap_or_else(|e| panic!("{e}"));
     let mut sim = Sim::new(terrain);
+    if let Some(t) = &level.track {
+        sim.set_soft_dirt(t.soft_dirt.clone());
+    }
     let mut stamps = watched(&map);
     let mut next_poll = 0.0;
     // All five original cars, switchable with 1–5. Only CAR1/CAR2 ship a skin; the rest use TEXTURES.PCX like 0x1323.
@@ -1069,6 +1072,9 @@ async fn main() {
                     Ok((terrain, new)) => {
                         sim.set_terrain(terrain);
                         level = new;
+                        if let Some(t) = &level.track {
+                            sim.set_soft_dirt(t.soft_dirt.clone());
+                        }
                         map = gfx.map.clone();
                         meshes = (0..chunks).map(|c| chunk_mesh(&sim.terrain, c)).collect();
                         colour_tex.update(&colour_image(&sim.terrain));
@@ -1189,6 +1195,15 @@ async fn main() {
             ghost = load_ghost(&level, current);
             recording = Ghost::default();
         }
+        if !menu_open && is_key_pressed(KeyCode::F) {
+            // repair: a brand-new car where this one stands
+            let [x, y, _] = sim.cars[0].centre();
+            let h = heading(&sim.cars[0]);
+            sim.cars[0] =
+                SimCar::spawn_facing(&cars[current].0, &sim.terrain, x as u16, y as u16, h);
+            roll = [0.0; 4];
+            banner = Some(("repaired".into(), get_time() + 1.0));
+        }
         if (!menu_open && is_key_pressed(KeyCode::R)) || pick.is_some() || reset_zone {
             reset_zone = false;
             // time trial: back to the last checkpoint, facing the next; else upright where the car is
@@ -1199,8 +1214,12 @@ async fn main() {
                 .filter(|_| pick.is_none())
                 .and_then(|t| race.respawn(t))
                 .unwrap_or(([x, y], heading(&sim.cars[0])));
-            sim.cars[0] =
-                SimCar::spawn_facing(&cars[current].0, &sim.terrain, x as u16, y as u16, h);
+            // R keeps the dents (F repairs); a newly picked car comes fresh
+            sim.cars[0] = if pick.is_some() {
+                SimCar::spawn_facing(&cars[current].0, &sim.terrain, x as u16, y as u16, h)
+            } else {
+                sim.cars[0].respawned(&cars[current].0, &sim.terrain, x as u16, y as u16, h)
+            };
             if let Some(t) = &level.track {
                 race.place(t, [x, y]);
             }
@@ -1496,10 +1515,10 @@ async fn main() {
             .filter(|(a, b)| a != b)
             .count();
         let hud = format!(
-            "arrows drive  space brake  R flip upright  1-5 car  W wireframe  esc menu   |   car {}  {:3.0} km/h   dents {dents}   broken springs {}{}",
+            "arrows drive  space brake  R flip upright  F repair  1-5 car  C camera  esc menu   |   car {}  {:3.0} km/h   damage {:2.0}%   ruts {dents}{}",
             current + 1,
             speed * 0.019 * 3.6, // ~210 world units per 4 m car
-            sim.cars[0].broken_springs(),
+            sim.cars[0].damage() * 100.0,
             if sim.dig_everywhere {
                 "   (soft ground)"
             } else {

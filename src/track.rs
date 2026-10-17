@@ -7,7 +7,8 @@
 //! - row 3 (48–63): reset zone; driving in puts the car back like R
 //! - row 4 (64–79): boost pad; setting = strength
 //! - row 5 (80–95): slow zone (mud); setting = strength
-//! - everything else is ignored (row 0 = nothing, rows 6–15 reserved)
+//! - row 6 (96–111): soft dirt; wheels dig ruts into it on every pass
+//! - everything else is ignored (row 0 = nothing, rows 7–15 reserved)
 
 use crate::{pcx, terrain::SIZE};
 
@@ -16,6 +17,7 @@ const GATE: u8 = 2;
 const RESET: u8 = 3;
 const BOOST: u8 = 4;
 const SLOW: u8 = 5;
+const SOFT: u8 = 6;
 
 /// A painted area that acts on the car while it's inside.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -45,6 +47,8 @@ pub struct Track {
     cells: Vec<u8>,
     /// Per cell: the raw CHECK.PCX index where it paints a zone (rows 3–5), else 0.
     zones: Vec<u8>,
+    /// Per cell: soft dirt (row 6), for `Sim::set_soft_dirt`.
+    pub soft_dirt: Vec<bool>,
 }
 
 fn cell(p: [f32; 2]) -> (i32, i32) {
@@ -169,6 +173,7 @@ impl Track {
             ends,
             cells,
             zones,
+            soft_dirt: img.pixels.iter().map(|&p| p >> 4 == SOFT).collect(),
         })
     }
 
@@ -426,7 +431,8 @@ mod tests {
         assert_eq!(z.zone_at(5, 5), Some(Zone::Reset));
         assert_eq!(z.zone_at(6, 5), Some(Zone::Boost(9)));
         assert_eq!(z.zone_under(at(7.0, 5.0)), Some(Zone::Slow(3)));
-        assert_eq!(z.zone_at(8, 5), None, "row 6 is reserved");
+        assert_eq!(z.zone_at(8, 5), None, "row 6 is soft dirt, not a zone");
+        assert!(z.soft_dirt[5 * SIZE + 8] && !z.soft_dirt[5 * SIZE + 7]);
     }
 
     #[test]
@@ -584,6 +590,8 @@ mod tests {
         let mut s = Sim::new(
             Terrain::load(&read("maps/terep2/MAP.PCX"), &read("maps/terep2/COL.PCX")).unwrap(),
         );
+        s.set_soft_dirt(t.soft_dirt.clone());
+        assert!(t.soft_dirt.iter().any(|&d| d), "the shipped track has soft dirt");
         let sp = t.spawn.as_ref().unwrap();
         s.cars.push(SimCar::spawn_facing(
             &car, &s.terrain, sp.x, sp.y, sp.heading,
