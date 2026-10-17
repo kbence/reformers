@@ -226,6 +226,29 @@ impl SimCar {
         self.spin
     }
 
+    /// Boost pad: speed every atom up along the car's heading by `accel` (16.16 world units per
+    /// tick², so a pad acts for as long as the car is on it).
+    pub fn push(&mut self, accel: i32) {
+        let d = |i: usize, j: usize, k: usize| {
+            self.atoms[i].pos[k].wrapping_sub(self.atoms[j].pos[k]) as f64
+        };
+        let fwd = [d(6, 4, 0) + d(7, 5, 0), d(6, 4, 1) + d(7, 5, 1)];
+        let len = fwd[0].hypot(fwd[1]).max(1.0);
+        let dv = fwd.map(|f| (f / len * accel as f64) as i32);
+        for a in &mut self.atoms {
+            a.vel[0] = a.vel[0].wrapping_add(dv[0]);
+            a.vel[1] = a.vel[1].wrapping_add(dv[1]);
+        }
+    }
+
+    /// Slow zone: lose `v >> shift` of the horizontal speed per tick, like the ground friction.
+    pub fn drag(&mut self, shift: u32) {
+        for a in &mut self.atoms {
+            a.vel[0] -= a.vel[0] >> shift;
+            a.vel[1] -= a.vel[1] >> shift;
+        }
+    }
+
     /// Roof down: the car's up axis (front × right, from the wheel atoms 4–7) points into the ground.
     /// Unlike comparing two atoms' heights, pitching or a steep slope doesn't trip it.
     pub fn upside_down(&self) -> bool {
@@ -793,6 +816,32 @@ mod tests {
             (s.cars[0].atom_positions(), s.terrain.height)
         };
         assert_eq!(run(), run());
+    }
+
+    #[test]
+    fn push_and_drag_change_speed() {
+        let speed_after = |pad: &dyn Fn(&mut SimCar)| {
+            let mut s = sim();
+            let gas = Keys {
+                throttle: true,
+                ..Keys::default()
+            };
+            for t in 0..TICK_HZ * 3 {
+                s.tick(&[gas]);
+                if t > TICK_HZ {
+                    pad(&mut s.cars[0]);
+                }
+            }
+            let a = s.cars[0].centre();
+            s.tick(&[gas]);
+            let b = s.cars[0].centre();
+            (b[0] - a[0]).hypot(b[1] - a[1])
+        };
+        let plain = speed_after(&|_| {});
+        let boosted = speed_after(&|c| c.push(0x2000));
+        let slowed = speed_after(&|c| c.drag(4));
+        assert!(boosted > plain * 1.2, "boost {boosted} vs {plain}");
+        assert!(slowed < plain * 0.8, "slow {slowed} vs {plain}");
     }
 
     #[test]

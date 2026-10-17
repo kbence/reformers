@@ -4,12 +4,28 @@
 //! right). Same convention as COL.PCX: index >> 4 = element, index & 15 = setting.
 //! - row 1 (16–31): spawn; setting 0–3 = facing up / right / down / left on the image
 //! - row 2 (32–47): gate; setting = lap order (sorted, gaps allowed), the lowest is start/finish
-//! - everything else is ignored (row 0 = nothing, rows 3–15 reserved)
+//! - row 3 (48–63): reset zone; driving in puts the car back like R
+//! - row 4 (64–79): boost pad; setting = strength
+//! - row 5 (80–95): slow zone (mud); setting = strength
+//! - everything else is ignored (row 0 = nothing, rows 6–15 reserved)
 
 use crate::{pcx, terrain::SIZE};
 
 const SPAWN: u8 = 1;
 const GATE: u8 = 2;
+const RESET: u8 = 3;
+const BOOST: u8 = 4;
+const SLOW: u8 = 5;
+
+/// A painted area that acts on the car while it's inside.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Zone {
+    Reset,
+    /// Strength 0–15.
+    Boost(u8),
+    /// Strength 0–15.
+    Slow(u8),
+}
 const CELL: f32 = 256.0; // world units per cell
 
 pub struct Spawn {
@@ -27,6 +43,8 @@ pub struct Track {
     pub ends: Vec<[[f32; 2]; 2]>,
     /// Per cell: lap-order index + 1 of the gate painted there, 0 = none.
     cells: Vec<u8>,
+    /// Per cell: the raw CHECK.PCX index where it paints a zone (rows 3–5), else 0.
+    zones: Vec<u8>,
 }
 
 fn cell(p: [f32; 2]) -> (i32, i32) {
@@ -134,12 +152,58 @@ impl Track {
                 [world(*a.unwrap()), world(*b.unwrap())]
             })
             .collect();
+        let zones = img
+            .pixels
+            .iter()
+            .map(|&p| {
+                if (RESET..=SLOW).contains(&(p >> 4)) {
+                    p
+                } else {
+                    0
+                }
+            })
+            .collect();
         Ok(Track {
             spawn,
             gates: order.iter().map(|&s| centre(&gates[s])).collect(),
             ends,
             cells,
+            zones,
         })
+    }
+
+    /// The zone painted on cell (x, y), if any.
+    pub fn zone_at(&self, x: usize, y: usize) -> Option<Zone> {
+        let p = self.zones[y * SIZE + x];
+        match p >> 4 {
+            RESET => Some(Zone::Reset),
+            BOOST => Some(Zone::Boost(p & 15)),
+            SLOW => Some(Zone::Slow(p & 15)),
+            _ => None,
+        }
+    }
+
+    /// The zone under world point `p` (wrapping at the map edge like the terrain).
+    pub fn zone_under(&self, p: [f32; 2]) -> Option<Zone> {
+        let (x, y) = cell(p);
+        self.zone_at(
+            x.rem_euclid(SIZE as i32) as usize,
+            y.rem_euclid(SIZE as i32) as usize,
+        )
+    }
+
+    /// One tick of the zone under the car: boost pads push it, mud drags it. True on a reset zone
+    /// (the caller respawns the car like R).
+    pub fn apply_zone(&self, car: &mut crate::sim::SimCar) -> bool {
+        let [x, y, _] = car.centre();
+        match self.zone_under([x, y]) {
+            // strength 0–15: up to 1/16 world unit per tick² / a 1/8 speed loss per tick
+            Some(Zone::Boost(s)) => car.push((s as i32 + 1) * 0x100),
+            Some(Zone::Slow(s)) => car.drag(8 - s as u32 / 3),
+            Some(Zone::Reset) => return true,
+            None => {}
+        }
+        false
     }
 
     /// Lap-order index of the gate painted on cell (x, y), if any.
@@ -358,6 +422,11 @@ mod tests {
         let diag = track(&(0..5).map(|i| (50 + i, 90 - 2 * i, 32)).collect::<Vec<_>>()).unwrap();
         assert_eq!(diag.ends[0], [at(54.0, 82.0), at(50.0, 90.0)]); // steeper than 45°: by y
         assert_eq!(t.gate_at(99, 70), None);
+        let z = track(&[(5, 5, 48), (6, 5, 64 + 9), (7, 5, 80 + 3), (8, 5, 96)]).unwrap();
+        assert_eq!(z.zone_at(5, 5), Some(Zone::Reset));
+        assert_eq!(z.zone_at(6, 5), Some(Zone::Boost(9)));
+        assert_eq!(z.zone_under(at(7.0, 5.0)), Some(Zone::Slow(3)));
+        assert_eq!(z.zone_at(8, 5), None, "row 6 is reserved");
     }
 
     #[test]
@@ -519,7 +588,7 @@ mod tests {
         ));
         let mut r = Race::new(None);
         let mut last = [0.0f32; 2];
-        let mut respawns = 0;
+        let (mut respawns, mut resets) = (0, 0);
         let mut mark = [0.0f32; 2];
         for tick in 0..TICK_HZ as u64 * 240 {
             let a = s.cars[0].atom_positions();
@@ -549,6 +618,13 @@ mod tests {
                 ..Keys::default()
             };
             s.tick(&[keys]);
+            if t.apply_zone(&mut s.cars[0]) {
+                resets += 1;
+                let ([px, py], h) = r.respawn(&t).unwrap();
+                s.cars[0] = SimCar::spawn_facing(&car, &s.terrain, px as u16, py as u16, h);
+                r.place(&t, [px, py]);
+                continue;
+            }
             if let Some(Event::Lap { .. }) = r.update(&t, [x, y], tick) {
                 return;
             }
@@ -564,7 +640,7 @@ mod tests {
             }
         }
         panic!(
-            "no lap in 4 minutes: next gate {} of {}, {respawns} respawns, car at {:?}",
+            "no lap in 4 minutes: next gate {} of {}, {respawns} respawns, {resets} reset zones, car at {:?}",
             r.next,
             t.gates.len(),
             s.cars[0].centre().map(|v| v / CELL)

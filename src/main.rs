@@ -10,7 +10,7 @@ use reformers::car::{self, Car, Prim};
 use reformers::ghost::{self, Frame, Ghost};
 use reformers::sim::{Keys, Sim, SimCar, TICK_HZ};
 use reformers::terrain::{SIZE, Terrain};
-use reformers::track::{Event, Lap, Race, Track, format_time};
+use reformers::track::{Event, Lap, Race, Track, Zone, format_time};
 use reformers::{assets, pcx};
 use std::path::PathBuf;
 
@@ -88,6 +88,8 @@ struct Level {
     key: Option<u64>,
     /// (x, y, gate) for every painted gate cell.
     gate_cells: Vec<(usize, usize, usize)>,
+    /// (x, y, zone) for every painted zone cell.
+    zone_cells: Vec<(usize, usize, Zone)>,
 }
 
 /// Map files whose changes reload the map while the game runs.
@@ -106,10 +108,19 @@ fn load_level() -> Result<(Terrain, Level), String> {
             })
             .collect()
     });
+    let zone_cells = track.as_ref().map_or(vec![], |t| {
+        (0..SIZE * SIZE)
+            .filter_map(|i| {
+                t.zone_at(i % SIZE, i / SIZE)
+                    .map(|z| (i % SIZE, i / SIZE, z))
+            })
+            .collect()
+    });
     let level = Level {
         track,
         key: check.map(|c| track_hash(&[&map, &col, &c])),
         gate_cells,
+        zone_cells,
     };
     Ok((terrain, level))
 }
@@ -469,8 +480,16 @@ const GATE_HEIGHT: f32 = 2.0;
 
 /// A checkpoint arch: a post at each end of the line, from the ground to `top` (world z), and a
 /// banner between their tops; start/finish gets a chequered one. Dim and translucent unless `next`.
-fn draw_gate(t: &Terrain, ends: [[f32; 2]; 2], top: f32, start: bool, next: bool) {
-    let alpha = if next { 1.0 } else { 0.3 };
+fn draw_gate(t: &Terrain, ends: [[f32; 2]; 2], top: f32, start: bool, next: bool, cam: Vec3) {
+    // fade out within ~2 cells of the camera, which passes right through the banner
+    let (a, b) = (
+        v([ends[0][0], ends[0][1], 0.0]).xz(),
+        v([ends[1][0], ends[1][1], 0.0]).xz(),
+    );
+    let ab = b - a;
+    let f = ((cam.xz() - a).dot(ab) / ab.length_squared().max(1e-6)).clamp(0.0, 1.0);
+    let near = ((cam.xz().distance(a + ab * f) - 0.8) / 1.5).clamp(0.0, 1.0);
+    let alpha = if next { 1.0 } else { 0.3 } * near;
     let post = Color::new(0.55, 0.55, 0.58, alpha);
     for [x, y] in ends {
         let ground = t.height_at(x, y);
@@ -630,6 +649,7 @@ impl Graphics {
 /// COL.PCX in the top-right corner with the gates (next one yellow, start white), the ghost and the car.
 fn draw_minimap(
     colour: &Texture2D,
+    zones: &[(usize, usize, Zone)],
     track: Option<&Track>,
     next: usize,
     car: &SimCar,
@@ -651,6 +671,15 @@ fn draw_minimap(
         ..Default::default()
     };
     draw_texture_ex(colour, x0, y0, Color::new(1.0, 1.0, 1.0, 0.85), params);
+    let cell = size / SIZE as f32;
+    for &(x, y, z) in zones {
+        let c = match z {
+            Zone::Reset => Color::new(1.0, 0.1, 0.1, 0.45),
+            Zone::Boost(_) => Color::new(0.2, 0.9, 1.0, 0.8),
+            Zone::Slow(_) => Color::new(0.45, 0.28, 0.1, 0.8),
+        };
+        draw_rectangle(x0 + x as f32 * cell, y0 + y as f32 * cell, cell, cell, c);
+    }
     if let Some(t) = track {
         for (g, ends) in t.ends.iter().enumerate() {
             let (a, b) = (to_map(ends[0]), to_map(ends[1]));
@@ -809,6 +838,7 @@ async fn main() {
     let mut ghost = load_ghost(&level, current);
     let mut recording = Ghost::default(); // this lap so far
     let mut ticks = 0u64;
+    let mut reset_zone = false; // drove into a reset zone: respawn like R next frame
     let mut banner: Option<(String, f64)> = None; // message, shown until
     let mut last_centre = sim.cars[0].centre();
 
@@ -982,7 +1012,8 @@ async fn main() {
             ghost = load_ghost(&level, current);
             recording = Ghost::default();
         }
-        if (!menu_open && is_key_pressed(KeyCode::R)) || pick.is_some() {
+        if (!menu_open && is_key_pressed(KeyCode::R)) || pick.is_some() || reset_zone {
+            reset_zone = false;
             // time trial: back to the last checkpoint, facing the next; else upright where the car is
             let [x, y, _] = sim.cars[0].centre();
             let ([x, y], h) = level
@@ -1014,6 +1045,9 @@ async fn main() {
             sim.tick(&[keys]);
             acc -= 1.0 / TICK_HZ as f32;
             ticks += 1;
+            if let Some(t) = &level.track {
+                reset_zone |= t.apply_zone(&mut sim.cars[0]);
+            }
             if let Some(t) = &level.track {
                 let [x, y, _] = sim.cars[0].centre();
                 let n = t.gates.len();
@@ -1190,6 +1224,22 @@ async fn main() {
                 draw_line_3d(v(atoms[a]), v(atoms[b]), if broken { RED } else { WHITE });
             }
         }
+        // pads: a coloured film on the ground (reset zones stay invisible: they're cliffs and water)
+        for &(x, y, z) in &level.zone_cells {
+            let colour = match z {
+                Zone::Boost(_) => Color::new(0.2, 0.9, 1.0, 0.45),
+                Zone::Slow(_) => Color::new(0.35, 0.22, 0.08, 0.6),
+                Zone::Reset => continue,
+            };
+            let (wx, wy) = ((x as f32 + 0.5) * S, (y as f32 + 0.5) * S);
+            let ground = sim.terrain.height_at(wx, wy);
+            draw_cube(
+                v([wx, wy, ground + 2.0]),
+                vec3(1.0, 0.03, 1.0),
+                None,
+                colour,
+            );
+        }
         // gates: an arch (two posts and a banner) over each painted line
         if let Some(t) = &level.track {
             let mut top = vec![f32::MIN; t.gates.len()];
@@ -1209,6 +1259,7 @@ async fn main() {
                     top[g] + GATE_HEIGHT * S,
                     g == 0,
                     g == race.next,
+                    cam_pos,
                 );
             }
         }
@@ -1297,6 +1348,7 @@ async fn main() {
                 });
             draw_minimap(
                 &colour_tex,
+                &level.zone_cells,
                 level.track.as_ref(),
                 race.next,
                 &sim.cars[0],
