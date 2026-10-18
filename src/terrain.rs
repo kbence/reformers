@@ -98,7 +98,10 @@ mod tests {
         let (map, col) = (read("maps/terep2/MAP.PCX"), read("maps/terep2/COL.PCX"));
         let heights = pcx::decode(&map).unwrap().crop(SIZE, SIZE).pixels;
         let pgm = [format!("P5\n{SIZE} {SIZE}\n255\n").into_bytes(), heights].concat();
-        let (a, b) = (Terrain::load(&map, &col).unwrap(), Terrain::load(&pgm, &col).unwrap());
+        let (a, b) = (
+            Terrain::load(&map, &col).unwrap(),
+            Terrain::load(&pgm, &col).unwrap(),
+        );
         assert_eq!(a.height, b.height);
     }
 
