@@ -2670,8 +2670,9 @@ async fn main() {
                 playing = None;
                 banner = Some(("replay over: you're driving".into(), get_time() + 3.0));
             }
-            (pending_r, pending_f) = (false, false);
             if online.is_none() {
+                // online they wait for the next input sent, which may be a tick or two away
+                (pending_r, pending_f) = (false, false);
                 recording_run.inputs.push(byte);
             }
             let mut inputs = vec![byte];
