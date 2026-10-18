@@ -126,14 +126,49 @@ fn cos15(angle: u16) -> i16 {
 /// Direction of the world vector (dx, dy) as a heading: 0x10000 per turn, clockwise from
 /// map-up (−y), the convention of `SimCar::spawn_facing`.
 pub fn heading_of(dx: i32, dy: i32) -> u16 {
-    let t = (dx as f64).atan2(-(dy as f64)) / std::f64::consts::TAU * 65536.0;
-    t.round() as i64 as u16
+    angle_of(dx as i64, -(dy as i64))
 }
 
 /// `0x2b08`: angle of (x = bx, y = ax) in 0x10000-per-turn units.
 fn atan2(ax: i16, bx: i16) -> u16 {
-    let t = (ax as f64).atan2(bx as f64) / std::f64::consts::TAU * 65536.0;
-    t.round() as i64 as u16
+    angle_of(ax as i64, bx as i64)
+}
+
+/// atan(2⁻ⁱ) in 2³²-per-turn units, for `angle_of`'s CORDIC.
+const ATAN_STEPS: [i64; 31] = [
+    536870912, 316933406, 167458907, 85004756, 42667331, 21354465, 10679838, 5340245, 2670163,
+    1335087, 667544, 333772, 166886, 83443, 41722, 20861, 10430, 5215, 2608, 1304, 652, 326, 163,
+    81, 41, 20, 10, 5, 3, 1, 1,
+];
+
+/// atan2(y, x) in 0x10000-per-turn units, rounded, in integers only: platform libm atan2s may
+/// differ in the last bit, and networked play needs every machine to compute the same tick.
+/// CORDIC to ~10⁻⁹ of a turn, so it rounds like the f64 atan2 it replaces (the physics is
+/// sensitive to it: even 1-unit differences on a few percent of calls change how cars collide).
+fn angle_of(y: i64, x: i64) -> u16 {
+    if x == 0 && y == 0 {
+        return 0;
+    }
+    // into the right half-plane (CORDIC converges within ±99°), scaled up to ~2⁴⁰
+    let (mut x, mut y, mut z) = if x < 0 {
+        (-x, -y, 1i64 << 31)
+    } else {
+        (x, y, 0)
+    };
+    let shift = 40 - (64 - x.abs().max(y.abs()).leading_zeros() as i32);
+    if shift > 0 {
+        (x, y) = (x << shift, y << shift);
+    }
+    // rotate (x, y) onto the x axis, adding up the angles turned
+    for (i, step) in ATAN_STEPS.iter().enumerate() {
+        let (dx, dy) = (y >> i, x >> i);
+        if y > 0 {
+            (x, y, z) = (x + dx, y - dy, z + step);
+        } else {
+            (x, y, z) = (x - dx, y + dy, z - step);
+        }
+    }
+    ((z + (1 << 15)) >> 16) as u16
 }
 
 #[derive(Clone, Copy)]
@@ -1055,6 +1090,16 @@ mod tests {
         assert_eq!(atan2(0, 5), 0);
         assert_eq!(atan2(5, 0), 0x4000);
         assert_eq!(atan2(5, 5), 0x2000);
+        // within a unit of the true angle, all round the circle
+        for (y, x) in (-60..=60).flat_map(|y| (-60..=60).map(move |x| (y * 517 + 3, x * 499 - 7))) {
+            let want = (y as f64).atan2(x as f64) / std::f64::consts::TAU * 65536.0;
+            let err = (angle_of(y, x) as f64 - want).rem_euclid(65536.0);
+            assert!(
+                err.min(65536.0 - err) <= 0.75,
+                "atan2({y}, {x}): {} vs {want}",
+                angle_of(y, x)
+            );
+        }
     }
 
     #[test]
@@ -1117,8 +1162,8 @@ mod tests {
         }
     }
 
-    /// Same inputs, same run: input replays (#6) rely on it. Within one build and platform only;
-    /// the sin table and atan2 go through f64 libm, which could differ elsewhere.
+    /// Same inputs, same run: input replays (#6) and networked play rely on it. The tick is all
+    /// integers but exact IEEE sqrt / division (no libm): the same on every platform.
     #[test]
     fn same_inputs_same_run() {
         crate::need_assets!();
@@ -1244,7 +1289,7 @@ mod tests {
             s.tick(&[gas, Keys::default()]);
         }
         let (a, b) = (s.cars[0].centre(), s.cars[1].centre());
-        assert!(a[1] > b[1], "A stays behind B: a.y {} b.y {}", a[1], b[1]);
+        assert!(a[1] > b[1], "A stays behind B: a {a:?} b {b:?}");
         assert!(
             b0[1] - b[1] > 256.0,
             "B got shunted north: {} → {}",

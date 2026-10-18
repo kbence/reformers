@@ -1,0 +1,29 @@
+# Tests on every push, on all three desktop OSes: the sim must compute bit-identical ticks
+# everywhere (replays, and networked races later), which `scripted_drive_is_bit_exact` checks
+# against one golden hash. The wasm build isn't run here yet: that needs a WASI test build.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Linux libraries (OpenGL, X11, ALSA, udev for gamepads)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libx11-dev libxi-dev libgl1-mesa-dev libasound2-dev libudev-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Test
+        run: cargo test --release
