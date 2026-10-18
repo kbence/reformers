@@ -91,7 +91,10 @@ PCX or TEREP1's BMP, plus an optional `CHECK.PCX` that makes it a time trial. Pi
 menu (Race → Map shows each map's minimap and checkpoints; it loads when the menu closes) or
 with `--map NAME`; the last one is remembered. Shipped: `terep2` (the original, with the
 time-trial track), `terep2-hills` (its unused `MAPHILL.PCX`) and `terep1` (TEREP1's map, same
-landscape, own palette; heights use TEREP2's scale, so it comes out gentler). A map folder may
+landscape, own palette; heights use TEREP2's scale, so it comes out gentler). Heights can also be a greyscale `MAP.PNG` or `MAP.PGM` (grey level = height; it wins over
+`MAP.PCX`), so any heightmap tool can paint them: save, and the running game reloads the map.
+`tool MAP.PNG MAP.PCX` turns one back into a PCX for the DOS game, `tool MAP.PCX MAP.PGM --map`
+the other way. A map folder may
 carry its own `MAPTEX.PCX`; otherwise the shared one is used when the palettes match, and the
 terrain is drawn in flat colours when they don't. Plus 105 community maps from Terep – 30th
 Anniversary Edition (free drive: none has checkpoints), each with an `INFO.TXT` holding its name

@@ -2,8 +2,10 @@ use reformers::sim::{Keys, Sim, SimCar, TICK_HZ};
 use reformers::{assets, car, pcx, terrain::Terrain};
 use std::process::exit;
 
-/// `tool <in.pcx> <out.pgm|out.ppm|out.f32|out.rgb> [--map]`
-/// .pgm = palette indices, .ppm = RGB image, .f32 = raw LE floats (index / 255), .rgb = raw RGB.
+/// `tool <in.pcx|in.bmp|in.png|in.pgm> <out.pgm|out.ppm|out.f32|out.rgb|out.pcx> [--map]`
+/// .pgm = palette indices (for a MAP: the heights, as greyscale), .ppm = RGB image, .f32 = raw
+/// LE floats (index / 255), .rgb = raw RGB, .pcx = 8-bit PCX (a greyscale height map becomes a
+/// MAP.PCX for the DOS game: 256 wide gets the 320-wide layout, a blank legend strip on the right).
 /// --map crops to 256×256.
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -16,12 +18,12 @@ fn main() {
     let (input, output) = match &args[..] {
         [i, o] | [i, o, _] => (i, o),
         _ => {
-            eprintln!("usage: tool <in.pcx> <out.pgm|out.ppm> [--map]");
+            eprintln!("usage: tool <in.pcx|png|pgm|bmp> <out.pgm|ppm|f32|rgb|pcx> [--map]");
             exit(2);
         }
     };
     let data = std::fs::read(input).unwrap_or_else(|e| fail(&format!("{input}: {e}")));
-    let mut img = pcx::decode(&data).unwrap_or_else(|e| fail(&format!("{input}: {e}")));
+    let mut img = pcx::decode_image(&data).unwrap_or_else(|e| fail(&format!("{input}: {e}")));
     if args.iter().any(|a| a == "--map") {
         img = img.crop(256, 256);
     }
@@ -33,6 +35,17 @@ fn main() {
             .flat_map(|&i| (i as f32 / 255.0).to_le_bytes())
             .collect(),
         Some("rgb") => img.to_rgb(),
+        Some("pcx" | "PCX") => {
+            if img.width == 256 {
+                let pixels = img
+                    .pixels
+                    .chunks_exact(256)
+                    .flat_map(|r| [r, &[0; 64]].concat());
+                img.pixels = pixels.collect();
+                img.width = 320;
+            }
+            pcx::encode(&img)
+        }
         ext => {
             let (magic, body) = if ext == Some("ppm") {
                 ("P6", img.to_rgb())

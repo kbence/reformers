@@ -76,6 +76,8 @@ pub async fn preload() {
         }
         for map in maps() {
             for f in [
+                "MAP.PNG",
+                "MAP.PGM",
                 "MAP.PCX",
                 "MAP.BMP",
                 "COL.PCX",
@@ -127,14 +129,18 @@ pub fn skins() -> Vec<(String, String)> {
         .collect()
 }
 
-/// A map's image: `maps/<map>/<stem>.PCX`, or `.BMP` (TEREP1). Returns the file name and bytes.
+/// A map's image: `maps/<map>/<stem>.PCX`, or `.BMP` (TEREP1); for the heights, a greyscale
+/// `MAP.PNG` / `MAP.PGM` comes first (#35: what a heightmap tool saves wins over the PCX).
+/// Returns the file name and bytes.
 pub fn read_map_image(map: &str, stem: &str) -> Result<(String, Vec<u8>), String> {
-    let pcx = format!("maps/{map}/{stem}.PCX");
-    let bmp = format!("maps/{map}/{stem}.BMP");
-    read(&pcx)
-        .map(|b| (pcx, b))
-        .or_else(|_| read(&bmp).map(|b| (bmp.clone(), b)))
-        .map_err(|_| format!("map {map:?} has no {stem}.PCX or {stem}.BMP"))
+    let grey: &[&str] = if stem == "MAP" { &["PNG", "PGM"] } else { &[] };
+    grey.iter()
+        .chain(&["PCX", "BMP"])
+        .find_map(|ext| {
+            let name = format!("maps/{map}/{stem}.{ext}");
+            read(&name).ok().map(|b| (name, b))
+        })
+        .ok_or_else(|| format!("map {map:?} has no {stem}.PCX or {stem}.BMP"))
 }
 
 /// When an asset was last modified (None if missing), for hot reload. Same lookup as `read`.

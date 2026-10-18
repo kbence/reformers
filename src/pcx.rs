@@ -74,13 +74,108 @@ pub fn decode(data: &[u8]) -> Result<Image, String> {
     })
 }
 
-/// A map image in either format the games used: TEREP2's PCX or TEREP1's BMP.
+/// A map image: TEREP2's PCX, TEREP1's BMP, or a greyscale height map (PNG / binary PGM, #35).
 pub fn decode_image(data: &[u8]) -> Result<Image, String> {
     if data.starts_with(b"BM") {
         crate::bmp::decode(data)
+    } else if data.starts_with(b"\x89PNG") || data.starts_with(b"P5") {
+        decode_grey(data)
     } else {
         decode(data)
     }
+}
+
+/// A greyscale height map: grey level = height index (×16 world units), as heightmap tools
+/// paint them. PNG (any depth, through macroquad's decoder; colour is averaged to grey) or
+/// binary PGM. The palette is a grey ramp, so the image shows as painted.
+pub fn decode_grey(data: &[u8]) -> Result<Image, String> {
+    let (width, height, pixels) = if data.starts_with(b"P5") {
+        // header: P5, width, height, maxval, each after whitespace (and # comments), then one
+        // whitespace byte and the samples
+        let mut fields = vec![];
+        let mut i = 2;
+        while fields.len() < 3 {
+            match data.get(i).ok_or("PGM header ends early")? {
+                b'#' => {
+                    while data.get(i).is_some_and(|&c| c != b'\n') {
+                        i += 1;
+                    }
+                }
+                c if c.is_ascii_digit() => {
+                    let start = i;
+                    while data.get(i).is_some_and(u8::is_ascii_digit) {
+                        i += 1;
+                    }
+                    let text = std::str::from_utf8(&data[start..i]).unwrap();
+                    fields.push(text.parse::<usize>().map_err(|e| e.to_string())?);
+                    continue;
+                }
+                _ => {}
+            }
+            i += 1;
+        }
+        let [w, h, max] = [fields[0], fields[1], fields[2]];
+        if max == 0 || max > 255 {
+            return Err(format!("PGM maxval {max}: only 8-bit PGMs are supported"));
+        }
+        let px = data
+            .get(i + 1..i + 1 + w * h)
+            .ok_or("PGM pixel data ends early")?;
+        (
+            w,
+            h,
+            px.iter().map(|&v| (v as usize * 255 / max) as u8).collect(),
+        )
+    } else {
+        let img = macroquad::texture::Image::from_file_with_format(
+            data,
+            Some(macroquad::prelude::ImageFormat::Png),
+        )
+        .map_err(|e| format!("PNG: {e}"))?;
+        let px = img
+            .bytes
+            .chunks_exact(4)
+            .map(|p| ((p[0] as u16 + p[1] as u16 + p[2] as u16 + 1) / 3) as u8)
+            .collect();
+        (img.width as usize, img.height as usize, px)
+    };
+    Ok(Image {
+        width,
+        height,
+        pixels,
+        palette: std::array::from_fn(|i| [i as u8; 3]),
+    })
+}
+
+/// An 8-bit RLE PCX (ZSoft v5) with a 256-colour palette: what TEREP2 and the DOS editor read.
+pub fn encode(img: &Image) -> Vec<u8> {
+    let bytes_per_line = img.width + img.width % 2; // even, as the format wants
+    let mut out = vec![0u8; 128];
+    out[..4].copy_from_slice(&[0x0A, 5, 1, 8]);
+    out[8..10].copy_from_slice(&(img.width as u16 - 1).to_le_bytes());
+    out[10..12].copy_from_slice(&(img.height as u16 - 1).to_le_bytes());
+    out[12..16].copy_from_slice(&[72, 0, 72, 0]); // dpi
+    out[65] = 1;
+    out[66..68].copy_from_slice(&(bytes_per_line as u16).to_le_bytes());
+    out[68] = 1; // colour palette
+    for row in img.pixels.chunks_exact(img.width) {
+        let mut line = row.to_vec();
+        line.resize(bytes_per_line, 0);
+        let mut i = 0;
+        while i < line.len() {
+            let v = line[i];
+            let run = line[i..].iter().take(63).take_while(|&&x| x == v).count();
+            if run > 1 || v >= 0xC0 {
+                out.extend([0xC0 | run as u8, v]);
+            } else {
+                out.push(v);
+            }
+            i += run;
+        }
+    }
+    out.push(0x0C);
+    out.extend(img.palette.iter().flatten());
+    out
 }
 
 impl Image {
@@ -159,6 +254,73 @@ mod tests {
             [40, 40, 40],
             "a grey ramp stands in for the palette"
         );
+    }
+
+    #[test]
+    fn encodes_what_it_decodes() {
+        crate::need_assets!();
+        for f in ["maps/terep2/MAP.PCX", "CAR1.PCX"] {
+            let img = decode(&crate::assets::read(f).unwrap()).unwrap();
+            let back = decode(&encode(&img)).unwrap();
+            assert_eq!(
+                (back.width, back.height, &back.pixels, back.palette),
+                (img.width, img.height, &img.pixels, img.palette),
+                "{f}"
+            );
+        }
+        // odd width (padded line), runs longer than 63, literal bytes ≥ 0xC0
+        let odd = Image {
+            width: 3,
+            height: 2,
+            pixels: vec![0xC5, 1, 1, 7, 7, 7],
+            palette: [[9; 3]; 256],
+        };
+        assert_eq!(decode(&encode(&odd)).unwrap().pixels, odd.pixels);
+        let long = Image {
+            width: 200,
+            height: 1,
+            pixels: vec![42; 200],
+            palette: [[0; 3]; 256],
+        };
+        assert_eq!(decode(&encode(&long)).unwrap().pixels, long.pixels);
+    }
+
+    #[test]
+    fn reads_greyscale_height_maps() {
+        let pgm = b"P5\n# a comment\n3 2\n255\n\x00\x10\xff\x80\x40\x01".to_vec();
+        let img = decode_image(&pgm).unwrap();
+        assert_eq!((img.width, img.height), (3, 2));
+        assert_eq!(img.pixels, [0, 0x10, 0xff, 0x80, 0x40, 1]);
+        assert_eq!(img.palette[0x80], [0x80; 3]);
+        let half = b"P5 1 1 127 \x7f".to_vec();
+        assert_eq!(
+            decode_image(&half).unwrap().pixels,
+            [255],
+            "maxval scales to 0–255"
+        );
+        assert!(decode_image(b"P5 2 2 255\n\x00").is_err(), "short data");
+        assert!(
+            decode_image(b"P5 1 1 65535\n\x00\x00").is_err(),
+            "16-bit PGM"
+        );
+        // PNG, as a paint program saves it (written here through macroquad's encoder, which
+        // stores rows bottom-up as it's meant for screenshots: hand it the rows flipped)
+        let path = std::env::temp_dir().join(format!("reformers-{}.png", std::process::id()));
+        let grey = [0u8, 0x10, 0xff, 0x80, 0x40, 1];
+        macroquad::texture::Image {
+            width: 3,
+            height: 2,
+            bytes: grey
+                .chunks(3)
+                .rev()
+                .flatten()
+                .flat_map(|&v| [v, v, v, 255])
+                .collect(),
+        }
+        .export_png(path.to_str().unwrap());
+        let png = std::fs::read(&path).unwrap();
+        let _ = std::fs::remove_file(&path);
+        assert_eq!(decode_image(&png).unwrap().pixels, grey);
     }
 
     #[test]

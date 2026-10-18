@@ -521,10 +521,18 @@ struct Level {
 
 /// A map's files whose changes reload it while the game runs.
 fn watched(map: &str) -> Vec<Option<std::time::SystemTime>> {
-    ["MAP.PCX", "MAP.BMP", "COL.PCX", "COL.BMP", "CHECK.PCX"]
-        .iter()
-        .map(|f| assets::modified(&format!("maps/{map}/{f}")))
-        .collect()
+    [
+        "MAP.PNG",
+        "MAP.PGM",
+        "MAP.PCX",
+        "MAP.BMP",
+        "COL.PCX",
+        "COL.BMP",
+        "CHECK.PCX",
+    ]
+    .iter()
+    .map(|f| assets::modified(&format!("maps/{map}/{f}")))
+    .collect()
 }
 
 /// `--map NAME`, else the map saved in settings.txt, else terep2, else the first map folder.
