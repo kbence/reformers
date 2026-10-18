@@ -1021,6 +1021,51 @@ fn car_meshes(
     [flat, textured, wheels]
 }
 
+/// The checkpoint guide (#34): a yellow arrow hovering over `car`, pointing at `target` (world
+/// x, y), bobbing gently with `time`. Its tip leans up 35° so the chase camera sees its face.
+fn draw_guide(car: &SimCar, target: [f32; 2], time: f64) {
+    let atoms = car.atom_positions();
+    let [cx, cy, _] = car.centre();
+    let roof = atoms.iter().map(|a| a[2]).fold(f32::MIN, f32::max);
+    let bob = (time * 3.0).sin() as f32 * 0.05;
+    let base = v([cx, cy, roof]) + vec3(0.0, 0.45 + bob, 0.0);
+    let (dx, dz) = (target[0] - cx, target[1] - cy);
+    let len = (dx * dx + dz * dz).sqrt();
+    if len < 1.0 {
+        return;
+    }
+    let (sin, cos) = 35f32.to_radians().sin_cos();
+    let (f, r) = (
+        vec3(dx / len * cos, sin, dz / len * cos),
+        vec3(-dz / len, 0.0, dx / len),
+    );
+    // in (right, forward) units of 0.55 render units: a head and a shaft, centred on the car
+    let shape = [
+        (0.0, 1.0),
+        (0.75, 0.15),
+        (0.28, 0.15),
+        (0.28, -0.9),
+        (-0.28, -0.9),
+        (-0.28, 0.15),
+        (-0.75, 0.15),
+    ];
+    let colour = Color::new(1.0, 0.85, 0.15, 0.9);
+    let vertices = shape
+        .iter()
+        .map(|&(x, y)| {
+            let p = base + (r * x + f * y) * 0.55;
+            Vertex::new(p.x, p.y, p.z, 0.0, 0.0, colour)
+        })
+        .collect();
+    // the head, then the shaft (both faces: macroquad doesn't cull)
+    let indices = vec![0, 1, 6, 2, 3, 4, 2, 4, 5];
+    draw_mesh(&Mesh {
+        vertices,
+        indices,
+        texture: None,
+    });
+}
+
 /// Checkpoint posts reach this many cells above the highest ground on the gate's line.
 const GATE_HEIGHT: f32 = 2.0;
 
@@ -1177,6 +1222,8 @@ struct Graphics {
     /// Player 1's and player 2's skin file in `skins/`; empty = the car's own.
     skin: String,
     skin2: String,
+    /// The arrow over the car towards the next checkpoint (#34).
+    guide: bool,
     /// The last address typed on the Join row (saved), and the online rows' status (not saved).
     join: String,
     host_label: String,
@@ -1215,6 +1262,7 @@ enum Row {
     Fog,
     Minimap,
     Ghost,
+    Guide,
     Host,
     Join,
     Fullscreen,
@@ -1274,7 +1322,14 @@ fn items(page: Page, players: usize) -> Vec<Item> {
         ]
         .into_iter()
         .filter(|&r| !matches!(r, Row::Car2 | Row::Skin2) || players == 2)
-        .chain([Row::Camera, Row::Ghost, Row::Minimap, Row::Host, Row::Join])
+        .chain([
+            Row::Camera,
+            Row::Ghost,
+            Row::Minimap,
+            Row::Guide,
+            Row::Host,
+            Row::Join,
+        ])
         .map(R)
         .collect(),
         Page::Graphics => [
@@ -1379,13 +1434,14 @@ impl Menu {
 impl Graphics {
     fn to_text(&self) -> String {
         format!(
-            "map={}\ncar={}\ncar2={}\nskin={}\nskin2={}\njoin={}\ncamera={}\nnearest={}\ntextured={}\nlighting={}\ncrt={}\nminimap={}\nghost={}\nfog={}\nvolume={}\nengine={}\nfullscreen={}\nresolution={}\n",
+            "map={}\ncar={}\ncar2={}\nskin={}\nskin2={}\njoin={}\nguide={}\ncamera={}\nnearest={}\ntextured={}\nlighting={}\ncrt={}\nminimap={}\nghost={}\nfog={}\nvolume={}\nengine={}\nfullscreen={}\nresolution={}\n",
             self.map,
             self.car + 1,
             self.car2 + 1,
             self.skin,
             self.skin2,
             self.join,
+            self.guide,
             self.camera,
             self.nearest,
             self.textured,
@@ -1410,6 +1466,7 @@ impl Graphics {
                 "skin" => self.skin = v.trim().to_string(),
                 "skin2" => self.skin2 = v.trim().to_string(),
                 "join" => self.join = v.trim().to_string(),
+                "guide" => self.guide = b,
                 "car" => {
                     self.car = n
                         .filter(|n| (1..=CARS).contains(n))
@@ -1483,6 +1540,7 @@ impl Graphics {
             ),
             Row::Crt => format!("CRT filter: {}", on(self.crt)),
             Row::Minimap => format!("Minimap: {}", on(self.minimap)),
+            Row::Guide => format!("Checkpoint arrow: {}", on(self.guide)),
             Row::Fog => format!("Fog: {}", on(self.fog)),
             Row::Ghost => format!("Ghost car: {}", on(self.ghost)),
             Row::Fullscreen => format!("Fullscreen: {}", on(self.fullscreen)),
@@ -1509,6 +1567,7 @@ impl Graphics {
             Row::Lighting => self.lighting = !self.lighting,
             Row::Crt => self.crt = !self.crt,
             Row::Minimap => self.minimap = !self.minimap,
+            Row::Guide => self.guide = !self.guide,
             Row::Fog => self.fog = !self.fog,
             Row::Players => self.players = 3 - self.players,
             Row::Car => {
@@ -2032,6 +2091,7 @@ async fn main() {
         skin: String::new(),
         skin2: String::new(),
         join: String::new(),
+        guide: true,
         host_label: String::new(),
         join_label: String::new(),
         players: if args.windows(2).any(|w| w[0] == "--players" && w[1] == "2") {
@@ -3044,6 +3104,10 @@ async fn main() {
                         position,
                     );
                 }
+                if gfx.guide && gfx.camera != 1 {
+                    // (not from the bumper camera: it would hover above the screen's top edge)
+                    draw_guide(&sim.cars[view], t.gates[next], get_time());
+                }
             }
             for p in sim.particle_positions() {
                 draw_cube(
@@ -3402,6 +3466,7 @@ mod tests {
             skin: "GHOST.PCX".into(),
             skin2: String::new(),
             join: "192.168.1.20".into(),
+            guide: true,
             host_label: String::new(),
             join_label: String::new(),
             players: 1,
@@ -3425,6 +3490,7 @@ mod tests {
             skin: "X.PCX".into(),
             skin2: "Y.PCX".into(),
             join: "192.168.1.20".into(),
+            guide: false,
             host_label: String::new(),
             join_label: String::new(),
             players: 1,

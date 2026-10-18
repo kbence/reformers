@@ -29,7 +29,7 @@ nobody is holding (wheels, pedals, virtual joysticks) can't hold a key down.
 
 Options (saved to `settings.txt` next to the best laps; flags override them): sound volume, camera, fog (the original's distance fog), texture filter (nearest/smooth), textures on (MAPTEX.PCX material tiles, car
 skins) or off (flat COL.PCX colours), lighting (the original's flat shading, or baked: soft sun
-shadows, sky occlusion and one bounce of coloured light, computed in ~25 ms when a map loads), CRT filter, minimap, ghost car, fullscreen, window resolution.
+shadows, sky occlusion and one bounce of coloured light, computed in ~25 ms when a map loads), CRT filter, minimap, ghost car, checkpoint arrow (a yellow arrow over the car pointing at the next checkpoint, on maps that have them), fullscreen, window resolution.
 
 Flags: `--car N` starting car (instead of the remembered one); `--soft` makes all ground diggable so wheels dig tracks (the original
 only digs ground of colour 0x0f, which no shipped map has); `--smooth`, `--untextured`, `--crt`, `--baked-light`,
