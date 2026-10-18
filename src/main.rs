@@ -40,8 +40,13 @@ const RECORDED_HZ: f32 = 43.5;
 /// Engine voices sound at F-numbers (the original's pitch unit, `sound::engine_fnum`) from idle
 /// 0x30 up to this, in ~3 % steps; one voice per player.
 const ENGINE_TOP_FNUM: f32 = 400.0;
+/// Mix levels: engine (flat out) + full skid + a thud stay under full scale even at volume
+/// 10/10 (worst case 0.96). The thud at 0.9 clipped the mix on hard landings, heard as
+/// crackle; found with --record-audio.
+const THUD_LEVEL: f32 = 0.4;
+const SKID_LEVEL: f32 = 0.25;
 /// Engine level against the other sounds: the FM tone is nearly a square wave at full scale.
-const ENGINE_LEVEL: f32 = 0.5;
+const ENGINE_LEVEL: f32 = 0.4;
 
 /// One engine voice: looping tones at ascending F-numbers, of which only the one nearest the
 /// wanted pitch sounds; a 60 ms crossfade when that changes (no two pitches beating together).
@@ -244,7 +249,7 @@ impl Audio {
     }
 
     fn skid(&self, skid: f32, vol: f32) {
-        set_sound_volume(&self.skid, vol * 0.5 * skid);
+        set_sound_volume(&self.skid, vol * SKID_LEVEL * skid);
     }
 
     fn chime(&self, ev: &Option<Event>, vol: f32) {
@@ -2134,18 +2139,18 @@ async fn main() {
             skid += ((sim.particle_positions().count() as f32 / 40.0).min(1.0) - skid) * 0.2;
             a.skid(skid, vol);
             if let Some(r) = &mut audio_rec {
-                r.frame(a, gfx.engine, vol * 0.5 * skid, get_frame_time());
+                r.frame(a, gfx.engine, vol * SKID_LEVEL * skid, get_frame_time());
             }
             if sim.impacts > impacts && get_time() - last_thud > 0.15 && vol > 0.0 {
                 play_sound(
                     &a.thud,
                     PlaySoundParams {
                         looped: false,
-                        volume: vol * 0.9,
+                        volume: vol * THUD_LEVEL,
                     },
                 );
                 if let Some(r) = &mut audio_rec {
-                    r.thuds.push((0, vol * 0.9));
+                    r.thuds.push((0, vol * THUD_LEVEL));
                 }
                 last_thud = get_time();
             }
