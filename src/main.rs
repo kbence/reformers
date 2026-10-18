@@ -1379,7 +1379,7 @@ fn draw_minimap(
 }
 
 /// The menu as a drum seen side-on: rows on a cylinder, the selected one centred and full size,
-/// the others shrinking, fading and leaning away with their angle; scrolling eases.
+/// the others shrinking and fading out with their angle; scrolling eases.
 fn draw_menu(gfx: &Graphics, menu: &mut Menu, dt: f32) {
     menu.scroll += (menu.selected as f32 - menu.scroll) * (dt * 12.0).min(1.0);
     let (w, h) = (screen_width(), screen_height());
@@ -1391,15 +1391,6 @@ fn draw_menu(gfx: &Graphics, menu: &mut Menu, dt: f32) {
     let size = measure_text(&title, None, 40, 1.0);
     draw_text(&title, (w - size.width) / 2.0, h * 0.14, 40.0, WHITE);
     let (cy, radius, step) = (h * 0.52, h * 0.3, 0.18f32);
-    // a darker band behind the drum so the paused scene doesn't show through the text
-    let band = (w * 0.62).min(760.0);
-    draw_rectangle(
-        (w - band) / 2.0,
-        cy - h * 0.25,
-        band,
-        h * 0.5,
-        Color::new(0.0, 0.0, 0.0, 0.55),
-    );
     for (i, item) in items(menu.page).iter().enumerate() {
         let angle = (i as f32 - menu.scroll) * step;
         if angle.abs() > 1.4 {
@@ -1415,7 +1406,7 @@ fn draw_menu(gfx: &Graphics, menu: &mut Menu, dt: f32) {
         let font = (base * near).max(10.0);
         let dims = measure_text(&text, None, font as u16, 1.0);
         let y = cy + radius * angle.sin() + dims.height / 2.0;
-        let fade = near.powf(1.5);
+        let fade = near.powf(6.0); // rows melt away towards the drum's top and bottom
         let colour = if chosen {
             Color::new(1.0, 0.9, 0.2, fade)
         } else if matches!(item, Item::Text(_)) {
