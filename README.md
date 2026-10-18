@@ -24,6 +24,9 @@ cargo run --release
 | P | | save this run as a replay |
 | Esc | Start | options (pauses the game); d-pad and A in the menu |
 
+A controller joins once you press one of its buttons, so devices Windows lists as gamepads but
+nobody is holding (wheels, pedals, virtual joysticks) can't hold a key down.
+
 Options (saved to `settings.txt` next to the best laps; flags override them): sound volume, camera, fog (the original's distance fog), texture filter (nearest/smooth), textures on (MAPTEX.PCX material tiles, car
 skins) or off (flat COL.PCX colours), CRT filter, minimap, ghost car, fullscreen, window resolution.
 

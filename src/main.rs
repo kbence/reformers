@@ -6,7 +6,7 @@
 //! `--shot out.png`: hold throttle + left, save a frame after 4 s and exit (for checking without a human).
 
 #[cfg(not(target_arch = "wasm32"))]
-use gilrs::{Axis, Button, EventType, Gilrs};
+use gilrs::{Axis, Button, EventType, GamepadId, Gilrs};
 use macroquad::audio::{
     PlaySoundParams, Sound, load_sound_from_bytes, play_sound, set_sound_volume,
 };
@@ -233,17 +233,28 @@ fn pad_pressed(b: Button) -> Option<KeyCode> {
 
 #[cfg(not(target_arch = "wasm32"))]
 /// Polls the first connected gamepad: (keys held, keys pressed this frame). Empty without one.
-fn poll_pad(gilrs: &mut Option<Gilrs>) -> (Vec<KeyCode>, Vec<KeyCode>) {
+/// Only a controller whose button has been pressed takes part (`active`): Windows lists wheels,
+/// pedals, virtual joysticks and some headsets as gamepads, and one resting with an axis
+/// deflected would otherwise hold a key down for good (P1 couldn't steer with the arrows).
+fn poll_pad(
+    gilrs: &mut Option<Gilrs>,
+    active: &mut Option<GamepadId>,
+) -> (Vec<KeyCode>, Vec<KeyCode>) {
     let Some(g) = gilrs else {
         return (vec![], vec![]);
     };
     let mut pressed = vec![];
     while let Some(ev) = g.next_event() {
-        if let EventType::ButtonPressed(b, _) = ev.event {
-            pressed.extend(pad_pressed(b));
+        match ev.event {
+            EventType::ButtonPressed(b, _) => {
+                *active = Some(ev.id);
+                pressed.extend(pad_pressed(b));
+            }
+            EventType::Disconnected if *active == Some(ev.id) => *active = None,
+            _ => {}
         }
     }
-    let Some((_, pad)) = g.gamepads().next() else {
+    let Some(pad) = active.and_then(|id| g.connected_gamepad(id)) else {
         return (vec![], pressed);
     };
     let axis = |a| pad.axis_data(a).map_or(0.0, |d| d.value());
@@ -259,7 +270,7 @@ fn poll_pad(gilrs: &mut Option<Gilrs>) -> (Vec<KeyCode>, Vec<KeyCode>) {
 
 /// No gamepads on the web (see Cargo.toml).
 #[cfg(target_arch = "wasm32")]
-fn poll_pad(_: &mut Option<()>) -> (Vec<KeyCode>, Vec<KeyCode>) {
+fn poll_pad(_: &mut Option<()>, _: &mut Option<()>) -> (Vec<KeyCode>, Vec<KeyCode>) {
     (vec![], vec![])
 }
 
@@ -1484,6 +1495,10 @@ async fn main() {
     let mut audio = Audio::load().await;
     #[cfg(not(target_arch = "wasm32"))]
     let mut gilrs = Gilrs::new().ok();
+    #[cfg(not(target_arch = "wasm32"))]
+    let mut pad_id: Option<GamepadId> = None;
+    #[cfg(target_arch = "wasm32")]
+    let mut pad_id: Option<()> = None;
     #[cfg(target_arch = "wasm32")]
     let mut gilrs: Option<()> = None;
     let (mut impacts, mut last_thud, mut skid) = (0u32, 0.0f64, 0.0f32);
@@ -1527,7 +1542,7 @@ async fn main() {
     let started = get_time();
 
     loop {
-        let (pad_held, pad_hit) = poll_pad(&mut gilrs);
+        let (pad_held, pad_hit) = poll_pad(&mut gilrs, &mut pad_id);
         let pressed = |k: KeyCode| is_key_pressed(k) || pad_hit.contains(&k);
         let down = |k: KeyCode| is_key_down(k) || pad_held.contains(&k);
         // hot reload: edit a map image, save, and it's here within a second
