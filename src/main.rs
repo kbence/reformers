@@ -1390,14 +1390,14 @@ fn draw_menu(gfx: &Graphics, menu: &mut Menu, dt: f32) {
     };
     let size = measure_text(&title, None, 40, 1.0);
     draw_text(&title, (w - size.width) / 2.0, h * 0.14, 40.0, WHITE);
-    let (cy, radius, step) = (h * 0.52, h * 0.3, 0.3f32);
+    let (cy, radius, step) = (h * 0.52, h * 0.3, 0.18f32);
     // a darker band behind the drum so the paused scene doesn't show through the text
     let band = (w * 0.62).min(760.0);
     draw_rectangle(
         (w - band) / 2.0,
-        h * 0.2,
+        cy - h * 0.25,
         band,
-        h * 0.66,
+        h * 0.5,
         Color::new(0.0, 0.0, 0.0, 0.55),
     );
     for (i, item) in items(menu.page).iter().enumerate() {
