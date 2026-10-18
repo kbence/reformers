@@ -18,7 +18,7 @@ cargo run --release
 | Space | B | brake |
 | R | Y | put the car back on its wheels (time trial: on the last checkpoint, facing the next); dents stay |
 | F | Back | repair the car (a fresh one where it stands) |
-| 1–5 | | switch car (also Esc menu → Race → Car, with a turning preview; remembered) |
+| 1–5 | | switch car (also Esc menu → Race → Car, with a turning preview; remembered). Race → Skin repaints it with one of the 73 community skins in `assets/skins/` |
 | C | right shoulder | camera: chase / bumper / orbit (Q/E rotate) / top-down |
 | W | | spring wireframe |
 | P | | save this run as a replay |
@@ -104,6 +104,7 @@ themselves. To supply them, copy from the original demos:
 | `assets/maps/terep2/MAP.PCX`, `COL.PCX` | TEREP2's `MAP.PCX`, `COL.PCX` |
 | `assets/maps/terep2-hills/MAP.PCX`, `COL.PCX` | TEREP2's `MAPHILL.PCX` (renamed), `COL.PCX` |
 | `assets/maps/terep1/MAP.BMP`, `COL.BMP` | TEREP1 |
+| `assets/skins/*.PCX` (optional) | Terep – 30th Anniversary Edition's `CARTEX` and `Extras/Car Textures` (see `assets/skins/SOURCES.md`) |
 
 ## Tools
 

@@ -1,0 +1,73 @@
+AJEEP.PCX ajeep
+BLACK.PCX black
+BUGG.PCX bugg
+BUGR.PCX bugr
+BUGY.PCX bugy
+FIRE.PCX fire
+GHOST.PCX ghost
+GLASS.PCX glass
+GRAY.PCX gray
+GYOGYOS.PCX gyogyos
+HALIEN.PCX alien (hover)
+HBLUE.PCX blue (hover)
+HFLAME.PCX flame (hover)
+HUFO.PCX ufo (hover)
+MERCI.PCX merci
+MODEL1.PCX model1
+MODEL2.PCX model2
+MODEL3.PCX model3
+MODEL4.PCX model4
+MODEL5.PCX model5
+POWER.PCX power
+PROTO.PCX proto
+RAY.PCX ray
+RED.PCX red
+TEHER.PCX teher
+WARTBURG.PCX wartburg
+WHITE.PCX white
+AJEEP-0.PCX ajeep 0
+AJEEP-2.PCX ajeep 2
+ARMY.PCX army
+AUDI.PCX audi
+BJEEP.PCX bjeep
+BMW.PCX bmw
+BOGAR.PCX bogar
+BULDOZER.PCX buldozer
+CAMO.PCX camo
+CSONKA.PCX csonka
+DEREZ.PCX derez
+DODGE.PCX dodge
+DZSO.PCX dzso
+FUNKEY.PCX funkey
+GOLF.PCX golf
+GRADIENT.PCX gradient
+HBLUE-0.PCX blue 0 (hover)
+HDZSO.PCX dzso (hover)
+HO.PCX ho
+HOMALY-2.PCX homaly 2
+HOMALY.PCX homaly
+JAX-2.PCX jax 2
+JAX.PCX jax
+JEEP.PCX jeep
+KEK.PCX kek
+KRISZ.PCX krisz
+LEGO.PCX lego
+MERCI-2.PCX merci 2
+MERCI-3.PCX merci 3
+NEONG.PCX neong
+OPEL.PCX opel
+PC-X.PCX pc x
+PIROS.PCX piros
+POTKEREK.PCX potkerek
+RAY-2.PCX ray 2
+REKLAM.PCX reklam
+REKLAM2.PCX reklam2
+RETRO.PCX retro
+SMILEY.PCX smiley
+SPORT.PCX sport
+SZELLEM.PCX szellem
+TOYOTA.PCX toyota
+TOYOTA2.PCX toyota2
+VIPER.PCX viper
+WHITE-0.PCX white 0
+ZOLD.PCX zold

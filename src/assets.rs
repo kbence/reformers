@@ -70,6 +70,10 @@ pub async fn preload() {
         for i in 0..12 {
             fetch(format!("sounds/engine/loop_{i}.wav")).await;
         }
+        fetch("skins/index.txt".into()).await;
+        for (file, _) in skins() {
+            fetch(format!("skins/{file}")).await;
+        }
         for map in maps() {
             for f in [
                 "MAP.PCX",
@@ -110,6 +114,16 @@ pub fn maps() -> Vec<String> {
             (!names.is_empty()).then_some(names)
         })
         .unwrap_or_default()
+}
+
+/// Extra car skins (`skins/<FILE>.PCX`): (file, display name) per line of `skins/index.txt`.
+pub fn skins() -> Vec<(String, String)> {
+    let index = read("skins/index.txt").unwrap_or_default();
+    String::from_utf8_lossy(&index)
+        .lines()
+        .filter_map(|l| l.trim().split_once(' '))
+        .map(|(f, name)| (f.to_string(), name.trim().to_string()))
+        .collect()
 }
 
 /// A map's image: `maps/<map>/<stem>.PCX`, or `.BMP` (TEREP1). Returns the file name and bytes.

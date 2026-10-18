@@ -1064,6 +1064,62 @@ const CARS: usize = 5;
 
 const CAMERAS: [&str; 4] = ["chase", "bumper", "orbit (Q/E)", "top-down"];
 
+/// The extra skins (file, name), read once.
+fn skin_list() -> &'static [(String, String)] {
+    static LIST: std::sync::OnceLock<Vec<(String, String)>> = std::sync::OnceLock::new();
+    LIST.get_or_init(assets::skins)
+}
+
+/// A skin file's display name; "" is the car's own.
+fn skin_name(file: &str) -> &str {
+    skin_list()
+        .iter()
+        .find(|(f, _)| f == file)
+        .map_or("own", |(_, n)| n.as_str())
+}
+
+/// The skin `step` along from `file` in the list, the car's own ("") first; Enter steps forward.
+fn next_skin(file: &str, step: i32) -> String {
+    let list = skin_list();
+    let i = list
+        .iter()
+        .position(|(f, _)| f == file)
+        .map_or(0, |i| i + 1) as i32;
+    let n = list.len() as i32 + 1;
+    match (i + if step == 0 { 1 } else { step }).rem_euclid(n) {
+        0 => String::new(),
+        k => list[k as usize - 1].0.clone(),
+    }
+}
+
+/// Loads skin `file` into `cache` (once; None if it won't load).
+fn cache_skin(
+    cache: &mut std::collections::HashMap<String, Option<Skin>>,
+    file: &str,
+    palette: &[[u8; 3]; 256],
+) {
+    if !file.is_empty() && !cache.contains_key(file) {
+        let skin = assets::read(&format!("skins/{file}"))
+            .ok()
+            .filter(|b| pcx::decode(b).is_ok())
+            .map(|b| skin_texture(&b, palette));
+        cache.insert(file.to_string(), skin);
+    }
+}
+
+/// Car `n` in skin `file` (from `cache`), or in its own skin.
+fn skin_of<'a>(
+    cache: &'a std::collections::HashMap<String, Option<Skin>>,
+    cars: &'a [(Car, Skin)],
+    n: usize,
+    file: &str,
+) -> &'a Skin {
+    cache
+        .get(file)
+        .and_then(Option::as_ref)
+        .unwrap_or(&cars[n].1)
+}
+
 /// Graphics options: one field + one menu row each; saved to settings.txt.
 struct Graphics {
     /// Map folder name (switching it in the menu loads that map).
@@ -1073,6 +1129,9 @@ struct Graphics {
     /// Player 1's and player 2's car, 0-based (CAR1–CAR5).
     car: usize,
     car2: usize,
+    /// Player 1's and player 2's skin file in `skins/`; empty = the car's own.
+    skin: String,
+    skin2: String,
     camera: usize, // index into CAMERAS
     nearest: bool,
     textured: bool,
@@ -1092,7 +1151,9 @@ enum Row {
     Map,
     Players,
     Car,
+    Skin,
     Car2,
+    Skin2,
     Sound,
     EngineSound,
     Camera,
@@ -1148,12 +1209,19 @@ fn items(page: Page, players: usize) -> Vec<Item> {
             Open(Page::Controls),
             R(Row::Quit),
         ],
-        Page::Race => [Row::Map, Row::Players, Row::Car, Row::Car2]
-            .into_iter()
-            .filter(|&r| r != Row::Car2 || players == 2)
-            .chain([Row::Camera, Row::Ghost, Row::Minimap])
-            .map(R)
-            .collect(),
+        Page::Race => [
+            Row::Map,
+            Row::Players,
+            Row::Car,
+            Row::Skin,
+            Row::Car2,
+            Row::Skin2,
+        ]
+        .into_iter()
+        .filter(|&r| !matches!(r, Row::Car2 | Row::Skin2) || players == 2)
+        .chain([Row::Camera, Row::Ghost, Row::Minimap])
+        .map(R)
+        .collect(),
         Page::Graphics => [
             Row::Textures,
             Row::Filter,
@@ -1255,10 +1323,12 @@ impl Menu {
 impl Graphics {
     fn to_text(&self) -> String {
         format!(
-            "map={}\ncar={}\ncar2={}\ncamera={}\nnearest={}\ntextured={}\ncrt={}\nminimap={}\nghost={}\nfog={}\nvolume={}\nengine={}\nfullscreen={}\nresolution={}\n",
+            "map={}\ncar={}\ncar2={}\nskin={}\nskin2={}\ncamera={}\nnearest={}\ntextured={}\ncrt={}\nminimap={}\nghost={}\nfog={}\nvolume={}\nengine={}\nfullscreen={}\nresolution={}\n",
             self.map,
             self.car + 1,
             self.car2 + 1,
+            self.skin,
+            self.skin2,
             self.camera,
             self.nearest,
             self.textured,
@@ -1279,6 +1349,8 @@ impl Graphics {
             let (b, n) = (v.trim() == "true", v.trim().parse::<usize>().ok());
             match k.trim() {
                 "map" => self.map = v.trim().to_string(),
+                "skin" => self.skin = v.trim().to_string(),
+                "skin2" => self.skin2 = v.trim().to_string(),
                 "car" => {
                     self.car = n
                         .filter(|n| (1..=CARS).contains(n))
@@ -1321,6 +1393,9 @@ impl Graphics {
             Row::Car if self.players == 2 => format!("P1 car: {}", self.car + 1),
             Row::Car => format!("Car: {}", self.car + 1),
             Row::Car2 => format!("P2 car: {}", self.car2 + 1),
+            Row::Skin if self.players == 2 => format!("P1 skin: {}", skin_name(&self.skin)),
+            Row::Skin => format!("Skin: {}", skin_name(&self.skin)),
+            Row::Skin2 => format!("P2 skin: {}", skin_name(&self.skin2)),
             Row::Players => match self.players {
                 1 => "Players: 1".into(),
                 _ => "Players: 2  (P2: WASD, Shift brake, Tab R, G repair)".into(),
@@ -1369,6 +1444,8 @@ impl Graphics {
                 self.car = (self.car as i32 + if step == 0 { 1 } else { step })
                     .rem_euclid(CARS as i32) as usize
             }
+            Row::Skin => self.skin = next_skin(&self.skin, step),
+            Row::Skin2 => self.skin2 = next_skin(&self.skin2, step),
             Row::Car2 => {
                 self.car2 = (self.car2 as i32 + if step == 0 { 1 } else { step })
                     .rem_euclid(CARS as i32) as usize
@@ -1860,6 +1937,8 @@ async fn main() {
         map: map.clone(),
         car: 0,
         car2: 1,
+        skin: String::new(),
+        skin2: String::new(),
         players: if args.windows(2).any(|w| w[0] == "--players" && w[1] == "2") {
             2
         } else {
@@ -1932,6 +2011,7 @@ async fn main() {
     let mut scene_target: Option<RenderTarget> = None;
     let mut menu_open = args.iter().any(|a| a == "--menu");
     let mut menu = Menu::new();
+    let mut skins: std::collections::HashMap<String, Option<Skin>> = Default::default();
     // menu previews: each map's minimap (loaded on first look), and the car turntable's target
     let mut map_previews: std::collections::HashMap<String, Option<(Texture2D, Level)>> =
         Default::default();
@@ -2074,8 +2154,12 @@ async fn main() {
             FilterMode::Linear
         };
         colour_tex.set_filter(filter);
+        cache_skin(&mut skins, &gfx.skin, &car_palette);
+        cache_skin(&mut skins, &gfx.skin2, &car_palette);
         cars.iter()
-            .for_each(|(_, skin)| skin.texture.set_filter(filter));
+            .map(|(_, skin)| skin)
+            .chain(skins.values().flatten())
+            .for_each(|skin| skin.texture.set_filter(filter));
         maptex.set_filter(filter);
         if menu_open {
             // paused: no sim ticks, no time banked for later
@@ -2173,7 +2257,7 @@ async fn main() {
                 get_time() + 3.0,
             ));
         }
-        let (model, skin) = (&cars[current].0, &cars[current].1);
+        let (model, skin) = (&cars[current].0, skin_of(&skins, &cars, current, &gfx.skin));
         let keys = Keys {
             throttle: down(KeyCode::Up) || shot.is_some(),
             reverse: down(KeyCode::Down),
@@ -2474,7 +2558,7 @@ async fn main() {
                 let (m, sk) = if ci == 0 {
                     (model, skin)
                 } else {
-                    (&cars[car2].0, &cars[car2].1)
+                    (&cars[car2].0, skin_of(&skins, &cars, car2, &gfx.skin2))
                 };
                 let r = if ci == 0 { &roll } else { &roll2 };
                 for mesh in car_meshes(
@@ -2757,9 +2841,13 @@ async fn main() {
                         draw_map_preview(&gfx.map, tex, level);
                     }
                 }
-                Some(&Item::Row(row @ (Row::Car | Row::Car2))) => {
-                    let n = if row == Row::Car { gfx.car } else { gfx.car2 };
-                    let (model, skin) = &cars[n];
+                Some(&Item::Row(row @ (Row::Car | Row::Skin | Row::Car2 | Row::Skin2))) => {
+                    let (n, file) = if matches!(row, Row::Car | Row::Skin) {
+                        (gfx.car, &gfx.skin)
+                    } else {
+                        (gfx.car2, &gfx.skin2)
+                    };
+                    let (model, skin) = (&cars[n].0, skin_of(&skins, &cars, n, file));
                     let drive = match model.drive {
                         car::Drive::Rear => "rear-wheel drive",
                         car::Drive::Front => "front-wheel drive",
@@ -2767,7 +2855,7 @@ async fn main() {
                     };
                     draw_car_preview(
                         &car_target,
-                        &format!("car {}  ({drive})", n + 1),
+                        &format!("car {}  ({drive})  {}", n + 1, skin_name(file)),
                         model,
                         skin,
                         &car_palette,
@@ -2899,6 +2987,8 @@ mod tests {
             map: "terep1".into(),
             car: 4,
             car2: 2,
+            skin: "GHOST.PCX".into(),
+            skin2: String::new(),
             players: 1,
             camera: 2,
             nearest: false,
@@ -2916,6 +3006,8 @@ mod tests {
             map: "x".into(),
             car: 0,
             car2: 1,
+            skin: "X.PCX".into(),
+            skin2: "Y.PCX".into(),
             players: 1,
             camera: 0,
             nearest: true,
@@ -2947,6 +3039,18 @@ mod tests {
         let at = |r| two.iter().position(|&i| i == Item::Row(r)).unwrap();
         // listed after Players, so toggling Players doesn't move the selection
         assert!(at(Row::Players) < at(Row::Car2));
+        assert!(at(Row::Car2) < at(Row::Skin2));
+    }
+
+    #[test]
+    fn skins_cycle_through_the_cars_own() {
+        reformers::need_assets!();
+        let last = skin_list().last().unwrap().0.clone();
+        assert_eq!(next_skin("", -1), last);
+        assert_eq!(next_skin(&last, 1), "");
+        assert_eq!(next_skin("", 0), skin_list()[0].0, "Enter steps forward");
+        assert_eq!(next_skin("GONE.PCX", 1), skin_list()[0].0);
+        assert_eq!(skin_name("HUFO.PCX"), "ufo (hover)");
     }
 
     #[test]
