@@ -1495,11 +1495,6 @@ fn draw_minimap(
     draw_circle(p.x, p.y, 4.0, RED);
 }
 
-/// Rows shown with a picture beside the menu: the map, the cars.
-fn previewed(item: Item) -> bool {
-    matches!(item, Item::Row(Row::Map | Row::Car | Row::Car2))
-}
-
 /// Where the menu's preview goes: a square right of the (shifted) drum.
 fn preview_rect() -> Rect {
     let (w, h) = (screen_width(), screen_height());
@@ -1632,16 +1627,16 @@ fn draw_menu(gfx: &Graphics, menu: &mut Menu, dt: f32) {
         Page::Top => "PAUSED".to_string(),
         p => format!("PAUSED  >  {p:?}"),
     };
-    let size = measure_text(&title, None, 40, 1.0);
-    draw_text(&title, (w - size.width) / 2.0, h * 0.14, 40.0, WHITE);
-    let (cy, radius, step) = (h * 0.52, h * 0.3, 0.18f32);
-    let list = items(menu.page, gfx.players);
-    // a row with a preview: the drum moves left to make room for it
-    let cx = if list.get(menu.selected).copied().is_some_and(previewed) {
+    // the Race page sits left of centre, leaving the right for its map / car previews
+    let cx = if menu.page == Page::Race {
         w * 0.32
     } else {
         w / 2.0
     };
+    let size = measure_text(&title, None, 40, 1.0);
+    draw_text(&title, cx - size.width / 2.0, h * 0.14, 40.0, WHITE);
+    let (cy, radius, step) = (h * 0.52, h * 0.3, 0.18f32);
+    let list = items(menu.page, gfx.players);
     for (i, item) in list.iter().enumerate() {
         let angle = (i as f32 - menu.scroll) * step;
         if angle.abs() > 1.4 {
@@ -1683,7 +1678,7 @@ fn draw_menu(gfx: &Graphics, menu: &mut Menu, dt: f32) {
         _ => "up/down select   left/right/enter change   esc back",
     };
     let size = measure_text(hint, None, 18, 1.0);
-    draw_text(hint, (w - size.width) / 2.0, h * 0.93, 18.0, GRAY);
+    draw_text(hint, cx - size.width / 2.0, h * 0.93, 18.0, GRAY);
 }
 
 const CRT_VERTEX: &str = "#version 100
