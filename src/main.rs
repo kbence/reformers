@@ -2,7 +2,7 @@
 //! Arrows drive, Space brakes, R puts the car back on its wheels (on the last checkpoint in a time
 //! trial), 1–5 switch car, W toggles the spring wireframe, C cycles the camera, Esc opens the
 //! options overlay (resume, map, camera, graphics, quit). `--map NAME` picks a map folder. With `CHECK.PCX` present the map is a time trial: the timer starts at the start line.
-//! `--menu` starts with the overlay open; `--smooth` / `--untextured` / `--crt` preset the graphics options.
+//! `--menu` starts with the overlay open; `--smooth` / `--untextured` / `--crt` / `--baked-light` preset the graphics options.
 //! `--shot out.png`: hold throttle + left, save a frame after 4 s and exit (for checking without a human).
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -18,7 +18,7 @@ use reformers::run::{self, Replay};
 use reformers::sim::{Keys, Sim, SimCar, TICK_HZ};
 use reformers::terrain::{SIZE, Terrain};
 use reformers::track::{Event, Lap, Race, Track, Zone, format_time};
-use reformers::{assets, pcx, sound};
+use reformers::{assets, lighting, pcx, sound};
 use std::path::PathBuf;
 
 const S: f32 = 256.0; // world units per render unit (one terrain cell)
@@ -737,7 +737,8 @@ fn fog_material(vertex: &'static str, fragment: &'static str, textures: Vec<Stri
 
 /// Terrain rows for one chunk. Colour comes from the COL texture (uv at the cell centre);
 /// the vertex colour carries only the slope shading, which macroquad multiplies in.
-fn chunk_mesh(t: &Terrain, chunk: usize) -> Mesh {
+/// One band of terrain rows. Shading: the original's flat N·L, or `baked` lighting.
+fn chunk_mesh(t: &Terrain, chunk: usize, baked: Option<&lighting::Baked>) -> Mesh {
     let h = |x: usize, y: usize| t.height[y.min(SIZE - 1) * SIZE + x.min(SIZE - 1)] as f32 * 16.0;
     let light = vec3(-0.4, 1.0, 0.3).normalize();
     let rows = chunk * CHUNK..((chunk + 1) * CHUNK + 1).min(SIZE);
@@ -751,18 +752,18 @@ fn chunk_mesh(t: &Terrain, chunk: usize) -> Mesh {
             )
             .normalize();
             let shade = 0.35 + 0.65 * n.dot(light).max(0.0);
+            let colour = match baked {
+                Some(b) => {
+                    let [r, g, b] = b.light(x, y, lighting::sun_angle(t, x, y));
+                    Color::new(r, g, b, 1.0)
+                }
+                None => Color::new(shade, shade, shade, 1.0),
+            };
             let (u, w) = (
                 (x as f32 + 0.5) / SIZE as f32,
                 (y as f32 + 0.5) / SIZE as f32,
             );
-            vertices.push(Vertex::new(
-                x as f32,
-                h(x, y) / S,
-                y as f32,
-                u,
-                w,
-                Color::new(shade, shade, shade, 1.0),
-            ));
+            vertices.push(Vertex::new(x as f32, h(x, y) / S, y as f32, u, w, colour));
         }
     }
     let mut indices = Vec::new();
@@ -810,7 +811,8 @@ fn skin_texture(pcx_bytes: &[u8], palette: &[[u8; 3]; 256]) -> Skin {
 }
 
 /// Builds the car's meshes for this frame from the display-list primitives.
-/// Wheels are sprites facing `eye` (the camera, render space), as the original draws them.
+/// Wheels are sprites facing `eye` (the camera, render space), as the original draws them, with
+/// their full height along the wheel's widest extent on screen (`cam_up` breaks the tie face-on).
 #[allow(clippy::too_many_arguments)]
 fn car_meshes(
     model: &Car,
@@ -820,6 +822,7 @@ fn car_meshes(
     ground: &dyn Fn(f32, f32) -> f32,
     skin: &Skin,
     eye: Vec3,
+    cam_up: Vec3,
     use_skin: bool,
 ) -> [Mesh; 3] {
     let n = atoms.len();
@@ -956,13 +959,14 @@ fn car_meshes(
                 let k = ((-d.dot(a)).clamp(-1.0, 1.0).acos() / (std::f32::consts::PI / 8.0)).round()
                     as usize;
                 let f = frames[k.min(frames.len() - 1)];
-                let right = d.cross(Vec3::Y);
-                let right = if right.length() < 1e-4 {
-                    unit(v(side.into())) // looking straight down
-                } else {
-                    right.normalize()
-                };
-                let up = right.cross(d);
+                // the wheel's full diameter shows along axle × view: upright seen from the side
+                // (like the original's never-rolling camera), along the car seen from above;
+                // face-on the disc is round, and the camera's up settles which way is up
+                let level = (cam_up - d * d.dot(cam_up)).normalize_or_zero();
+                let tall = a.cross(d);
+                let tall = if tall.dot(level) < 0.0 { -tall } else { tall };
+                let up = (tall + level * 0.05).normalize_or(level);
+                let right = d.cross(up).normalize_or(unit(v(side.into())));
                 let (hw, hh) = (f.half[0] / S, f.half[1] / S);
                 if use_skin {
                     // the sprites show the axle pointing left on screen: mirror when it points right
@@ -1169,6 +1173,8 @@ struct Graphics {
     camera: usize, // index into CAMERAS
     nearest: bool,
     textured: bool,
+    /// Baked terrain lighting (`lighting.rs`) instead of the original's flat shading.
+    lighting: bool,
     crt: bool,
     minimap: bool,
     ghost: bool,
@@ -1193,6 +1199,7 @@ enum Row {
     Camera,
     Filter,
     Textures,
+    Lighting,
     Crt,
     Fog,
     Minimap,
@@ -1258,6 +1265,7 @@ fn items(page: Page, players: usize) -> Vec<Item> {
         .collect(),
         Page::Graphics => [
             Row::Textures,
+            Row::Lighting,
             Row::Filter,
             Row::Crt,
             Row::Fog,
@@ -1357,7 +1365,7 @@ impl Menu {
 impl Graphics {
     fn to_text(&self) -> String {
         format!(
-            "map={}\ncar={}\ncar2={}\nskin={}\nskin2={}\ncamera={}\nnearest={}\ntextured={}\ncrt={}\nminimap={}\nghost={}\nfog={}\nvolume={}\nengine={}\nfullscreen={}\nresolution={}\n",
+            "map={}\ncar={}\ncar2={}\nskin={}\nskin2={}\ncamera={}\nnearest={}\ntextured={}\nlighting={}\ncrt={}\nminimap={}\nghost={}\nfog={}\nvolume={}\nengine={}\nfullscreen={}\nresolution={}\n",
             self.map,
             self.car + 1,
             self.car2 + 1,
@@ -1366,6 +1374,7 @@ impl Graphics {
             self.camera,
             self.nearest,
             self.textured,
+            self.lighting,
             self.crt,
             self.minimap,
             self.ghost,
@@ -1398,6 +1407,7 @@ impl Graphics {
                 "camera" => self.camera = n.filter(|&n| n < CAMERAS.len()).unwrap_or(self.camera),
                 "nearest" => self.nearest = b,
                 "textured" => self.textured = b,
+                "lighting" => self.lighting = b,
                 "crt" => self.crt = b,
                 "minimap" => self.minimap = b,
                 "ghost" => self.ghost = b,
@@ -1445,6 +1455,14 @@ impl Graphics {
                 if self.nearest { "nearest" } else { "smooth" }
             ),
             Row::Textures => format!("Textures: {}", on(self.textured)),
+            Row::Lighting => format!(
+                "Lighting: {}",
+                if self.lighting {
+                    "baked (shadows, sky, bounce)"
+                } else {
+                    "original"
+                }
+            ),
             Row::Crt => format!("CRT filter: {}", on(self.crt)),
             Row::Minimap => format!("Minimap: {}", on(self.minimap)),
             Row::Fog => format!("Fog: {}", on(self.fog)),
@@ -1470,6 +1488,7 @@ impl Graphics {
         match row {
             Row::Filter => self.nearest = !self.nearest,
             Row::Textures => self.textured = !self.textured,
+            Row::Lighting => self.lighting = !self.lighting,
             Row::Crt => self.crt = !self.crt,
             Row::Minimap => self.minimap = !self.minimap,
             Row::Fog => self.fog = !self.fog,
@@ -1643,7 +1662,9 @@ fn draw_map_preview(name: &str, colour: &Texture2D, level: &Level) {
     centred(&caption, r.y + r.w + 32.0, 24.0, WHITE);
     // the credits, cut to the preview's width
     let mut credits: Vec<char> = level.credits.chars().collect();
-    let fits = |c: &[char]| measure_text(&c.iter().collect::<String>(), None, 18, 1.0).width <= r.w;
+    let fits = |c: &[char]| {
+        measure_text(c.iter().collect::<String>().as_str(), None, 18, 1.0).width <= r.w
+    };
     if !fits(&credits) {
         while !credits.is_empty() && !fits(&[&credits[..], &['…']].concat()) {
             credits.pop();
@@ -1714,6 +1735,7 @@ fn draw_car_preview(
         &|_, _| -3.0, // shadow right on the turntable
         skin,
         eye,
+        Vec3::Y,
         textured,
     ) {
         draw_mesh(&mesh);
@@ -1966,7 +1988,11 @@ async fn main() {
     let mut last_centre = sim.cars[0].centre();
 
     let chunks = SIZE.div_ceil(CHUNK);
-    let mut meshes: Vec<Mesh> = (0..chunks).map(|c| chunk_mesh(&sim.terrain, c)).collect();
+    let mut meshes: Vec<Mesh> = (0..chunks)
+        .map(|c| chunk_mesh(&sim.terrain, c, None))
+        .collect();
+    // baked lighting for the loaded map, while the option is on (made on the first frame)
+    let mut baked: Option<lighting::Baked> = None;
     let colour_tex = Texture2D::from_image(&colour_image(&sim.terrain));
     let mut maptex = tiles(&level, &sim.terrain.palette);
     let terrain_material = fog_material(
@@ -1995,6 +2021,7 @@ async fn main() {
         camera: 0,
         nearest: true,
         textured: true,
+        lighting: false,
         crt: false,
         minimap: true,
         ghost: false,
@@ -2010,6 +2037,7 @@ async fn main() {
     // launch flags win over the saved settings
     gfx.nearest &= !flag("--smooth");
     gfx.textured &= !flag("--untextured");
+    gfx.lighting |= flag("--baked-light");
     gfx.crt |= flag("--crt");
     gfx.minimap &= !flag("--no-minimap");
     gfx.ghost |= flag("--ghost");
@@ -2110,7 +2138,10 @@ async fn main() {
                             sim.set_soft_dirt(t.soft_dirt.clone());
                         }
                         map = want;
-                        meshes = (0..chunks).map(|c| chunk_mesh(&sim.terrain, c)).collect();
+                        baked = gfx.lighting.then(|| lighting::bake(&sim.terrain));
+                        meshes = (0..chunks)
+                            .map(|c| chunk_mesh(&sim.terrain, c, baked.as_ref()))
+                            .collect();
                         colour_tex.update(&colour_image(&sim.terrain));
                         index_tex.update(&index_image(&sim.terrain));
                         maptex = tiles(&level, &sim.terrain.palette);
@@ -2195,6 +2226,13 @@ async fn main() {
                 }
                 MenuAction::None => {}
             }
+        }
+        if gfx.lighting != baked.is_some() {
+            // the option was switched (or this is the first frame): bake or drop, re-mesh
+            baked = gfx.lighting.then(|| lighting::bake(&sim.terrain));
+            meshes = (0..chunks)
+                .map(|c| chunk_mesh(&sim.terrain, c, baked.as_ref()))
+                .collect();
         }
         let filter = if gfx.nearest {
             FilterMode::Nearest
@@ -2521,7 +2559,7 @@ async fn main() {
             }
         }
         for c in (0..chunks).filter(|&c| dirty[c]) {
-            meshes[c] = chunk_mesh(&sim.terrain, c);
+            meshes[c] = chunk_mesh(&sim.terrain, c, baked.as_ref());
         }
         shown.copy_from_slice(&sim.terrain.height);
         if shown_colour != sim.terrain.colour {
@@ -2616,6 +2654,7 @@ async fn main() {
                     &|x, y| sim.terrain.height_at(x, y),
                     sk,
                     position,
+                    up,
                     gfx.textured,
                 )
                 .iter()
@@ -2638,6 +2677,7 @@ async fn main() {
                     &|x, y| sim.terrain.height_at(x, y),
                     skin,
                     position,
+                    up,
                     gfx.textured,
                 ) {
                     m.vertices
@@ -3040,6 +3080,7 @@ mod tests {
             camera: 2,
             nearest: false,
             textured: true,
+            lighting: true,
             crt: true,
             minimap: false,
             ghost: true,
@@ -3059,6 +3100,7 @@ mod tests {
             camera: 0,
             nearest: true,
             textured: false,
+            lighting: false,
             crt: false,
             minimap: true,
             ghost: false,

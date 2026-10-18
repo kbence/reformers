@@ -2,6 +2,7 @@ pub mod assets;
 pub mod bmp;
 pub mod car;
 pub mod ghost;
+pub mod lighting;
 pub mod pcx;
 pub mod run;
 pub mod sim;
