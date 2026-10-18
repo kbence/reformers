@@ -60,12 +60,22 @@ pub enum Prim {
     Flat { verts: Vec<Entry>, colour: u8 },
     /// Op 8: polygon textured from CARn.PCX; uv in skin pixels.
     Textured { verts: Vec<(Entry, [f32; 2])> },
-    /// Op 10: wheel disc at `centre`, axle towards `axle`; 9 view-angle frames (uv quads), 0 = face-on.
+    /// Op 10: wheel sprite at `centre`, axle towards `axle`; 9 view-angle frames.
     Wheel {
         centre: Entry,
         axle: Entry,
-        frames: Vec<[[f32; 2]; 4]>,
+        frames: Vec<WheelFrame>,
     },
+}
+
+/// One view of a wheel sprite. Frames 0–8 sweep 180° round the wheel: 0 = the hub face-on
+/// (looking down the axle), 4 = the tread edge-on, 8 = the inner side face-on.
+#[derive(Debug, Clone, Copy)]
+pub struct WheelFrame {
+    /// Half width and half height on screen, world units (the height is the wheel's radius).
+    pub half: [f32; 2],
+    /// Corners in skin pixels: top-left, top-right, bottom-right, bottom-left.
+    pub uv: [[f32; 2]; 4],
 }
 
 pub struct Car {
@@ -118,8 +128,11 @@ fn parse_prims(d: &[u8]) -> Result<Vec<Prim>, String> {
             10 => {
                 let frames = (0..9)
                     .map(|f| {
-                        let o = p + 7 + 20 * f + 4;
-                        Ok([uv(o)?, uv(o + 4)?, uv(o + 8)?, uv(o + 12)?])
+                        let o = p + 7 + 20 * f;
+                        Ok(WheelFrame {
+                            half: [w(o + 2)? as f32 / 256.0, w(o)? as f32 / 256.0],
+                            uv: [uv(o + 4)?, uv(o + 8)?, uv(o + 12)?, uv(o + 16)?],
+                        })
                     })
                     .collect::<Result<_, String>>()?;
                 prims.push(Prim::Wheel {
@@ -250,6 +263,22 @@ mod tests {
                 4,
                 "CAR{n}"
             );
+            // wheel sprites: radius-high, narrowing towards edge-on (frame 4) and widening again
+            for p in &car.prims {
+                if let Prim::Wheel { centre, frames, .. } = p {
+                    let r = car.atoms[*centre as usize / 2].radius;
+                    let widths: Vec<f32> = frames.iter().map(|f| f.half[0]).collect();
+                    assert!(frames.iter().all(|f| (f.half[1] - r).abs() < 1.0), "CAR{n}");
+                    assert!(
+                        widths[4] < widths[2] && widths[2] < widths[0],
+                        "CAR{n}: {widths:?}"
+                    );
+                    assert!(
+                        widths[4] < widths[6] && widths[6] < widths[8],
+                        "CAR{n}: {widths:?}"
+                    );
+                }
+            }
             assert_eq!(
                 car.prims
                     .iter()

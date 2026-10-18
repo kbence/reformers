@@ -802,7 +802,7 @@ fn skin_texture(pcx_bytes: &[u8], palette: &[[u8; 3]; 256]) -> Skin {
 }
 
 /// Builds the car's meshes for this frame from the display-list primitives.
-/// `roll` is each wheel's accumulated rotation (radians), by atom index 0–3.
+/// Wheels are sprites facing `eye` (the camera, render space), as the original draws them.
 #[allow(clippy::too_many_arguments)]
 fn car_meshes(
     model: &Car,
@@ -811,7 +811,7 @@ fn car_meshes(
     palette: &[[u8; 3]; 256],
     ground: &dyn Fn(f32, f32) -> f32,
     skin: &Skin,
-    roll: &[f32; 4],
+    eye: Vec3,
     use_skin: bool,
 ) -> [Mesh; 3] {
     let n = atoms.len();
@@ -820,6 +820,10 @@ fn car_meshes(
     let side = unit(w(atoms[7]) - w(atoms[6]));
     let fwd = unit(w(atoms[4]) - w(atoms[6]) + w(atoms[5]) - w(atoms[7]));
     let steered = fwd * steer.sin() + side * steer.cos(); // like 0x11f0
+    let body = v(atoms
+        .iter()
+        .fold(Vec3::ZERO, |m, &p| m + Vec3::from(p) / n as f32)
+        .into());
     let entry = |e: u16| -> Vec3 {
         let e = e as usize;
         let world = if e < 2 * n {
@@ -933,22 +937,44 @@ fn car_meshes(
                 axle,
                 frames,
             } => {
-                let i = (*centre / 2) as usize;
                 let c = entry(*centre);
-                let a = unit(entry(*axle) - c);
-                let t1 = unit(a.cross(Vec3::Y));
-                let t2 = a.cross(t1);
-                let (sr, cr) = roll[i.min(3)].sin_cos();
-                let (r1, r2) = (t1 * cr + t2 * sr, t2 * cr - t1 * sr);
-                let r = model.atoms[i].radius / S;
+                // the axle out of the car (rear wheels' axle entries point at each other)
+                let mut a = unit(entry(*axle) - c);
+                if a.dot(c - body) < 0.0 {
+                    a = -a;
+                }
+                let d = unit(c - eye);
+                // 0 = looking down the axle at the hub … 8 = at the inner side, 22.5° apart
+                let k = ((-d.dot(a)).clamp(-1.0, 1.0).acos() / (std::f32::consts::PI / 8.0)).round()
+                    as usize;
+                let f = frames[k.min(frames.len() - 1)];
+                let right = d.cross(Vec3::Y);
+                let right = if right.length() < 1e-4 {
+                    unit(v(side.into())) // looking straight down
+                } else {
+                    right.normalize()
+                };
+                let up = right.cross(d);
+                let (hw, hh) = (f.half[0] / S, f.half[1] / S);
                 if use_skin {
-                    let corners = [-r1 - r2, r1 - r2, r1 + r2, -r1 + r2];
+                    // the sprites show the axle pointing left on screen: mirror when it points right
+                    let order = if a.dot(right) > 0.0 {
+                        [1, 0, 3, 2]
+                    } else {
+                        [0, 1, 2, 3]
+                    };
+                    let corners = [
+                        -right * hw + up * hh,
+                        right * hw + up * hh,
+                        right * hw - up * hh,
+                        -right * hw - up * hh,
+                    ];
                     fan(
                         &mut wheels,
                         (0..4)
-                            .map(|k| {
-                                let p = c + corners[k] * r;
-                                let uv = frames[0][k];
+                            .map(|j| {
+                                let p = c + corners[j];
+                                let uv = f.uv[order[j]];
                                 Vertex::new(
                                     p.x,
                                     p.y,
@@ -961,17 +987,17 @@ fn car_meshes(
                             .collect(),
                     );
                 } else {
-                    // a disc in the tyre's colour (sampled an eighth in from the frame's edge, past the rim)
-                    let [a0, _, b0, _] = frames[0];
+                    // an ellipse in the tyre's colour (sampled an eighth in from the face-on frame's edge, past the rim)
+                    let [a0, _, b0, _] = frames[0].uv;
                     let tyre = mid(
                         &mut [[a0[0] * 0.875 + b0[0] * 0.125, (a0[1] + b0[1]) / 2.0]].into_iter(),
                     );
                     fan(
                         &mut wheels,
                         (0..12)
-                            .map(|k| {
-                                let (sa, ca) = (k as f32 * std::f32::consts::TAU / 12.0).sin_cos();
-                                let p = c + (r1 * ca + r2 * sa) * r;
+                            .map(|j| {
+                                let (sa, ca) = (j as f32 * std::f32::consts::TAU / 12.0).sin_cos();
+                                let p = c + right * (ca * hw) + up * (sa * hh);
                                 Vertex::new(p.x, p.y, p.z, 0.0, 0.0, tyre)
                             })
                             .collect(),
@@ -1648,8 +1674,9 @@ fn draw_car_preview(
         .fold(0.0, f32::max)
         / S;
     let look = vec3(0.0, reach * 0.3, 0.0);
+    let eye = look + vec3(0.0, reach * 1.1, reach * 3.2);
     set_camera(&Camera3D {
-        position: look + vec3(0.0, reach * 1.1, reach * 3.2),
+        position: eye,
         target: look,
         up: Vec3::Y,
         aspect: Some(1.0),
@@ -1665,7 +1692,7 @@ fn draw_car_preview(
         palette,
         &|_, _| -3.0, // shadow right on the turntable
         skin,
-        &[0.0; 4],
+        eye,
         textured,
     ) {
         draw_mesh(&mesh);
@@ -2560,7 +2587,6 @@ async fn main() {
                 } else {
                     (&cars[car2].0, skin_of(&skins, &cars, car2, &gfx.skin2))
                 };
-                let r = if ci == 0 { &roll } else { &roll2 };
                 for mesh in car_meshes(
                     m,
                     &c.atom_positions(),
@@ -2568,7 +2594,7 @@ async fn main() {
                     &car_palette,
                     &|x, y| sim.terrain.height_at(x, y),
                     sk,
-                    r,
+                    position,
                     gfx.textured,
                 )
                 .iter()
@@ -2590,7 +2616,7 @@ async fn main() {
                     &car_palette,
                     &|x, y| sim.terrain.height_at(x, y),
                     skin,
-                    &f.roll,
+                    position,
                     gfx.textured,
                 ) {
                     m.vertices
