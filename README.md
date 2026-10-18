@@ -87,7 +87,8 @@ They and the map images are the original author's copyrighted work; see `assets/
 
 ## Licence and the original files
 
-Reformers' code (and the `CHECK.PCX` track, sounds and web page) is MIT-licensed, see `LICENSE`. The
+Reformers' code (and the `CHECK.PCX` track, synthesised sounds and web page) is MIT-licensed, see
+`LICENSE`. The engine loops in `assets/sounds/engine/` are CC0 by domasx2 (see `SOURCES.md` there). The
 original DEFORMERS / TEREP2 and TEREP1 files are Nagymáthé Dénes's copyrighted work and are **not**
 covered (see `assets/READ.ME`). Without them the game can't run, and the tests that need them skip
 themselves. To supply them, copy from the original demos:
@@ -108,9 +109,11 @@ cargo run --release --bin tool -- sounds out/sounds                 # the synthe
 cargo test
 ```
 
-Sound is synthesised at start-up, no sample files: the original's two AdLib FM patches (the engine,
-retuned with wheel speed, and the landing thud, played 3 octaves up so speakers can reproduce it),
-plus skid noise and checkpoint/lap chimes.
+The engine is six recorded CC0 loops ("racing car engine sound loops" by domasx2, OpenGameArt; full
+provenance in `assets/sounds/engine/SOURCES.md`), crossfaded by speed; without them the game falls
+back to the original's AdLib engine tone. Everything else is synthesised at start-up: the original's
+landing-thud FM patch (played 3 octaves up so speakers can reproduce it), skid noise and
+checkpoint/lap chimes.
 
 ## Replays
 
