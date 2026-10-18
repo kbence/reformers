@@ -109,9 +109,9 @@ cargo run --release --bin tool -- sounds out/sounds                 # the synthe
 cargo test
 ```
 
-The engine is six recorded CC0 loops ("racing car engine sound loops" by domasx2, OpenGameArt; full
-provenance in `assets/sounds/engine/SOURCES.md`), crossfaded by speed; without them the game falls
-back to the original's AdLib engine tone. Everything else is synthesised at start-up: the original's
+The engine is a recorded CC0 loop ("racing car engine sound loops" by domasx2, OpenGameArt; full
+provenance in `assets/sounds/engine/SOURCES.md`), pitched up at load time into nine speed steps and
+crossfaded by wheel speed; without it the game falls back to the original's AdLib engine tone. Everything else is synthesised at start-up: the original's
 landing-thud FM patch (played 3 octaves up so speakers can reproduce it), skid noise and
 checkpoint/lap chimes.
 

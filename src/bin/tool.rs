@@ -162,6 +162,20 @@ fn sounds(dir: &str) {
         ("skid", sound::skid_loop()),
         ("checkpoint", sound::chime(&[(880.0, 0.3)])),
     ];
+    // the recorded engine as the game pitches it (idle 90 Hz, flat out 320 Hz), when installed
+    let recorded = assets::read("sounds/engine/loop_0.wav")
+        .ok()
+        .and_then(|b| sound::read_wav(&b));
+    let all: Vec<(&str, Vec<f32>)> = match &recorded {
+        Some(idle) => all
+            .into_iter()
+            .chain([
+                ("engine_recorded_idle", sound::speed_up(idle, 90.0 / 43.5)),
+                ("engine_recorded_fast", sound::speed_up(idle, 320.0 / 43.5)),
+            ])
+            .collect(),
+        None => all.into_iter().collect(),
+    };
     std::fs::create_dir_all(dir).unwrap_or_else(|e| fail(&format!("{dir}: {e}")));
     for (name, samples) in all {
         let path = format!("{dir}/{name}.wav");

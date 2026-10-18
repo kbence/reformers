@@ -185,6 +185,57 @@ pub fn chime(notes: &[(f32, f32)]) -> Vec<f32> {
         .collect()
 }
 
+/// Samples (−1…1, channels mixed to mono) of an uncompressed 16-bit PCM WAV; skips other chunks
+/// (LIST metadata etc.). None for anything else.
+pub fn read_wav(d: &[u8]) -> Option<Vec<f32>> {
+    if d.get(..4)? != b"RIFF" || d.get(8..12)? != b"WAVE" {
+        return None;
+    }
+    let (mut at, mut channels) = (12, 0usize);
+    while at + 8 <= d.len() {
+        let len = u32::from_le_bytes(d[at + 4..at + 8].try_into().ok()?) as usize;
+        let body = d.get(at + 8..(at + 8 + len).min(d.len()))?;
+        match &d[at..at + 4] {
+            b"fmt " => {
+                let format = u16::from_le_bytes([body[0], body[1]]);
+                let bits = u16::from_le_bytes([body[14], body[15]]);
+                if format != 1 || bits != 16 {
+                    return None;
+                }
+                channels = u16::from_le_bytes([body[2], body[3]]) as usize;
+            }
+            b"data" if channels > 0 => {
+                return Some(
+                    body.chunks_exact(2 * channels)
+                        .map(|f| {
+                            f.chunks_exact(2)
+                                .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0)
+                                .sum::<f32>()
+                                / channels as f32
+                        })
+                        .collect(),
+                );
+            }
+            _ => {}
+        }
+        at += 8 + len + (len & 1);
+    }
+    None
+}
+
+/// A loop played `factor` times faster (higher pitch, shorter), by linear interpolation;
+/// wraps around at the end so it still loops.
+pub fn speed_up(x: &[f32], factor: f32) -> Vec<f32> {
+    let n = ((x.len() as f32 / factor) as usize).max(1);
+    (0..n)
+        .map(|i| {
+            let p = i as f32 * x.len() as f32 / n as f32;
+            let (j, t) = (p as usize % x.len(), p.fract());
+            x[j] * (1.0 - t) + x[(j + 1) % x.len()] * t
+        })
+        .collect()
+}
+
 /// 16-bit mono PCM WAV.
 pub fn wav(samples: &[f32]) -> Vec<u8> {
     let data = samples.len() as u32 * 2;
@@ -252,6 +303,30 @@ mod tests {
         let n = t.len();
         assert!(rms(&t[..n / 10]) > 0.1);
         assert!(rms(&t[9 * n / 10..]) < 0.1 * rms(&t[..n / 10]));
+    }
+
+    #[test]
+    fn reads_wav_back_and_speeds_up() {
+        let tone: Vec<f32> = (0..4410)
+            .map(|i| (TAU * 100.0 * i as f32 / RATE as f32).sin() * 0.5)
+            .collect();
+        let back = read_wav(&wav(&tone)).unwrap();
+        assert_eq!(back.len(), tone.len());
+        assert!(back.iter().zip(&tone).all(|(a, b)| (a - b).abs() < 1e-3));
+        // a LIST chunk before the data, like the recorded engine loops, is skipped
+        let mut with_list = wav(&tone);
+        let list = [b"LIST".as_slice(), &4u32.to_le_bytes(), b"INFO"].concat();
+        with_list.splice(36..36, list);
+        assert_eq!(read_wav(&with_list).unwrap().len(), tone.len());
+        let fast = speed_up(&tone, 2.0);
+        assert_eq!(fast.len(), 2205);
+        let crossings = |x: &[f32]| x.windows(2).filter(|w| w[0] < 0.0 && w[1] >= 0.0).count();
+        assert_eq!(
+            crossings(&fast),
+            crossings(&tone),
+            "same cycles in half the time: double pitch"
+        );
+        assert!(read_wav(b"RIFF....WAVEjunk").is_none());
     }
 
     #[test]

@@ -34,6 +34,9 @@ fn data_dir() -> Option<PathBuf> {
     Some(base.join("reformers"))
 }
 
+/// Firing frequency of the recorded engine idle loop (`assets/sounds/engine/loop_0.wav`), measured.
+const RECORDED_HZ: f32 = 43.5;
+
 /// Engine loop pitches, ×1.25 apart around the original's idle note; crossfaded by speed.
 const ENGINE_STEPS: [f32; 7] = [0.75, 0.94, 1.17, 1.46, 1.83, 2.29, 2.86];
 
@@ -54,26 +57,26 @@ impl Audio {
         async fn load(samples: Vec<f32>) -> Option<Sound> {
             load_sound_from_bytes(&sound::wav(&samples)).await.ok()
         }
-        // recorded loops if installed (assets/sounds/engine/loop_0.wav …, slow to fast, see
-        // SOURCES.md there), else the original's AdLib tone at ENGINE_STEPS
+        // the recorded idle loop if installed (assets/sounds/engine/loop_0.wav, see SOURCES.md
+        // there), sped up into ENGINE_RPM_STEPS; else the original's AdLib tone at ENGINE_STEPS
         let mut engine = vec![];
-        let mut i = 0;
-        while let Ok(bytes) = assets::read(&format!("sounds/engine/loop_{i}.wav")) {
-            match load_sound_from_bytes(&bytes).await {
-                Ok(snd) => engine.push(snd),
-                Err(_) => break,
-            }
-            i += 1;
-        }
-        let steps: Vec<f32> = if engine.len() >= 2 {
-            // spread over the same speed range as the AdLib steps
+        let recorded = assets::read("sounds/engine/loop_0.wav")
+            .ok()
+            .and_then(|b| sound::read_wav(&b));
+        let steps: Vec<f32> = if let Some(idle) = recorded {
+            // ~43 Hz as recorded: too low for most speakers; 90–320 Hz is a 4-cylinder from a fast idle
+            // to ~9500 rpm, over the same speed range as the AdLib steps
             let (lo, hi) = (ENGINE_STEPS[0], ENGINE_STEPS[ENGINE_STEPS.len() - 1]);
-            let n = engine.len() as f32 - 1.0;
-            (0..engine.len())
-                .map(|i| lo * (hi / lo).powf(i as f32 / n))
-                .collect()
+            let n = 9;
+            let mut steps = vec![];
+            for i in 0..n {
+                let f = i as f32 / (n - 1) as f32;
+                let hz = 90.0 * (320.0f32 / 90.0).powf(f);
+                engine.push(load(sound::speed_up(&idle, hz / RECORDED_HZ)).await?);
+                steps.push(lo * (hi / lo).powf(f));
+            }
+            steps
         } else {
-            engine.clear();
             for k in ENGINE_STEPS {
                 engine.push(load(sound::engine_loop(sound::engine_idle_hz() * k)).await?);
             }
@@ -111,7 +114,7 @@ impl Audio {
             .max(1);
         let (lo, hi) = (self.steps[at - 1], self.steps[at]);
         let w = ((pitch / lo).ln() / (hi / lo).ln()).clamp(0.0, 1.0);
-        let loud = vol * if throttle { 0.4 } else { 0.18 };
+        let loud = vol * if throttle { 0.65 } else { 0.35 };
         for (i, s) in self.engine.iter().enumerate() {
             let g = if i == at - 1 {
                 1.0 - w

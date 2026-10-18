@@ -20,5 +20,7 @@
 - **Licence history:** on 2011-07-24 a commenter questioned whether an earlier source sample
   (sampling+ licence) allowed release; the author replied the same day that the loops had been
   remade from a public-domain sample. The page lists CC0.
-- **Changes:** none. Files are byte-identical to the downloads (checksums above, downloaded
-  2026-10-18); only renamed to `loop_N.wav`, ordered slowest to fastest, which the game expects.
+- **Changes:** none to the files. They are byte-identical to the downloads (checksums above,
+  downloaded 2026-10-18), only renamed to `loop_N.wav`, slowest to fastest. The game currently uses
+  `loop_0.wav` alone and pitches it up at load time (resampled to 90–320 Hz firing rate, since the
+  recorded ~43 Hz is below what most speakers reproduce); `loop_1`–`loop_5` are kept as published.
