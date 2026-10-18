@@ -157,12 +157,13 @@ pub fn engine_loop(hz: f32) -> Vec<f32> {
     analog_out(&tone[a..b])
 }
 
-/// The card's analogue output stage, roughly: two one-pole low-passes at ~3.5 kHz. The patch's
-/// feedback makes a sawtooth-like wave with a hard reset every cycle; raw, that's a full-scale
-/// jump between two samples, heard as a click per cycle (a Geiger counter at idle). Run round
-/// the loop twice so the filter has settled at the seam.
+/// Softened edges: two one-pole low-passes at 600 Hz. The patch's feedback makes a sawtooth-like
+/// wave with a hard reset every cycle; raw, that's a full-scale jump between two samples, heard
+/// as a click per cycle (a Geiger counter at idle). The card's own output stage (~3.5 kHz) still
+/// left a tick at the 18 Hz idle pitch; 600 Hz was picked by ear. Run round the loop twice so the
+/// filter has settled at the seam.
 fn analog_out(x: &[f32]) -> Vec<f32> {
-    let k = 1.0 - (-TAU * 3500.0 / RATE as f32).exp();
+    let k = 1.0 - (-TAU * 600.0 / RATE as f32).exp();
     let (mut a, mut b) = (0.0f32, 0.0f32);
     let mut out = vec![0.0; x.len()];
     for pass in 0..2 {
