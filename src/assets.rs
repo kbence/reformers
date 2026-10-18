@@ -167,6 +167,19 @@ pub fn read(name: &str) -> Result<Vec<u8>, String> {
         .ok_or_else(|| format!("{name} not found in assets/"))
 }
 
+/// Where map folder `map` is on disk (the asset dir `read` finds its MAP in), for saving into it.
+#[cfg(not(target_arch = "wasm32"))]
+pub fn map_dir(map: &str) -> Option<PathBuf> {
+    dirs()
+        .into_iter()
+        .map(|d| d.join("maps").join(map))
+        .find(|d| {
+            ["MAP.PCX", "MAP.BMP", "MAP.PNG", "MAP.PGM"]
+                .iter()
+                .any(|f| d.join(f).exists())
+        })
+}
+
 #[cfg(not(target_arch = "wasm32"))]
 pub fn read(name: &str) -> Result<Vec<u8>, String> {
     let dirs = dirs();

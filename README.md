@@ -121,6 +121,17 @@ themselves. To supply them, copy from the original demos:
 | `assets/maps/terep1/MAP.BMP`, `COL.BMP` | TEREP1 |
 | `assets/skins/*.PCX` (optional) | Terep – 30th Anniversary Edition's `CARTEX` and `Extras/Car Textures` (see `assets/skins/SOURCES.md`) |
 
+## Map editor
+
+`cargo run --release --bin editor -- MAP` (or `editor MAP` from a release) edits a map's
+checkpoints, saving `CHECK.PCX` into its folder; keep the game running on the same map and it
+reloads each save within a second. Tools: 1 spawn (arrow keys set its facing), 2 gates (drag a
+line; they're numbered in the order drawn, S = start/finish; right-click deletes one), 3 reset
+zone, 4 boost pad, 5 slow zone (`[` `]` strength), 6 soft dirt, 7 eraser (`-` `=` brush size).
+Wheel zooms, middle-drag (or Space + drag) pans, Z undoes, S saves. The top line says how the
+game will read the result (gates, spawn, or why it won't load). Terrain painting comes later
+(#36); heights can already come from any heightmap tool as `MAP.PNG` / `MAP.PGM`.
+
 ## Tools
 
 ```bash

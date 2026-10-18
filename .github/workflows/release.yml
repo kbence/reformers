@@ -49,7 +49,7 @@ jobs:
         run: |
           cargo build --release --bins
           mkdir -p dist
-          cp target/release/reformers* target/release/tool* dist/ 2>/dev/null || true
+          cp target/release/reformers* target/release/tool* target/release/editor* dist/ 2>/dev/null || true
           rm -f dist/*.d dist/*.pdb
 
       - name: Build (universal macOS binary)
@@ -58,7 +58,7 @@ jobs:
           cargo build --release --bins --target aarch64-apple-darwin
           cargo build --release --bins --target x86_64-apple-darwin
           mkdir -p dist
-          for bin in reformers tool; do
+          for bin in reformers tool editor; do
             lipo -create -output dist/$bin \
               target/aarch64-apple-darwin/release/$bin target/x86_64-apple-darwin/release/$bin
           done

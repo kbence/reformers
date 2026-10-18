@@ -12,12 +12,13 @@
 
 use crate::{pcx, terrain::SIZE};
 
-const SPAWN: u8 = 1;
-const GATE: u8 = 2;
-const RESET: u8 = 3;
-const BOOST: u8 = 4;
-const SLOW: u8 = 5;
-const SOFT: u8 = 6;
+/// CHECK.PCX elements (index >> 4), see above; public for the map editor.
+pub const SPAWN: u8 = 1;
+pub const GATE: u8 = 2;
+pub const RESET: u8 = 3;
+pub const BOOST: u8 = 4;
+pub const SLOW: u8 = 5;
+pub const SOFT: u8 = 6;
 
 /// A painted area that acts on the car while it's inside.
 #[derive(Clone, Copy, Debug, PartialEq)]
