@@ -83,7 +83,9 @@ with `--map NAME`; the last one is remembered. Shipped: `terep2` (the original, 
 time-trial track), `terep2-hills` (its unused `MAPHILL.PCX`) and `terep1` (TEREP1's map, same
 landscape, own palette; heights use TEREP2's scale, so it comes out gentler). A map folder may
 carry its own `MAPTEX.PCX`; otherwise the shared one is used when the palettes match, and the
-terrain is drawn in flat colours when they don't.
+terrain is drawn in flat colours when they don't. Plus 105 community maps from Terep – 30th
+Anniversary Edition (free drive: none has checkpoints), each with an `INFO.TXT` holding its name
+and credits, shown under the map preview; their origin is in `assets/maps/SOURCES.md`.
 
 Shared game files live in `assets/` (also found next to the executable, or wherever
 `REFORMERS_ASSETS` points): `MAPTEX.PCX`, `TEXTURES.PCX`, `CAR1–5.DAT`, `CAR1.PCX`, `CAR2.PCX`.

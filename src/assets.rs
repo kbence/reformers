@@ -82,6 +82,7 @@ pub async fn preload() {
                 "COL.BMP",
                 "CHECK.PCX",
                 "MAPTEX.PCX",
+                "INFO.TXT",
             ] {
                 fetch(format!("maps/{map}/{f}")).await;
             }

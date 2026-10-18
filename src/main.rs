@@ -501,6 +501,9 @@ struct Level {
     /// MAPTEX tile sheet for this map's palette: the map folder's own, or the shared one when
     /// the palettes match (TEREP1's BMP palette doesn't, so it draws flat colours).
     maptex: Option<Vec<u8>>,
+    /// From the folder's optional INFO.TXT: the map's name (first line) and its credits (the rest).
+    title: Option<String>,
+    credits: String,
 }
 
 /// A map's files whose changes reload it while the game runs.
@@ -565,7 +568,12 @@ fn load_level(name: &str) -> Result<(Terrain, Level), String> {
             })
             .collect()
     });
+    let info = assets::read(&format!("maps/{name}/INFO.TXT")).unwrap_or_default();
+    let info = String::from_utf8_lossy(&info);
+    let mut lines = info.lines().map(str::trim);
     let level = Level {
+        title: lines.next().filter(|l| !l.is_empty()).map(String::from),
+        credits: lines.collect::<Vec<_>>().join(" ").trim().to_string(),
         track,
         key: check.as_ref().map(|c| track_hash(&[&map, &col, c])),
         hash: track_hash(&[&map, &col, check.as_deref().unwrap_or_default()]),
@@ -1622,18 +1630,31 @@ fn draw_map_preview(name: &str, colour: &Texture2D, level: &Level) {
         r.y,
         r.w,
     );
+    let title = level.title.as_deref().unwrap_or(name);
     let caption = if level.track.is_some() {
-        name.to_string()
+        title.to_string()
     } else {
-        format!("{name}  (free drive)")
+        format!("{title}  (free drive)")
     };
-    let dims = measure_text(&caption, None, 24, 1.0);
-    draw_text(
-        &caption,
-        r.x + (r.w - dims.width) / 2.0,
-        r.y + r.w + 32.0,
-        24.0,
-        WHITE,
+    let centred = |text: &str, y: f32, size: f32, colour: Color| {
+        let dims = measure_text(text, None, size as u16, 1.0);
+        draw_text(text, r.x + (r.w - dims.width) / 2.0, y, size, colour);
+    };
+    centred(&caption, r.y + r.w + 32.0, 24.0, WHITE);
+    // the credits, cut to the preview's width
+    let mut credits: Vec<char> = level.credits.chars().collect();
+    let fits = |c: &[char]| measure_text(&c.iter().collect::<String>(), None, 18, 1.0).width <= r.w;
+    if !fits(&credits) {
+        while !credits.is_empty() && !fits(&[&credits[..], &['…']].concat()) {
+            credits.pop();
+        }
+        credits.push('…');
+    }
+    centred(
+        &credits.iter().collect::<String>(),
+        r.y + r.w + 58.0,
+        18.0,
+        GRAY,
     );
 }
 
@@ -3066,6 +3087,44 @@ mod tests {
         // listed after Players, so toggling Players doesn't move the selection
         assert!(at(Row::Players) < at(Row::Car2));
         assert!(at(Row::Car2) < at(Row::Skin2));
+    }
+
+    /// Every installed map (the community pack's 320-wide and 258-square images included) loads,
+    /// and a car spawned the way the game does it drives on it without the sim blowing up.
+    #[test]
+    fn every_map_loads_and_drives() {
+        reformers::need_assets!();
+        let car = car::parse(&assets::read("CAR1.DAT").unwrap()).unwrap();
+        let maps = assets::maps();
+        assert!(
+            maps.len() > 100,
+            "the pack's maps are installed: {}",
+            maps.len()
+        );
+        for name in maps {
+            let (terrain, level) = load_level(&name).unwrap_or_else(|e| panic!("{name}: {e}"));
+            let ((x, y), h) = level
+                .track
+                .as_ref()
+                .and_then(|t| t.spawn.as_ref())
+                .map_or((SPAWN, 0), |s| ((s.x, s.y), s.heading));
+            let mut sim = Sim::new(terrain);
+            sim.cars
+                .push(SimCar::spawn_facing(&car, &sim.terrain, x, y, h));
+            let gas = Keys {
+                throttle: true,
+                ..Keys::default()
+            };
+            for _ in 0..TICK_HZ * 3 {
+                sim.tick(&[gas]);
+            }
+            let [cx, cy, cz] = sim.cars[0].centre();
+            assert!(
+                [cx, cy, cz].iter().all(|v| v.is_finite())
+                    && cz > sim.terrain.height_at(cx, cy) - 512.0,
+                "{name}: car at {cx} {cy} {cz}"
+            );
+        }
     }
 
     #[test]
