@@ -67,6 +67,9 @@ pub async fn preload() {
         for name in SHARED {
             fetch(name.into()).await;
         }
+        for i in 0..12 {
+            fetch(format!("sounds/engine/loop_{i}.wav")).await;
+        }
         for map in maps() {
             for f in [
                 "MAP.PCX",

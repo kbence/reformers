@@ -39,7 +39,9 @@ const ENGINE_STEPS: [f32; 7] = [0.75, 0.94, 1.17, 1.46, 1.83, 2.29, 2.86];
 
 /// The game's sounds, synthesised by `sound` at start-up.
 struct Audio {
-    engine: Vec<Sound>, // one looping tone per ENGINE_STEPS
+    /// Looping engine sounds, lowest to highest, and the speed (× idle) each stands for.
+    engine: Vec<Sound>,
+    steps: Vec<f32>,
     skid: Sound,
     thud: Sound,
     checkpoint: Sound,
@@ -52,12 +54,34 @@ impl Audio {
         async fn load(samples: Vec<f32>) -> Option<Sound> {
             load_sound_from_bytes(&sound::wav(&samples)).await.ok()
         }
+        // recorded loops if installed (assets/sounds/engine/loop_0.wav …, slow to fast, see
+        // SOURCES.md there), else the original's AdLib tone at ENGINE_STEPS
         let mut engine = vec![];
-        for k in ENGINE_STEPS {
-            engine.push(load(sound::engine_loop(sound::engine_idle_hz() * k)).await?);
+        let mut i = 0;
+        while let Ok(bytes) = assets::read(&format!("sounds/engine/loop_{i}.wav")) {
+            match load_sound_from_bytes(&bytes).await {
+                Ok(snd) => engine.push(snd),
+                Err(_) => break,
+            }
+            i += 1;
         }
+        let steps: Vec<f32> = if engine.len() >= 2 {
+            // spread over the same speed range as the AdLib steps
+            let (lo, hi) = (ENGINE_STEPS[0], ENGINE_STEPS[ENGINE_STEPS.len() - 1]);
+            let n = engine.len() as f32 - 1.0;
+            (0..engine.len())
+                .map(|i| lo * (hi / lo).powf(i as f32 / n))
+                .collect()
+        } else {
+            engine.clear();
+            for k in ENGINE_STEPS {
+                engine.push(load(sound::engine_loop(sound::engine_idle_hz() * k)).await?);
+            }
+            ENGINE_STEPS.to_vec()
+        };
         let audio = Audio {
             engine,
+            steps,
             skid: load(sound::skid_loop()).await?,
             thud: load(sound::thud()).await?,
             checkpoint: load(sound::chime(&[(880.0, 0.3)])).await?,
@@ -79,12 +103,13 @@ impl Audio {
     /// Engine at `pitch` × the idle note (louder on the throttle), skid at `skid` 0–1, scaled by
     /// `vol`; `vol` 0 silences the loops (paused or muted).
     fn update(&self, pitch: f32, throttle: bool, skid: f32, vol: f32) {
-        let at = ENGINE_STEPS
+        let at = self
+            .steps
             .iter()
             .position(|&k| k > pitch)
-            .unwrap_or(ENGINE_STEPS.len() - 1)
+            .unwrap_or(self.steps.len() - 1)
             .max(1);
-        let (lo, hi) = (ENGINE_STEPS[at - 1], ENGINE_STEPS[at]);
+        let (lo, hi) = (self.steps[at - 1], self.steps[at]);
         let w = ((pitch / lo).ln() / (hi / lo).ln()).clamp(0.0, 1.0);
         let loud = vol * if throttle { 0.4 } else { 0.18 };
         for (i, s) in self.engine.iter().enumerate() {
