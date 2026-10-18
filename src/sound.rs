@@ -154,7 +154,27 @@ pub fn engine_loop(hz: f32) -> Vec<f32> {
         start.round() as usize,
         (start + periods * period).round() as usize,
     );
-    tone[a..b].to_vec()
+    analog_out(&tone[a..b])
+}
+
+/// The card's analogue output stage, roughly: two one-pole low-passes at ~3.5 kHz. The patch's
+/// feedback makes a sawtooth-like wave with a hard reset every cycle; raw, that's a full-scale
+/// jump between two samples, heard as a click per cycle (a Geiger counter at idle). Run round
+/// the loop twice so the filter has settled at the seam.
+fn analog_out(x: &[f32]) -> Vec<f32> {
+    let k = 1.0 - (-TAU * 3500.0 / RATE as f32).exp();
+    let (mut a, mut b) = (0.0f32, 0.0f32);
+    let mut out = vec![0.0; x.len()];
+    for pass in 0..2 {
+        for (i, &v) in x.iter().enumerate() {
+            a += (v - a) * k;
+            b += (a - b) * k;
+            if pass == 1 {
+                out[i] = b;
+            }
+        }
+    }
+    out
 }
 
 pub fn thud() -> Vec<f32> {
@@ -323,11 +343,20 @@ mod tests {
         );
         assert!(l.iter().all(|s| s.abs() <= 1.0));
         assert!(
-            (l[0] - l[n - 1]).abs() < 0.25,
+            (l[0] - l[n - 1]).abs() < 0.05,
             "loop seam {} → {}",
             l[n - 1],
             l[0]
         );
+        // no click-sized jumps between samples (the raw FM tone has full-scale ones)
+        for hz in [engine_note_hz(48), engine_note_hz(300)] {
+            let t = engine_loop(hz);
+            let step = t
+                .windows(2)
+                .map(|w| (w[1] - w[0]).abs())
+                .fold(0.0, f32::max);
+            assert!(step < 0.5, "largest step {step} at {hz} Hz");
+        }
     }
 
     #[test]

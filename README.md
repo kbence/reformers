@@ -32,7 +32,8 @@ skins) or off (flat COL.PCX colours), CRT filter, minimap, ghost car, fullscreen
 
 Flags: `--car N` starting car; `--soft` makes all ground diggable so wheels dig tracks (the original
 only digs ground of colour 0x0f, which no shipped map has); `--smooth`, `--untextured`, `--crt`,
-`--no-minimap`, `--ghost`, `--no-fog`, `--mute` preset the options; `--map NAME` picks a map; `--menu` starts paused.
+`--no-minimap`, `--ghost`, `--no-fog`, `--mute` preset the options; `--record-audio FILE` writes
+what the game plays (engine, skid, thuds) to a WAV while you drive, for checking the sound; `--map NAME` picks a map; `--menu` starts paused.
 
 ## Two players
 

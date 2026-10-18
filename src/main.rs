@@ -44,11 +44,14 @@ const ENGINE_TOP_FNUM: f32 = 400.0;
 const ENGINE_LEVEL: f32 = 0.5;
 
 /// One engine voice: looping tones at ascending F-numbers, of which only the one nearest the
-/// wanted pitch sounds; a 30 ms crossfade when that changes (no two pitches beating together).
+/// wanted pitch sounds; a 60 ms crossfade when that changes (no two pitches beating together).
 struct EngineVoice {
     loops: Vec<Sound>,
+    /// The same tones' samples, for --record-audio.
+    samples: Vec<Vec<f32>>,
     fnums: Vec<f32>,
     weights: Vec<f32>,
+    gain: f32,
 }
 
 impl EngineVoice {
@@ -57,9 +60,11 @@ impl EngineVoice {
         let fnums: Vec<f32> = (0..steps)
             .map(|i| lo * (ENGINE_TOP_FNUM / lo).powf(i as f32 / (steps - 1) as f32))
             .collect();
-        let mut loops = vec![];
+        let (mut loops, mut samples) = (vec![], vec![]);
         for &f in &fnums {
-            let snd = load_sound_from_bytes(&sound::wav(&render(f))).await.ok()?;
+            let tone = render(f);
+            let snd = load_sound_from_bytes(&sound::wav(&tone)).await.ok()?;
+            samples.push(tone);
             play_sound(
                 &snd,
                 PlaySoundParams {
@@ -72,8 +77,10 @@ impl EngineVoice {
         let weights = vec![0.0; steps];
         Some(EngineVoice {
             loops,
+            samples,
             fnums,
             weights,
+            gain: 0.0,
         })
     }
 
@@ -87,7 +94,8 @@ impl EngineVoice {
                     .total_cmp(&(self.fnums[b] / fnum).ln().abs())
             })
             .unwrap();
-        let k = (dt / 0.03).min(1.0);
+        let k = (dt / 0.06).min(1.0);
+        self.gain = gain;
         for (j, w) in self.weights.iter_mut().enumerate() {
             let before = *w;
             *w += ((j == near) as u8 as f32 - *w) * k;
@@ -97,6 +105,60 @@ impl EngineVoice {
             if *w > 0.0 || before > 0.0 {
                 set_sound_volume(&self.loops[j], gain * *w);
             }
+        }
+    }
+}
+
+/// --record-audio: what the game asks the mixer to play, mixed again here from the same samples
+/// and volumes (all loops started together at load, so sample `t` is the same point in each).
+struct AudioRecording {
+    path: String,
+    out: Vec<f32>,
+    /// Thuds still ringing: (samples, position, volume).
+    thuds: Vec<(usize, f32)>,
+    last_write: f64,
+}
+
+impl AudioRecording {
+    fn frame(&mut self, audio: &Audio, which: usize, skid_vol: f32, dt: f32) {
+        let n = (dt * sound::RATE as f32) as usize;
+        let start = self.out.len();
+        let voices = if which == 1 && !audio.recorded.is_empty() {
+            &audio.recorded
+        } else {
+            &audio.original
+        };
+        for i in 0..n {
+            let t = start + i;
+            let mut v = 0.0;
+            for voice in voices {
+                for (j, &w) in voice.weights.iter().enumerate() {
+                    if w > 0.0 {
+                        let s = &voice.samples[j];
+                        v += s[t % s.len()] * w * voice.gain;
+                    }
+                }
+            }
+            v += audio.skid_samples[t % audio.skid_samples.len()] * skid_vol;
+            for (pos, vol) in &mut self.thuds {
+                if let Some(x) = audio.thud_samples.get(*pos) {
+                    v += x * *vol;
+                }
+                *pos += 1;
+            }
+            self.out.push(v);
+        }
+        self.thuds
+            .retain(|(pos, _)| *pos < audio.thud_samples.len());
+        if get_time() - self.last_write > 3.0 {
+            self.save();
+        }
+    }
+
+    fn save(&mut self) {
+        self.last_write = get_time();
+        if let Err(e) = std::fs::write(&self.path, sound::wav(&self.out)) {
+            eprintln!("can't write {}: {e}", self.path);
         }
     }
 }
@@ -111,6 +173,8 @@ struct Audio {
     recorded: Vec<EngineVoice>,
     skid: Sound,
     thud: Sound,
+    skid_samples: Vec<f32>,
+    thud_samples: Vec<f32>,
     checkpoint: Sound,
     lap: Sound,
     best: Sound,
@@ -151,6 +215,8 @@ impl Audio {
             recorded,
             skid: load(sound::skid_loop()).await?,
             thud: load(sound::thud()).await?,
+            skid_samples: sound::skid_loop(),
+            thud_samples: sound::thud(),
             checkpoint: load(sound::chime(&[(880.0, 0.3)])).await?,
             lap: load(sound::chime(&[(660.0, 0.15), (990.0, 0.4)])).await?,
             best: load(sound::chime(&[(660.0, 0.12), (880.0, 0.12), (1320.0, 0.5)])).await?,
@@ -1644,6 +1710,17 @@ async fn main() {
     #[cfg(target_arch = "wasm32")]
     let mut gilrs: Option<()> = None;
     let (mut impacts, mut last_thud, mut skid) = (0u32, 0.0f64, 0.0f32);
+    let mut revs_smooth = [48.0f32; 2]; // per player, in F-number units
+    let mut audio_rec = args
+        .iter()
+        .position(|a| a == "--record-audio")
+        .and_then(|i| args.get(i + 1))
+        .map(|p| AudioRecording {
+            path: p.clone(),
+            out: vec![],
+            thuds: vec![],
+            last_write: 0.0,
+        });
     if gfx.fullscreen {
         set_fullscreen(true);
     } else if gfx.resolution != 1 {
@@ -2044,16 +2121,21 @@ async fn main() {
                     ),
                     None => (48.0, 0.0),
                 };
+                // wheel spin flickers tick to tick: smooth it (~0.1 s) so the tone doesn't hop
+                revs_smooth[p] += (fnum - revs_smooth[p]) * (get_frame_time() * 10.0).min(1.0);
                 a.engine(
                     p,
                     gfx.engine,
-                    fnum,
+                    revs_smooth[p],
                     vol * ENGINE_LEVEL * gain,
                     get_frame_time(),
                 );
             }
             skid += ((sim.particle_positions().count() as f32 / 40.0).min(1.0) - skid) * 0.2;
             a.skid(skid, vol);
+            if let Some(r) = &mut audio_rec {
+                r.frame(a, gfx.engine, vol * 0.5 * skid, get_frame_time());
+            }
             if sim.impacts > impacts && get_time() - last_thud > 0.15 && vol > 0.0 {
                 play_sound(
                     &a.thud,
@@ -2062,6 +2144,9 @@ async fn main() {
                         volume: vol * 0.9,
                     },
                 );
+                if let Some(r) = &mut audio_rec {
+                    r.thuds.push((0, vol * 0.9));
+                }
                 last_thud = get_time();
             }
         }
@@ -2450,6 +2535,9 @@ async fn main() {
             }
         }
         next_frame().await;
+    }
+    if let Some(r) = &mut audio_rec {
+        r.save();
     }
 }
 
