@@ -1009,7 +1009,7 @@ struct Graphics {
     resolution: usize, // index into RESOLUTIONS, windowed mode only
 }
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, PartialEq, Debug)]
 enum Row {
     Resume,
     Map,
@@ -1027,23 +1027,150 @@ enum Row {
     Resolution,
     Quit,
 }
-const ROWS: [Row; 15] = [
-    Row::Resume,
-    Row::Map,
-    Row::Players,
-    Row::Sound,
-    Row::EngineSound,
-    Row::Camera,
-    Row::Filter,
-    Row::Textures,
-    Row::Crt,
-    Row::Fog,
-    Row::Minimap,
-    Row::Ghost,
-    Row::Fullscreen,
-    Row::Resolution,
-    Row::Quit,
+/// Menu pages (Esc menu): the top level and its submenus.
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Page {
+    Top,
+    Race,
+    Graphics,
+    Sound,
+    Controls,
+}
+
+#[derive(Clone, Copy, PartialEq, Debug)]
+enum Item {
+    Row(Row),
+    Open(Page),
+    Text(&'static str),
+}
+
+const CONTROLS: [&str; 10] = [
+    "Arrows / left stick: drive",
+    "Space / B: brake",
+    "R / Y: back on the wheels (last checkpoint)",
+    "F / Back: repair",
+    "C / right shoulder: camera (Q / E orbit)",
+    "1-5: switch car",
+    "W: spring wireframe",
+    "P: save replay",
+    "Esc / Start: this menu",
+    "Player 2: WASD, Shift brake, Tab R, G repair",
 ];
+
+fn items(page: Page) -> Vec<Item> {
+    use Item::{Open, Row as R};
+    match page {
+        Page::Top => vec![
+            R(Row::Resume),
+            Open(Page::Race),
+            Open(Page::Graphics),
+            Open(Page::Sound),
+            Open(Page::Controls),
+            R(Row::Quit),
+        ],
+        Page::Race => [
+            Row::Map,
+            Row::Players,
+            Row::Camera,
+            Row::Ghost,
+            Row::Minimap,
+        ]
+        .map(R)
+        .to_vec(),
+        Page::Graphics => [
+            Row::Textures,
+            Row::Filter,
+            Row::Crt,
+            Row::Fog,
+            Row::Fullscreen,
+            Row::Resolution,
+        ]
+        .map(R)
+        .to_vec(),
+        Page::Sound => vec![R(Row::Sound), R(Row::EngineSound)],
+        Page::Controls => CONTROLS.map(Item::Text).to_vec(),
+    }
+}
+
+#[derive(Debug, PartialEq)]
+enum MenuAction {
+    None,
+    Close,
+    Quit,
+    /// Change a setting: −1 / +1 for left / right, 0 for Enter.
+    Change(Row, i32),
+}
+
+/// Where the menu is: page, selected row, and the drum's eased scroll position.
+struct Menu {
+    page: Page,
+    selected: usize,
+    scroll: f32,
+}
+
+impl Menu {
+    fn new() -> Menu {
+        Menu {
+            page: Page::Top,
+            selected: 0,
+            scroll: 0.0,
+        }
+    }
+
+    /// One frame of menu keys. `back` is Esc / Backspace.
+    fn input(
+        &mut self,
+        up: bool,
+        down: bool,
+        left: bool,
+        right: bool,
+        enter: bool,
+        back: bool,
+    ) -> MenuAction {
+        let list = items(self.page);
+        if up && self.selected > 0 {
+            self.selected -= 1;
+        }
+        if down && self.selected + 1 < list.len() {
+            self.selected += 1;
+        }
+        let go_back = |m: &mut Menu| {
+            let from = m.page;
+            m.page = Page::Top;
+            m.selected = items(Page::Top)
+                .iter()
+                .position(|&i| i == Item::Open(from))
+                .unwrap_or(0);
+            m.scroll = m.selected as f32;
+        };
+        match list[self.selected] {
+            Item::Row(Row::Resume) if enter => return MenuAction::Close,
+            Item::Row(Row::Quit) if enter => return MenuAction::Quit,
+            Item::Row(Row::Resume | Row::Quit) => {}
+            Item::Row(row) if left || right || enter => {
+                return MenuAction::Change(row, right as i32 - left as i32);
+            }
+            Item::Open(p) if enter || right => {
+                self.page = p;
+                self.selected = 0;
+                self.scroll = 0.0;
+                return MenuAction::None;
+            }
+            _ if left && self.page != Page::Top => {
+                go_back(self);
+                return MenuAction::None;
+            }
+            _ => {}
+        }
+        if back {
+            if self.page == Page::Top {
+                return MenuAction::Close;
+            }
+            go_back(self);
+        }
+        MenuAction::None
+    }
+}
 
 impl Graphics {
     fn to_text(&self) -> String {
@@ -1251,46 +1378,70 @@ fn draw_minimap(
     draw_circle(p.x, p.y, 4.0, RED);
 }
 
-fn draw_overlay(gfx: &Graphics, selected: usize) {
+/// The menu as a drum seen side-on: rows on a cylinder, the selected one centred and full size,
+/// the others shrinking, fading and leaning away with their angle; scrolling eases.
+fn draw_menu(gfx: &Graphics, menu: &mut Menu, dt: f32) {
+    menu.scroll += (menu.selected as f32 - menu.scroll) * (dt * 12.0).min(1.0);
+    let (w, h) = (screen_width(), screen_height());
+    draw_rectangle(0.0, 0.0, w, h, Color::new(0.0, 0.0, 0.0, 0.6));
+    let title = match menu.page {
+        Page::Top => "PAUSED".to_string(),
+        p => format!("PAUSED  >  {p:?}"),
+    };
+    let size = measure_text(&title, None, 40, 1.0);
+    draw_text(&title, (w - size.width) / 2.0, h * 0.14, 40.0, WHITE);
+    let (cy, radius, step) = (h * 0.52, h * 0.3, 0.3f32);
+    // a darker band behind the drum so the paused scene doesn't show through the text
+    let band = (w * 0.62).min(760.0);
     draw_rectangle(
-        0.0,
-        0.0,
-        screen_width(),
-        screen_height(),
+        (w - band) / 2.0,
+        h * 0.2,
+        band,
+        h * 0.66,
         Color::new(0.0, 0.0, 0.0, 0.55),
     );
-    let (x, mut y) = (screen_width() / 2.0 - 220.0, screen_height() / 2.0 - 150.0);
-    draw_text("PAUSED", x, y, 44.0, WHITE);
-    y += 50.0;
-    for (i, &row) in ROWS.iter().enumerate() {
-        if row == Row::Filter {
-            draw_text("Graphics", x, y, 24.0, GRAY);
-            y += 32.0;
+    for (i, item) in items(menu.page).iter().enumerate() {
+        let angle = (i as f32 - menu.scroll) * step;
+        if angle.abs() > 1.4 {
+            continue;
         }
-        if row == Row::Quit {
-            y += 12.0;
+        let near = angle.cos();
+        let chosen = i == menu.selected;
+        let (text, base) = match item {
+            Item::Row(r) => (gfx.label(*r), 34.0),
+            Item::Open(p) => (format!("{p:?}  >"), 34.0),
+            Item::Text(t) => (t.to_string(), 26.0),
+        };
+        let font = (base * near).max(10.0);
+        let dims = measure_text(&text, None, font as u16, 1.0);
+        let y = cy + radius * angle.sin() + dims.height / 2.0;
+        let fade = near.powf(1.5);
+        let colour = if chosen {
+            Color::new(1.0, 0.9, 0.2, fade)
+        } else if matches!(item, Item::Text(_)) {
+            Color::new(0.8, 0.8, 0.8, fade)
+        } else {
+            Color::new(1.0, 1.0, 1.0, fade * 0.85)
+        };
+        draw_text(&text, (w - dims.width) / 2.0, y, font, colour);
+        if chosen {
+            let bar = dims.width + 40.0;
+            draw_rectangle_lines(
+                (w - bar) / 2.0,
+                y - dims.height - 8.0,
+                bar,
+                dims.height + 16.0,
+                2.0,
+                colour,
+            );
         }
-        let colour = if i == selected { YELLOW } else { WHITE };
-        draw_text(
-            &format!(
-                "{} {}",
-                if i == selected { ">" } else { " " },
-                gfx.label(row)
-            ),
-            x,
-            y,
-            30.0,
-            colour,
-        );
-        y += 36.0;
     }
-    draw_text(
-        "up/down select   enter/left/right change   esc resume",
-        x,
-        y + 16.0,
-        18.0,
-        GRAY,
-    );
+    let hint = match menu.page {
+        Page::Top => "up/down select   enter open   esc resume",
+        _ => "up/down select   left/right/enter change   esc back",
+    };
+    let size = measure_text(hint, None, 18, 1.0);
+    draw_text(hint, (w - size.width) / 2.0, h * 0.93, 18.0, GRAY);
 }
 
 const CRT_VERTEX: &str = "#version 100
@@ -1522,7 +1673,7 @@ async fn main() {
     .expect("CRT shader");
     let mut scene_target: Option<RenderTarget> = None;
     let mut menu_open = args.iter().any(|a| a == "--menu");
-    let mut selected = 0usize;
+    let mut menu = Menu::new();
     let mut shown = sim.terrain.height.clone();
     let mut original = shown.clone();
     let mut cam_pos = v(sim.cars[0].centre()) + vec3(0.0, 2.0, 4.0);
@@ -1620,36 +1771,29 @@ async fn main() {
                 }
             }
         }
-        if pressed(KeyCode::Escape) {
-            menu_open = !menu_open;
-            selected = 0;
-        }
-        if menu_open {
-            if pressed(KeyCode::Up) {
-                selected = (selected + ROWS.len() - 1) % ROWS.len();
-            }
-            if pressed(KeyCode::Down) {
-                selected = (selected + 1) % ROWS.len();
-            }
-            let step = if pressed(KeyCode::Left) {
-                -1
-            } else if pressed(KeyCode::Right) {
-                1
-            } else {
-                0
-            };
+        if !menu_open && pressed(KeyCode::Escape) {
+            menu_open = true;
+            menu = Menu::new();
+        } else if menu_open {
             let enter =
                 pressed(KeyCode::Enter) || pressed(KeyCode::KpEnter) || pressed(KeyCode::Space);
-            if step != 0 || enter {
-                match ROWS[selected] {
-                    Row::Resume if enter => menu_open = false,
-                    Row::Quit if enter => break,
-                    row => {
-                        if gfx.change(row, step) {
-                            save_settings(&gfx);
-                        }
+            let back = pressed(KeyCode::Escape) || pressed(KeyCode::Backspace);
+            match menu.input(
+                pressed(KeyCode::Up),
+                pressed(KeyCode::Down),
+                pressed(KeyCode::Left),
+                pressed(KeyCode::Right),
+                enter,
+                back,
+            ) {
+                MenuAction::Close => menu_open = false,
+                MenuAction::Quit => break,
+                MenuAction::Change(row, step) => {
+                    if gfx.change(row, step) {
+                        save_settings(&gfx);
                     }
                 }
+                MenuAction::None => {}
             }
         }
         let filter = if gfx.nearest {
@@ -2154,7 +2298,7 @@ async fn main() {
         let help = if sim.cars.len() > 1 {
             "P1"
         } else {
-            "arrows drive  space brake  R flip upright  F repair  1-5 car  C camera  esc menu   |  "
+            "esc: menu (controls are listed there)   |  "
         };
         let hud = format!(
             "{help} car {}  {:3.0} km/h   damage {:2.0}%   ruts {dents}{}",
@@ -2306,7 +2450,7 @@ async fn main() {
             );
         }
         if menu_open {
-            draw_overlay(&gfx, selected);
+            draw_menu(&gfx, &mut menu, get_frame_time());
         }
         if let Some(path) = &shot {
             if get_time() - started > 4.0 {
@@ -2337,6 +2481,69 @@ mod tests {
         );
         assert_eq!(pad_pressed(Button::Start), Some(KeyCode::Escape));
         assert_eq!(pad_pressed(Button::Mode), None);
+    }
+
+    #[test]
+    fn menu_navigation() {
+        let mut m = Menu::new();
+        let none = |m: &mut Menu, up, down, left, right, enter, back| {
+            m.input(up, down, left, right, enter, back)
+        };
+        // down to Graphics and open it
+        none(&mut m, false, true, false, false, false, false);
+        none(&mut m, false, true, false, false, false, false);
+        assert_eq!(items(Page::Top)[m.selected], Item::Open(Page::Graphics));
+        assert_eq!(
+            none(&mut m, false, false, false, false, true, false),
+            MenuAction::None
+        );
+        assert_eq!(m.page, Page::Graphics);
+        // left/right/enter on a setting change it
+        assert_eq!(
+            none(&mut m, false, false, false, true, false, false),
+            MenuAction::Change(Row::Textures, 1)
+        );
+        assert_eq!(
+            none(&mut m, false, false, true, false, false, false),
+            MenuAction::Change(Row::Textures, -1)
+        );
+        assert_eq!(
+            none(&mut m, false, false, false, false, true, false),
+            MenuAction::Change(Row::Textures, 0)
+        );
+        // clamped at the ends, no wrap
+        for _ in 0..20 {
+            none(&mut m, false, true, false, false, false, false);
+        }
+        assert_eq!(
+            items(Page::Graphics)[m.selected],
+            Item::Row(Row::Resolution)
+        );
+        // Esc goes back to the top, on the row we came from; Esc again closes
+        assert_eq!(
+            none(&mut m, false, false, false, false, false, true),
+            MenuAction::None
+        );
+        assert_eq!(
+            (m.page, items(Page::Top)[m.selected]),
+            (Page::Top, Item::Open(Page::Graphics))
+        );
+        assert_eq!(
+            none(&mut m, false, false, false, false, false, true),
+            MenuAction::Close
+        );
+        // ← on a read-only page goes back too; Quit quits
+        let mut m = Menu::new();
+        m.selected = 4;
+        none(&mut m, false, false, false, true, false, false);
+        assert_eq!(m.page, Page::Controls);
+        none(&mut m, false, false, true, false, false, false);
+        assert_eq!(m.page, Page::Top);
+        m.selected = 5;
+        assert_eq!(
+            none(&mut m, false, false, false, false, true, false),
+            MenuAction::Quit
+        );
     }
 
     #[test]
