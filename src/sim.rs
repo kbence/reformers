@@ -372,6 +372,22 @@ impl SimCar {
         self.steer_now as f32 / 65536.0 * std::f32::consts::TAU
     }
 
+    /// Engine revs as the original's sound code reads them (main loop, `0x02cf`): the driven
+    /// wheels' spin, each pair summed and `sar 14`: rear (RWD), front (FWD) or the two averaged (4WD).
+    pub fn revs(&self) -> i32 {
+        let pair = |a: usize, b: usize| self.spin[a].wrapping_add(self.spin[b]) >> 14;
+        match self.mode {
+            0 => pair(2, 3),
+            1 => pair(0, 1),
+            _ => (pair(0, 1) + pair(2, 3)) / 2,
+        }
+    }
+
+    /// The throttle control word (`+0x0c`): ramps towards ±0x2000 while the pedal is held.
+    pub fn throttle_word(&self) -> i16 {
+        self.throttle
+    }
+
     /// Wheel spin of atoms 0–3 (16.16 per tick); the HUD uses it as a speedometer.
     pub fn spin(&self) -> [i32; 4] {
         self.spin

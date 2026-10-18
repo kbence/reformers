@@ -37,14 +37,78 @@ fn data_dir() -> Option<PathBuf> {
 /// Firing frequency of the recorded engine idle loop (`assets/sounds/engine/loop_0.wav`), measured.
 const RECORDED_HZ: f32 = 43.5;
 
-/// Engine loop pitches, ×1.25 apart around the original's idle note; crossfaded by speed.
-const ENGINE_STEPS: [f32; 7] = [0.75, 0.94, 1.17, 1.46, 1.83, 2.29, 2.86];
+/// Engine voices sound at F-numbers (the original's pitch unit, `sound::engine_fnum`) from idle
+/// 0x30 up to this, in ~3 % steps; one voice per player.
+const ENGINE_TOP_FNUM: f32 = 400.0;
+/// Engine level against the other sounds: the FM tone is nearly a square wave at full scale.
+const ENGINE_LEVEL: f32 = 0.5;
 
-/// The game's sounds, synthesised by `sound` at start-up.
+/// One engine voice: looping tones at ascending F-numbers, of which only the one nearest the
+/// wanted pitch sounds; a 30 ms crossfade when that changes (no two pitches beating together).
+struct EngineVoice {
+    loops: Vec<Sound>,
+    fnums: Vec<f32>,
+    weights: Vec<f32>,
+}
+
+impl EngineVoice {
+    async fn load(steps: usize, render: impl Fn(f32) -> Vec<f32>) -> Option<EngineVoice> {
+        let lo = 48.0f32;
+        let fnums: Vec<f32> = (0..steps)
+            .map(|i| lo * (ENGINE_TOP_FNUM / lo).powf(i as f32 / (steps - 1) as f32))
+            .collect();
+        let mut loops = vec![];
+        for &f in &fnums {
+            let snd = load_sound_from_bytes(&sound::wav(&render(f))).await.ok()?;
+            play_sound(
+                &snd,
+                PlaySoundParams {
+                    looped: true,
+                    volume: 0.0,
+                },
+            );
+            loops.push(snd);
+        }
+        let weights = vec![0.0; steps];
+        Some(EngineVoice {
+            loops,
+            fnums,
+            weights,
+        })
+    }
+
+    /// Sounds the tone nearest `fnum` at `gain` (0 = silent).
+    fn set(&mut self, fnum: f32, gain: f32, dt: f32) {
+        let near = (0..self.fnums.len())
+            .min_by(|&a, &b| {
+                (self.fnums[a] / fnum)
+                    .ln()
+                    .abs()
+                    .total_cmp(&(self.fnums[b] / fnum).ln().abs())
+            })
+            .unwrap();
+        let k = (dt / 0.03).min(1.0);
+        for (j, w) in self.weights.iter_mut().enumerate() {
+            let before = *w;
+            *w += ((j == near) as u8 as f32 - *w) * k;
+            if *w < 1e-3 {
+                *w = 0.0;
+            }
+            if *w > 0.0 || before > 0.0 {
+                set_sound_volume(&self.loops[j], gain * *w);
+            }
+        }
+    }
+}
+
+/// Engine sounds to choose from (Esc menu → Engine sound).
+const ENGINE_SOUNDS: [&str; 2] = ["original (AdLib)", "recorded (CC0)"];
+
+/// The game's sounds, synthesised by `sound` at start-up (plus the recorded engine, if installed).
 struct Audio {
-    /// Looping engine sounds, lowest to highest, and the speed (× idle) each stands for.
-    engine: Vec<Sound>,
-    steps: Vec<f32>,
+    /// [player] voices: the original's AdLib engine, and the recorded one when installed.
+    original: Vec<EngineVoice>,
+    recorded: Vec<EngineVoice>,
     skid: Sound,
     thud: Sound,
     checkpoint: Sound,
@@ -57,74 +121,63 @@ impl Audio {
         async fn load(samples: Vec<f32>) -> Option<Sound> {
             load_sound_from_bytes(&sound::wav(&samples)).await.ok()
         }
-        // the recorded idle loop if installed (assets/sounds/engine/loop_0.wav, see SOURCES.md
-        // there), sped up into ENGINE_RPM_STEPS; else the original's AdLib tone at ENGINE_STEPS
-        let mut engine = vec![];
-        let recorded = assets::read("sounds/engine/loop_0.wav")
+        let mut original = vec![];
+        for _player in 0..2 {
+            original.push(
+                EngineVoice::load(72, |f| sound::engine_loop(sound::engine_note_hz(f as u16)))
+                    .await?,
+            );
+        }
+        // the recorded idle loop (assets/sounds/engine/loop_0.wav, see SOURCES.md there), sped
+        // up: at ~43 Hz as recorded it's below most speakers, so idle plays at 90 Hz, rising
+        // with the F-number like the original but less steeply
+        let mut recorded = vec![];
+        if let Some(idle) = assets::read("sounds/engine/loop_0.wav")
             .ok()
-            .and_then(|b| sound::read_wav(&b));
-        let steps: Vec<f32> = if let Some(idle) = recorded {
-            // ~43 Hz as recorded: too low for most speakers; 90–320 Hz is a 4-cylinder from a fast idle
-            // to ~9500 rpm, over the same speed range as the AdLib steps
-            let (lo, hi) = (ENGINE_STEPS[0], ENGINE_STEPS[ENGINE_STEPS.len() - 1]);
-            let n = 9;
-            let mut steps = vec![];
-            for i in 0..n {
-                let f = i as f32 / (n - 1) as f32;
-                let hz = 90.0 * (320.0f32 / 90.0).powf(f);
-                engine.push(load(sound::speed_up(&idle, hz / RECORDED_HZ)).await?);
-                steps.push(lo * (hi / lo).powf(f));
+            .and_then(|b| sound::read_wav(&b))
+        {
+            for _player in 0..2 {
+                recorded.push(
+                    EngineVoice::load(36, |f| {
+                        let hz = 90.0 * (f / 48.0).powf(0.74);
+                        sound::speed_up(&idle, hz / RECORDED_HZ)
+                    })
+                    .await?,
+                );
             }
-            steps
-        } else {
-            for k in ENGINE_STEPS {
-                engine.push(load(sound::engine_loop(sound::engine_idle_hz() * k)).await?);
-            }
-            ENGINE_STEPS.to_vec()
-        };
+        }
         let audio = Audio {
-            engine,
-            steps,
+            original,
+            recorded,
             skid: load(sound::skid_loop()).await?,
             thud: load(sound::thud()).await?,
             checkpoint: load(sound::chime(&[(880.0, 0.3)])).await?,
             lap: load(sound::chime(&[(660.0, 0.15), (990.0, 0.4)])).await?,
             best: load(sound::chime(&[(660.0, 0.12), (880.0, 0.12), (1320.0, 0.5)])).await?,
         };
-        for s in audio.engine.iter().chain([&audio.skid]) {
-            play_sound(
-                s,
-                PlaySoundParams {
-                    looped: true,
-                    volume: 0.0,
-                },
-            );
-        }
+        play_sound(
+            &audio.skid,
+            PlaySoundParams {
+                looped: true,
+                volume: 0.0,
+            },
+        );
         Some(audio)
     }
 
-    /// Engine at `pitch` × the idle note (louder on the throttle), skid at `skid` 0–1, scaled by
-    /// `vol`; `vol` 0 silences the loops (paused or muted).
-    fn update(&self, pitch: f32, throttle: bool, skid: f32, vol: f32) {
-        let at = self
-            .steps
-            .iter()
-            .position(|&k| k > pitch)
-            .unwrap_or(self.steps.len() - 1)
-            .max(1);
-        let (lo, hi) = (self.steps[at - 1], self.steps[at]);
-        let w = ((pitch / lo).ln() / (hi / lo).ln()).clamp(0.0, 1.0);
-        let loud = vol * if throttle { 0.65 } else { 0.35 };
-        for (i, s) in self.engine.iter().enumerate() {
-            let g = if i == at - 1 {
-                1.0 - w
-            } else if i == at {
-                w
-            } else {
-                0.0
-            };
-            set_sound_volume(s, loud * g);
+    /// Player `p`'s engine through voice `which` (ENGINE_SOUNDS) at F-number `fnum` and `gain`;
+    /// the other voice falls silent.
+    fn engine(&mut self, p: usize, which: usize, fnum: f32, gain: f32, dt: f32) {
+        let use_recorded = which == 1 && !self.recorded.is_empty();
+        if let Some(v) = self.original.get_mut(p) {
+            v.set(fnum, if use_recorded { 0.0 } else { gain }, dt);
         }
+        if let Some(v) = self.recorded.get_mut(p) {
+            v.set(fnum, if use_recorded { gain } else { 0.0 }, dt);
+        }
+    }
+
+    fn skid(&self, skid: f32, vol: f32) {
         set_sound_volume(&self.skid, vol * 0.5 * skid);
     }
 
@@ -939,7 +992,8 @@ struct Graphics {
     minimap: bool,
     ghost: bool,
     fog: bool,
-    volume: u8, // 0 (mute) – 10
+    volume: u8,    // 0 (mute) – 10
+    engine: usize, // index into ENGINE_SOUNDS
     fullscreen: bool,
     resolution: usize, // index into RESOLUTIONS, windowed mode only
 }
@@ -950,6 +1004,7 @@ enum Row {
     Map,
     Players,
     Sound,
+    EngineSound,
     Camera,
     Filter,
     Textures,
@@ -961,11 +1016,12 @@ enum Row {
     Resolution,
     Quit,
 }
-const ROWS: [Row; 14] = [
+const ROWS: [Row; 15] = [
     Row::Resume,
     Row::Map,
     Row::Players,
     Row::Sound,
+    Row::EngineSound,
     Row::Camera,
     Row::Filter,
     Row::Textures,
@@ -981,7 +1037,7 @@ const ROWS: [Row; 14] = [
 impl Graphics {
     fn to_text(&self) -> String {
         format!(
-            "map={}\ncamera={}\nnearest={}\ntextured={}\ncrt={}\nminimap={}\nghost={}\nfog={}\nvolume={}\nfullscreen={}\nresolution={}\n",
+            "map={}\ncamera={}\nnearest={}\ntextured={}\ncrt={}\nminimap={}\nghost={}\nfog={}\nvolume={}\nengine={}\nfullscreen={}\nresolution={}\n",
             self.map,
             self.camera,
             self.nearest,
@@ -991,6 +1047,7 @@ impl Graphics {
             self.ghost,
             self.fog,
             self.volume,
+            self.engine,
             self.fullscreen,
             self.resolution
         )
@@ -1010,6 +1067,11 @@ impl Graphics {
                 "ghost" => self.ghost = b,
                 "fog" => self.fog = b,
                 "volume" => self.volume = n.filter(|&n| n <= 10).map_or(self.volume, |n| n as u8),
+                "engine" => {
+                    self.engine = n
+                        .filter(|&n| n < ENGINE_SOUNDS.len())
+                        .unwrap_or(self.engine)
+                }
                 "fullscreen" => self.fullscreen = b,
                 "resolution" => {
                     self.resolution = n
@@ -1030,6 +1092,7 @@ impl Graphics {
                 1 => "Players: 1".into(),
                 _ => "Players: 2  (P2: WASD, Shift brake, Tab R, G repair)".into(),
             },
+            Row::EngineSound => format!("Engine sound: {}", ENGINE_SOUNDS[self.engine]),
             Row::Sound => match self.volume {
                 0 => "Sound: off".into(),
                 v => format!("Sound: {v}/10"),
@@ -1069,6 +1132,7 @@ impl Graphics {
             Row::Minimap => self.minimap = !self.minimap,
             Row::Fog => self.fog = !self.fog,
             Row::Players => self.players = 3 - self.players,
+            Row::EngineSound => self.engine = (self.engine + 1) % ENGINE_SOUNDS.len(),
             Row::Sound => {
                 self.volume =
                     (self.volume as i32 + if step == 0 { 1 } else { step }).rem_euclid(11) as u8
@@ -1401,6 +1465,7 @@ async fn main() {
         ghost: false,
         fog: true,
         volume: 7,
+        engine: 0,
         fullscreen: false,
         resolution: 1,
     };
@@ -1416,7 +1481,7 @@ async fn main() {
     if flag("--mute") {
         gfx.volume = 0;
     }
-    let audio = Audio::load().await;
+    let mut audio = Audio::load().await;
     #[cfg(not(target_arch = "wasm32"))]
     let mut gilrs = Gilrs::new().ok();
     #[cfg(target_arch = "wasm32")]
@@ -1813,20 +1878,32 @@ async fn main() {
                 });
             }
         }
-        if let Some(a) = &audio {
+        if let Some(a) = &mut audio {
             let vol = if menu_open {
                 0.0
             } else {
                 gfx.volume as f32 / 10.0
             };
-            let rim = sim.cars[0]
-                .spin()
-                .iter()
-                .map(|s| (*s as f32 / 65536.0).abs())
-                .sum::<f32>()
-                / 4.0;
+            // the original's engine (0x02cf): pitch from the driven wheels' spin, loudness from
+            // the throttle control word; one per car in split screen
+            for p in 0..2 {
+                let (fnum, gain) = match sim.cars.get(p) {
+                    Some(c) => (
+                        sound::engine_fnum(c.revs()) as f32,
+                        sound::engine_gain(c.throttle_word()),
+                    ),
+                    None => (48.0, 0.0),
+                };
+                a.engine(
+                    p,
+                    gfx.engine,
+                    fnum,
+                    vol * ENGINE_LEVEL * gain,
+                    get_frame_time(),
+                );
+            }
             skid += ((sim.particle_positions().count() as f32 / 40.0).min(1.0) - skid) * 0.2;
-            a.update(0.75 + rim * 0.15, keys.throttle, skid, vol);
+            a.skid(skid, vol);
             if sim.impacts > impacts && get_time() - last_thud > 0.15 && vol > 0.0 {
                 play_sound(
                     &a.thud,
@@ -2278,6 +2355,7 @@ mod tests {
             ghost: true,
             fog: false,
             volume: 3,
+            engine: 1,
             fullscreen: false,
             resolution: 3,
         };
@@ -2292,6 +2370,7 @@ mod tests {
             ghost: false,
             fog: true,
             volume: 10,
+            engine: 0,
             fullscreen: true,
             resolution: 0,
         };

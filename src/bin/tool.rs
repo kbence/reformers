@@ -149,10 +149,18 @@ fn fail(msg: &str) -> ! {
 fn sounds(dir: &str) {
     use reformers::sound;
     let all = [
-        ("engine_idle", sound::engine_loop(sound::engine_idle_hz())),
+        // the original's engine (F-number 0x30 + revs, block 4): idle, mid revs, flat out
         (
-            "engine_fast",
-            sound::engine_loop(sound::engine_idle_hz() * 2.3),
+            "engine_original_idle",
+            sound::engine_loop(sound::engine_note_hz(48)),
+        ),
+        (
+            "engine_original_mid",
+            sound::engine_loop(sound::engine_note_hz(150)),
+        ),
+        (
+            "engine_original_fast",
+            sound::engine_loop(sound::engine_note_hz(300)),
         ),
         ("thud", sound::thud()),
         (
@@ -162,7 +170,7 @@ fn sounds(dir: &str) {
         ("skid", sound::skid_loop()),
         ("checkpoint", sound::chime(&[(880.0, 0.3)])),
     ];
-    // the recorded engine as the game pitches it (idle 90 Hz, flat out 320 Hz), when installed
+    // the recorded engine as the game pitches it for the same F-numbers, when installed
     let recorded = assets::read("sounds/engine/loop_0.wav")
         .ok()
         .and_then(|b| sound::read_wav(&b));
@@ -171,7 +179,14 @@ fn sounds(dir: &str) {
             .into_iter()
             .chain([
                 ("engine_recorded_idle", sound::speed_up(idle, 90.0 / 43.5)),
-                ("engine_recorded_fast", sound::speed_up(idle, 320.0 / 43.5)),
+                (
+                    "engine_recorded_mid",
+                    sound::speed_up(idle, 90.0 * (150.0f32 / 48.0).powf(0.74) / 43.5),
+                ),
+                (
+                    "engine_recorded_fast",
+                    sound::speed_up(idle, 90.0 * (300.0f32 / 48.0).powf(0.74) / 43.5),
+                ),
             ])
             .collect(),
         None => all.into_iter().collect(),

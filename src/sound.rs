@@ -25,6 +25,23 @@ pub fn engine_idle_hz() -> f32 {
     opl_hz(0x300, 3)
 }
 
+/// The original's engine note for `revs` (`SimCar::revs`): `bx = |revs| + 0x1030` written raw
+/// as A0/B0, i.e. block 4, F-number 0x30 + |revs| (capped where it would run into the block bits).
+pub fn engine_fnum(revs: i32) -> u16 {
+    (0x30 + revs.unsigned_abs().min(0x3ff - 0x30)) as u16
+}
+
+pub fn engine_note_hz(fnum: u16) -> f32 {
+    opl_hz(fnum, 4)
+}
+
+/// The original's engine loudness for the throttle control word: carrier TL =
+/// 0x3F − min(0x3F, 0x2C + |throttle >> 9|), 0.75 dB per step: −14 dB idle, −2 dB flat out.
+pub fn engine_gain(throttle_word: i16) -> f32 {
+    let tl = 0x3f - (0x2c + (throttle_word >> 9).unsigned_abs() as i32).min(0x3f);
+    10f32.powf(-0.75 * tl as f32 / 20.0)
+}
+
 /// The thud's note (record bytes 11–12: A8 = 0x80, B8 = 0x21 → block 0, ~18 Hz).
 /// ponytail: played 3 blocks (octaves) up, else it's a 9 Hz rumble laptop speakers can't make.
 pub fn thud_hz() -> f32 {
@@ -208,8 +225,10 @@ pub fn read_wav(d: &[u8]) -> Option<Vec<f32>> {
                 return Some(
                     body.chunks_exact(2 * channels)
                         .map(|f| {
-                            f.chunks_exact(2)
-                                .map(|b| i16::from_le_bytes([b[0], b[1]]) as f32 / 32768.0)
+                            f.as_chunks::<2>()
+                                .0
+                                .iter()
+                                .map(|&b| i16::from_le_bytes(b) as f32 / 32768.0)
                                 .sum::<f32>()
                                 / channels as f32
                         })
@@ -279,6 +298,20 @@ mod tests {
     }
 
     #[test]
+    fn original_engine_mapping() {
+        assert_eq!(engine_fnum(0), 0x30);
+        assert_eq!(engine_fnum(-100), 0x30 + 100);
+        assert_eq!(engine_fnum(5000), 0x3ff, "capped before the block bits");
+        assert!(
+            (engine_note_hz(0x30) - 36.4).abs() < 0.1,
+            "18 Hz after MULT ½"
+        );
+        assert!((20.0 * engine_gain(0).log10() + 14.25).abs() < 0.01);
+        assert!((20.0 * engine_gain(0x2000).log10() + 2.25).abs() < 0.01);
+        assert_eq!(engine_gain(-0x2000), engine_gain(0x2000));
+    }
+
+    #[test]
     fn engine_is_steady_and_loops() {
         let l = engine_loop(engine_idle_hz());
         let n = l.len();
@@ -327,6 +360,14 @@ mod tests {
             "same cycles in half the time: double pitch"
         );
         assert!(read_wav(b"RIFF....WAVEjunk").is_none());
+    }
+
+    #[test]
+    fn reads_the_recorded_engine() {
+        crate::need_assets!();
+        let b = crate::assets::read("sounds/engine/loop_0.wav").unwrap();
+        let s = read_wav(&b).expect("loop_0.wav parses");
+        assert_eq!(s.len(), 38106);
     }
 
     #[test]
