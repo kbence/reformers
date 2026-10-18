@@ -168,6 +168,7 @@ fn sounds(dir: &str) {
             sound::render_patch(&sound::THUD_PATCH, sound::opl_hz(0x180, 0), 0.05, 0.6),
         ),
         ("skid", sound::skid_loop()),
+        ("squeal", sound::squeal_loop()),
         ("checkpoint", sound::chime(&[(880.0, 0.3)])),
     ];
     // the recorded engine as the game pitches it for the same F-numbers, when installed

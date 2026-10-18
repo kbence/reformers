@@ -182,32 +182,70 @@ pub fn thud() -> Vec<f32> {
     render_patch(&THUD_PATCH, thud_hz(), 0.05, 0.6)
 }
 
-/// Low-passed noise, loopable (the ends fade into each other).
-pub fn skid_loop() -> Vec<f32> {
-    let n = RATE as usize / 2;
+/// White noise, deterministic: `n` samples in −1..1.
+fn noise(n: usize) -> impl Iterator<Item = f32> {
     let mut seed = 0x1234_5678u32;
-    let mut lp = 0.0f32;
-    let noise: Vec<f32> = (0..n)
-        .map(|_| {
-            seed ^= seed << 13;
-            seed ^= seed >> 17;
-            seed ^= seed << 5;
-            lp += 0.15 * ((seed as f32 / u32::MAX as f32) * 2.0 - 1.0 - lp);
-            lp * 2.0
-        })
-        .collect();
-    // crossfade the last tenth into the start so the loop point is inaudible
-    let fade = n / 10;
+    (0..n).map(move |_| {
+        seed ^= seed << 13;
+        seed ^= seed >> 17;
+        seed ^= seed << 5;
+        (seed as f32 / u32::MAX as f32) * 2.0 - 1.0
+    })
+}
+
+/// Makes `x` loop: its last tenth crossfaded into the start, so the seam is inaudible.
+fn seamless(x: Vec<f32>) -> Vec<f32> {
+    let (n, fade) = (x.len(), x.len() / 10);
     (0..n - fade)
         .map(|i| {
             if i < fade {
                 let w = i as f32 / fade as f32;
-                noise[i] * w + noise[n - fade + i] * (1.0 - w)
+                x[i] * w + x[n - fade + i] * (1.0 - w)
             } else {
-                noise[i]
+                x[i]
             }
         })
         .collect()
+}
+
+/// Sliding on soft ground (grass, dirt, sand): low-passed noise, a crunchy "shhh". Loops.
+pub fn skid_loop() -> Vec<f32> {
+    let mut lp = 0.0f32;
+    seamless(
+        noise(RATE as usize / 2)
+            .map(|v| {
+                lp += 0.15 * (v - lp);
+                lp * 2.0
+            })
+            .collect(),
+    )
+}
+
+/// Sliding on hard ground (asphalt, concrete, rock): a tyre squeal, noise rung through two
+/// narrow resonances (~1.25 and ~2.1 kHz) that drift a little. Loops; about as loud as
+/// `skid_loop`.
+pub fn squeal_loop() -> Vec<f32> {
+    let n = RATE as usize / 2;
+    // two-pole resonator: y = x + a1·y1 − a2·y2, r sets the bandwidth (≈ 40 Hz)
+    let ring = |hz: f32, wobble: f32| {
+        let r = 1.0 - std::f32::consts::PI * 40.0 / RATE as f32;
+        let (mut y1, mut y2) = (0.0f32, 0.0f32);
+        noise(n)
+            .enumerate()
+            .map(move |(i, x)| {
+                // 2 wobbles per loop, so the loop's ends match
+                let t = i as f32 / n as f32 * std::f32::consts::TAU * 2.0;
+                let w = std::f32::consts::TAU * hz * (1.0 + wobble * t.sin()) / RATE as f32;
+                let y = x + 2.0 * r * w.cos() * y1 - r * r * y2;
+                (y2, y1) = (y1, y);
+                y
+            })
+            .collect::<Vec<f32>>()
+    };
+    let (a, b) = (ring(1250.0, 0.03), ring(2100.0, 0.02));
+    let mixed: Vec<f32> = a.iter().zip(&b).map(|(a, b)| a + 0.5 * b).collect();
+    let peak = mixed.iter().fold(0f32, |m, v| m.max(v.abs()));
+    seamless(mixed.into_iter().map(|v| v / peak * 0.7).collect())
 }
 
 /// Decaying sine notes, one after another (`(hz, seconds)`).
@@ -398,6 +436,20 @@ mod tests {
         let b = crate::assets::read("sounds/engine/loop_0.wav").unwrap();
         let s = read_wav(&b).expect("loop_0.wav parses");
         assert_eq!(s.len(), 38106);
+    }
+
+    #[test]
+    fn squeal_rings_high_and_loops() {
+        let s = squeal_loop();
+        // most of its energy above 1 kHz: few zero crossings per ms are the crunch's, not this
+        let crossings = s
+            .windows(2)
+            .filter(|w| (w[0] < 0.0) != (w[1] < 0.0))
+            .count();
+        let hz = crossings as f32 / 2.0 / (s.len() as f32 / RATE as f32);
+        assert!((1000.0..2000.0).contains(&hz), "{hz} Hz");
+        assert!((s[0] - s[s.len() - 1]).abs() < 0.1, "loops without a click");
+        assert!(rms(&s) > 0.1);
     }
 
     #[test]

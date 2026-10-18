@@ -44,7 +44,10 @@ const ENGINE_TOP_FNUM: f32 = 400.0;
 /// 10/10 (worst case 0.96). The thud at 0.9 clipped the mix on hard landings, heard as
 /// crackle; found with --record-audio.
 const THUD_LEVEL: f32 = 0.4;
-const SKID_LEVEL: f32 = 0.25;
+/// Sliding at full tilt (crunch and squeal share it); was 0.25, a bit much on long slides.
+const SKID_LEVEL: f32 = 0.16;
+/// Slide particles in the air for the skid at full volume.
+const SKID_FULL: f32 = 60.0;
 /// Engine level against the other sounds: the FM tone is nearly a square wave at full scale.
 const ENGINE_LEVEL: f32 = 0.4;
 
@@ -125,7 +128,7 @@ struct AudioRecording {
 }
 
 impl AudioRecording {
-    fn frame(&mut self, audio: &Audio, which: usize, skid_vol: f32, dt: f32) {
+    fn frame(&mut self, audio: &Audio, which: usize, skid_vol: [f32; 2], dt: f32) {
         let n = (dt * sound::RATE as f32) as usize;
         let start = self.out.len();
         let voices = if which == 1 && !audio.recorded.is_empty() {
@@ -144,7 +147,8 @@ impl AudioRecording {
                     }
                 }
             }
-            v += audio.skid_samples[t % audio.skid_samples.len()] * skid_vol;
+            v += audio.skid_samples[t % audio.skid_samples.len()] * skid_vol[0];
+            v += audio.squeal_samples[t % audio.squeal_samples.len()] * skid_vol[1];
             for (pos, vol) in &mut self.thuds {
                 if let Some(x) = audio.thud_samples.get(*pos) {
                     v += x * *vol;
@@ -176,9 +180,12 @@ struct Audio {
     /// [player] voices: the original's AdLib engine, and the recorded one when installed.
     original: Vec<EngineVoice>,
     recorded: Vec<EngineVoice>,
+    /// Sliding: crunch on soft ground, squeal on hard.
     skid: Sound,
+    squeal: Sound,
     thud: Sound,
     skid_samples: Vec<f32>,
+    squeal_samples: Vec<f32>,
     thud_samples: Vec<f32>,
     checkpoint: Sound,
     lap: Sound,
@@ -219,20 +226,24 @@ impl Audio {
             original,
             recorded,
             skid: load(sound::skid_loop()).await?,
+            squeal: load(sound::squeal_loop()).await?,
             thud: load(sound::thud()).await?,
             skid_samples: sound::skid_loop(),
+            squeal_samples: sound::squeal_loop(),
             thud_samples: sound::thud(),
             checkpoint: load(sound::chime(&[(880.0, 0.3)])).await?,
             lap: load(sound::chime(&[(660.0, 0.15), (990.0, 0.4)])).await?,
             best: load(sound::chime(&[(660.0, 0.12), (880.0, 0.12), (1320.0, 0.5)])).await?,
         };
-        play_sound(
-            &audio.skid,
-            PlaySoundParams {
-                looped: true,
-                volume: 0.0,
-            },
-        );
+        for s in [&audio.skid, &audio.squeal] {
+            play_sound(
+                s,
+                PlaySoundParams {
+                    looped: true,
+                    volume: 0.0,
+                },
+            );
+        }
         Some(audio)
     }
 
@@ -248,8 +259,10 @@ impl Audio {
         }
     }
 
-    fn skid(&self, skid: f32, vol: f32) {
-        set_sound_volume(&self.skid, vol * SKID_LEVEL * skid);
+    /// Sliding, `[soft, hard]` ground, 0–1 each.
+    fn skid(&self, skid: [f32; 2], vol: f32) {
+        set_sound_volume(&self.skid, vol * SKID_LEVEL * skid[0]);
+        set_sound_volume(&self.squeal, vol * SKID_LEVEL * skid[1]);
     }
 
     fn chime(&self, ev: &Option<Event>, vol: f32) {
@@ -1202,6 +1215,13 @@ fn skin_of<'a>(
         .unwrap_or(&cars[n].1)
 }
 
+/// Ground that squeals rather than crunches when a tyre slides on it: grey (asphalt, concrete,
+/// rock), judged by its colour, as which material code means what isn't known (re-notes).
+fn hard_ground(rgb: [u8; 3]) -> bool {
+    let (hi, lo) = (*rgb.iter().max().unwrap(), *rgb.iter().min().unwrap());
+    hi > 40 && (hi - lo) as f32 <= hi as f32 * 0.2
+}
+
 /// Getting an online race together (#33): listening for a player, or asking a host.
 enum Lobby {
     Off,
@@ -2134,7 +2154,7 @@ async fn main() {
     let mut pad_id: Option<()> = None;
     #[cfg(target_arch = "wasm32")]
     let mut gilrs: Option<()> = None;
-    let (mut impacts, mut last_thud, mut skid) = (0u32, 0.0f64, 0.0f32);
+    let (mut impacts, mut last_thud, mut skid) = (0u32, 0.0f64, [0.0f32; 2]);
     let mut revs_smooth = [48.0f32; 2]; // per player, in F-number units
     let mut audio_rec = args
         .iter()
@@ -2885,10 +2905,35 @@ async fn main() {
                     get_frame_time(),
                 );
             }
-            skid += ((sim.particle_positions().count() as f32 / 40.0).min(1.0) - skid) * 0.2;
+            // as loud as the slide particles in the air; squeal for those off hard ground
+            let (mut soft, mut hard) = (0.0f32, 0.0f32);
+            for c in sim.particle_colours() {
+                let rgb = sim.terrain.palette[c as usize];
+                if c != 0x0f && hard_ground(rgb) {
+                    hard += 1.0;
+                } else {
+                    soft += 1.0;
+                }
+            }
+            let total = ((soft + hard) / SKID_FULL).min(1.0);
+            let share = |n: f32| {
+                if soft + hard > 0.0 {
+                    total * n / (soft + hard)
+                } else {
+                    0.0
+                }
+            };
+            for (k, n) in [soft, hard].into_iter().enumerate() {
+                skid[k] += (share(n) - skid[k]) * 0.2;
+            }
             a.skid(skid, vol);
             if let Some(r) = &mut audio_rec {
-                r.frame(a, gfx.engine, vol * SKID_LEVEL * skid, get_frame_time());
+                r.frame(
+                    a,
+                    gfx.engine,
+                    skid.map(|s| vol * SKID_LEVEL * s),
+                    get_frame_time(),
+                );
             }
             if sim.impacts > impacts && get_time() - last_thud > 0.15 && vol > 0.0 {
                 play_sound(

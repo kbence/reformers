@@ -683,6 +683,11 @@ impl Sim {
         })
     }
 
+    /// The COL colour each live particle was thrown up from (0x0f: soft dirt), for the skid sound.
+    pub fn particle_colours(&self) -> impl Iterator<Item = u8> + '_ {
+        self.particles.iter().map(|p| p.colour as u8)
+    }
+
     /// One 120 Hz timer tick (`0x5680`). `keys[i]` drives car `i`.
     pub fn tick(&mut self, keys: &[Keys]) {
         for i in 0..self.cars.len() {
