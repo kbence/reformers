@@ -809,7 +809,7 @@ fn car_meshes(
     atoms: &[[f32; 3]],
     steer: f32,
     palette: &[[u8; 3]; 256],
-    t: &Terrain,
+    ground: &dyn Fn(f32, f32) -> f32,
     skin: &Skin,
     roll: &[f32; 4],
     use_skin: bool,
@@ -825,7 +825,7 @@ fn car_meshes(
         let world = if e < 2 * n {
             let [x, y, z] = atoms[e / 2];
             if e % 2 == 1 {
-                vec3(x, y, t.height_at(x, y) + 3.0)
+                vec3(x, y, ground(x, y) + 3.0)
             } else {
                 vec3(x, y, z)
             }
@@ -1059,6 +1059,9 @@ const RESOLUTIONS: [(f32, f32); 4] = [
     (1920.0, 1200.0),
 ];
 
+/// CAR1–CAR5.DAT.
+const CARS: usize = 5;
+
 const CAMERAS: [&str; 4] = ["chase", "bumper", "orbit (Q/E)", "top-down"];
 
 /// Graphics options: one field + one menu row each; saved to settings.txt.
@@ -1067,6 +1070,9 @@ struct Graphics {
     map: String,
     /// 1, or 2 for split-screen (not saved: a session choice).
     players: usize,
+    /// Player 1's and player 2's car, 0-based (CAR1–CAR5).
+    car: usize,
+    car2: usize,
     camera: usize, // index into CAMERAS
     nearest: bool,
     textured: bool,
@@ -1085,6 +1091,8 @@ enum Row {
     Resume,
     Map,
     Players,
+    Car,
+    Car2,
     Sound,
     EngineSound,
     Camera,
@@ -1128,7 +1136,8 @@ const CONTROLS: [&str; 10] = [
     "Player 2: WASD, Shift brake, Tab R, G repair",
 ];
 
-fn items(page: Page) -> Vec<Item> {
+/// The page's items; `players` adds player 2's car row.
+fn items(page: Page, players: usize) -> Vec<Item> {
     use Item::{Open, Row as R};
     match page {
         Page::Top => vec![
@@ -1139,15 +1148,12 @@ fn items(page: Page) -> Vec<Item> {
             Open(Page::Controls),
             R(Row::Quit),
         ],
-        Page::Race => [
-            Row::Map,
-            Row::Players,
-            Row::Camera,
-            Row::Ghost,
-            Row::Minimap,
-        ]
-        .map(R)
-        .to_vec(),
+        Page::Race => [Row::Map, Row::Players, Row::Car, Row::Car2]
+            .into_iter()
+            .filter(|&r| r != Row::Car2 || players == 2)
+            .chain([Row::Camera, Row::Ghost, Row::Minimap])
+            .map(R)
+            .collect(),
         Page::Graphics => [
             Row::Textures,
             Row::Filter,
@@ -1175,6 +1181,8 @@ enum MenuAction {
 /// Where the menu is: page, selected row, and the drum's eased scroll position.
 struct Menu {
     page: Page,
+    /// 1 or 2, as `Graphics::players`: whether player 2's car row is listed.
+    players: usize,
     selected: usize,
     scroll: f32,
 }
@@ -1183,6 +1191,7 @@ impl Menu {
     fn new() -> Menu {
         Menu {
             page: Page::Top,
+            players: 1,
             selected: 0,
             scroll: 0.0,
         }
@@ -1198,7 +1207,7 @@ impl Menu {
         enter: bool,
         back: bool,
     ) -> MenuAction {
-        let list = items(self.page);
+        let list = items(self.page, self.players);
         if up && self.selected > 0 {
             self.selected -= 1;
         }
@@ -1208,7 +1217,7 @@ impl Menu {
         let go_back = |m: &mut Menu| {
             let from = m.page;
             m.page = Page::Top;
-            m.selected = items(Page::Top)
+            m.selected = items(Page::Top, 1)
                 .iter()
                 .position(|&i| i == Item::Open(from))
                 .unwrap_or(0);
@@ -1246,8 +1255,10 @@ impl Menu {
 impl Graphics {
     fn to_text(&self) -> String {
         format!(
-            "map={}\ncamera={}\nnearest={}\ntextured={}\ncrt={}\nminimap={}\nghost={}\nfog={}\nvolume={}\nengine={}\nfullscreen={}\nresolution={}\n",
+            "map={}\ncar={}\ncar2={}\ncamera={}\nnearest={}\ntextured={}\ncrt={}\nminimap={}\nghost={}\nfog={}\nvolume={}\nengine={}\nfullscreen={}\nresolution={}\n",
             self.map,
+            self.car + 1,
+            self.car2 + 1,
             self.camera,
             self.nearest,
             self.textured,
@@ -1268,6 +1279,16 @@ impl Graphics {
             let (b, n) = (v.trim() == "true", v.trim().parse::<usize>().ok());
             match k.trim() {
                 "map" => self.map = v.trim().to_string(),
+                "car" => {
+                    self.car = n
+                        .filter(|n| (1..=CARS).contains(n))
+                        .map_or(self.car, |n| n - 1)
+                }
+                "car2" => {
+                    self.car2 = n
+                        .filter(|n| (1..=CARS).contains(n))
+                        .map_or(self.car2, |n| n - 1)
+                }
                 "camera" => self.camera = n.filter(|&n| n < CAMERAS.len()).unwrap_or(self.camera),
                 "nearest" => self.nearest = b,
                 "textured" => self.textured = b,
@@ -1297,6 +1318,9 @@ impl Graphics {
         match row {
             Row::Resume => "Resume".into(),
             Row::Map => format!("Map: {}", self.map),
+            Row::Car if self.players == 2 => format!("P1 car: {}", self.car + 1),
+            Row::Car => format!("Car: {}", self.car + 1),
+            Row::Car2 => format!("P2 car: {}", self.car2 + 1),
             Row::Players => match self.players {
                 1 => "Players: 1".into(),
                 _ => "Players: 2  (P2: WASD, Shift brake, Tab R, G repair)".into(),
@@ -1341,6 +1365,14 @@ impl Graphics {
             Row::Minimap => self.minimap = !self.minimap,
             Row::Fog => self.fog = !self.fog,
             Row::Players => self.players = 3 - self.players,
+            Row::Car => {
+                self.car = (self.car as i32 + if step == 0 { 1 } else { step })
+                    .rem_euclid(CARS as i32) as usize
+            }
+            Row::Car2 => {
+                self.car2 = (self.car2 as i32 + if step == 0 { 1 } else { step })
+                    .rem_euclid(CARS as i32) as usize
+            }
             Row::EngineSound => self.engine = (self.engine + 1) % ENGINE_SOUNDS.len(),
             Row::Sound => {
                 self.volume =
@@ -1385,20 +1417,16 @@ impl Graphics {
     }
 }
 
-/// COL.PCX in the top-right corner with the gates (next one yellow, start white), the ghost and the car.
-#[allow(clippy::too_many_arguments)]
-fn draw_minimap(
+/// COL.PCX at (x0, y0), `size` square, with the zones and gates on it (`next` gate yellow, start white).
+fn draw_map_view(
     colour: &Texture2D,
     zones: &[(usize, usize, Zone)],
     track: Option<&Track>,
-    next: usize,
-    car: &SimCar,
-    others: &[SimCar],
-    ghost: Option<[f32; 2]>,
-    top: f32,
+    next: Option<usize>,
+    x0: f32,
+    y0: f32,
+    size: f32,
 ) {
-    let size = (screen_width().min(screen_height()) * 0.28).round();
-    let (x0, y0) = (screen_width() - size - 12.0, top + 12.0);
     let to_map = |[x, y]: [f32; 2]| vec2(x0 + x / 65536.0 * size, y0 + y / 65536.0 * size);
     draw_rectangle(
         x0 - 3.0,
@@ -1425,13 +1453,31 @@ fn draw_minimap(
         for (g, ends) in t.ends.iter().enumerate() {
             let (a, b) = (to_map(ends[0]), to_map(ends[1]));
             let (w, c) = match g {
-                _ if g == next => (4.0, YELLOW),
+                _ if Some(g) == next => (4.0, YELLOW),
                 0 => (2.5, WHITE),
                 _ => (2.0, Color::new(1.0, 1.0, 1.0, 0.5)),
             };
             draw_line(a.x, a.y, b.x, b.y, w, c);
         }
     }
+}
+
+/// COL.PCX in the top-right corner with the gates (next one yellow, start white), the ghost and the car.
+#[allow(clippy::too_many_arguments)]
+fn draw_minimap(
+    colour: &Texture2D,
+    zones: &[(usize, usize, Zone)],
+    track: Option<&Track>,
+    next: usize,
+    car: &SimCar,
+    others: &[SimCar],
+    ghost: Option<[f32; 2]>,
+    top: f32,
+) {
+    let size = (screen_width().min(screen_height()) * 0.28).round();
+    let (x0, y0) = (screen_width() - size - 12.0, top + 12.0);
+    let to_map = |[x, y]: [f32; 2]| vec2(x0 + x / 65536.0 * size, y0 + y / 65536.0 * size);
+    draw_map_view(colour, zones, track, Some(next), x0, y0, size);
     for o in others {
         let [x, y, _] = o.centre();
         let p = to_map([x, y]);
@@ -1449,6 +1495,133 @@ fn draw_minimap(
     draw_circle(p.x, p.y, 4.0, RED);
 }
 
+/// Rows shown with a picture beside the menu: the map, the cars.
+fn previewed(item: Item) -> bool {
+    matches!(item, Item::Row(Row::Map | Row::Car | Row::Car2))
+}
+
+/// Where the menu's preview goes: a square right of the (shifted) drum.
+fn preview_rect() -> Rect {
+    let (w, h) = (screen_width(), screen_height());
+    let s = (w * 0.38).min(h * 0.6).round();
+    Rect::new(
+        (w * 0.75 - s / 2.0).round(),
+        (h * 0.5 - s / 2.0).round(),
+        s,
+        s,
+    )
+}
+
+/// The map's minimap (no cars) with its name under it.
+fn draw_map_preview(name: &str, colour: &Texture2D, level: &Level) {
+    let r = preview_rect();
+    draw_map_view(
+        colour,
+        &level.zone_cells,
+        level.track.as_ref(),
+        None,
+        r.x,
+        r.y,
+        r.w,
+    );
+    let caption = if level.track.is_some() {
+        name.to_string()
+    } else {
+        format!("{name}  (free drive)")
+    };
+    let dims = measure_text(&caption, None, 24, 1.0);
+    draw_text(
+        &caption,
+        r.x + (r.w - dims.width) / 2.0,
+        r.y + r.w + 32.0,
+        24.0,
+        WHITE,
+    );
+}
+
+/// The car at rest on a turntable, rendered through `target` and drawn into `preview_rect`.
+#[allow(clippy::too_many_arguments)]
+fn draw_car_preview(
+    target: &RenderTarget,
+    caption: &str,
+    model: &Car,
+    skin: &Skin,
+    palette: &[[u8; 3]; 256],
+    textured: bool,
+    angle: f32,
+) {
+    // car-local atoms (front is −y), turned about their middle; the ground under the wheels
+    let n = model.atoms.len() as f32;
+    let (mx, my) = model
+        .atoms
+        .iter()
+        .fold((0.0, 0.0), |(x, y), a| (x + a.pos[0] / n, y + a.pos[1] / n));
+    let floor = model
+        .atoms
+        .iter()
+        .map(|a| a.pos[2] - a.radius)
+        .fold(f32::MAX, f32::min);
+    let (sa, ca) = angle.sin_cos();
+    let atoms: Vec<[f32; 3]> = model
+        .atoms
+        .iter()
+        .map(|a| {
+            let (x, y) = (a.pos[0] - mx, a.pos[1] - my);
+            [x * ca - y * sa, x * sa + y * ca, a.pos[2] - floor]
+        })
+        .collect();
+    let reach = atoms
+        .iter()
+        .map(|p| (p[0] * p[0] + p[1] * p[1]).sqrt())
+        .fold(0.0, f32::max)
+        / S;
+    let look = vec3(0.0, reach * 0.3, 0.0);
+    set_camera(&Camera3D {
+        position: look + vec3(0.0, reach * 1.1, reach * 3.2),
+        target: look,
+        up: Vec3::Y,
+        aspect: Some(1.0),
+        render_target: Some(target.clone()),
+        ..Default::default()
+    });
+    clear_background(Color::new(0.0, 0.0, 0.0, 0.0));
+    gl_use_default_material();
+    for mesh in car_meshes(
+        model,
+        &atoms,
+        0.0,
+        palette,
+        &|_, _| -3.0, // shadow right on the turntable
+        skin,
+        &[0.0; 4],
+        textured,
+    ) {
+        draw_mesh(&mesh);
+    }
+    set_default_camera();
+    let r = preview_rect();
+    draw_rectangle(r.x, r.y, r.w, r.h, Color::new(0.0, 0.0, 0.0, 0.35));
+    draw_texture_ex(
+        &target.texture,
+        r.x,
+        r.y,
+        WHITE,
+        DrawTextureParams {
+            dest_size: Some(vec2(r.w, r.h)),
+            flip_y: true,
+            ..Default::default()
+        },
+    );
+    let dims = measure_text(caption, None, 24, 1.0);
+    draw_text(
+        caption,
+        r.x + (r.w - dims.width) / 2.0,
+        r.y + r.w + 32.0,
+        24.0,
+        WHITE,
+    );
+}
+
 /// The menu as a drum seen side-on: rows on a cylinder, the selected one centred and full size,
 /// the others shrinking and fading out with their angle; scrolling eases.
 fn draw_menu(gfx: &Graphics, menu: &mut Menu, dt: f32) {
@@ -1462,7 +1635,14 @@ fn draw_menu(gfx: &Graphics, menu: &mut Menu, dt: f32) {
     let size = measure_text(&title, None, 40, 1.0);
     draw_text(&title, (w - size.width) / 2.0, h * 0.14, 40.0, WHITE);
     let (cy, radius, step) = (h * 0.52, h * 0.3, 0.18f32);
-    for (i, item) in items(menu.page).iter().enumerate() {
+    let list = items(menu.page, gfx.players);
+    // a row with a preview: the drum moves left to make room for it
+    let cx = if list.get(menu.selected).copied().is_some_and(previewed) {
+        w * 0.32
+    } else {
+        w / 2.0
+    };
+    for (i, item) in list.iter().enumerate() {
         let angle = (i as f32 - menu.scroll) * step;
         if angle.abs() > 1.4 {
             continue;
@@ -1485,11 +1665,11 @@ fn draw_menu(gfx: &Graphics, menu: &mut Menu, dt: f32) {
         } else {
             Color::new(1.0, 1.0, 1.0, fade * 0.85)
         };
-        draw_text(&text, (w - dims.width) / 2.0, y, font, colour);
+        draw_text(&text, cx - dims.width / 2.0, y, font, colour);
         if chosen {
             let bar = dims.width + 40.0;
             draw_rectangle_lines(
-                (w - bar) / 2.0,
+                cx - bar / 2.0,
                 y - dims.height - 8.0,
                 bar,
                 dims.height + 16.0,
@@ -1559,12 +1739,11 @@ fn window_conf() -> macroquad::conf::Conf {
 async fn main() {
     assets::preload().await;
     let args: Vec<String> = std::env::args().collect();
-    let car_n = args
+    let car_flag = args
         .iter()
         .position(|a| a == "--car")
         .and_then(|i| args.get(i + 1))
-        .cloned()
-        .unwrap_or("1".into());
+        .cloned();
     let read = |f: &str| assets::read(f).unwrap_or_else(|e| panic!("{e}"));
     let saved = settings_file()
         .and_then(|p| std::fs::read_to_string(p).ok())
@@ -1603,7 +1782,15 @@ async fn main() {
             (model, skin_texture(&skin, &car_palette))
         })
         .collect();
-    let mut current = car_n.parse::<usize>().unwrap_or(1).clamp(1, 5) - 1;
+    // --car N, else the car saved in settings.txt, else car 1
+    let saved_car = saved.lines().find_map(|l| l.strip_prefix("car="));
+    let mut current = car_flag
+        .as_deref()
+        .or(saved_car)
+        .and_then(|n| n.trim().parse::<usize>().ok())
+        .unwrap_or(1)
+        .clamp(1, CARS)
+        - 1;
     let mut roll = [0.0f32; 4];
     let mut wireframe = false;
     let mut speed = 0.0f32;
@@ -1676,6 +1863,8 @@ async fn main() {
     let flag = |f: &str| args.iter().any(|a| a == f);
     let mut gfx = Graphics {
         map: map.clone(),
+        car: 0,
+        car2: 1,
         players: if args.windows(2).any(|w| w[0] == "--players" && w[1] == "2") {
             2
         } else {
@@ -1695,6 +1884,7 @@ async fn main() {
     };
     gfx.apply_text(&saved);
     gfx.map = map.clone(); // pick_map already weighed --map and the saved one
+    gfx.car = current; // so did --car (and a replay picks its own)
     // launch flags win over the saved settings
     gfx.nearest &= !flag("--smooth");
     gfx.textured &= !flag("--untextured");
@@ -1747,12 +1937,23 @@ async fn main() {
     let mut scene_target: Option<RenderTarget> = None;
     let mut menu_open = args.iter().any(|a| a == "--menu");
     let mut menu = Menu::new();
+    // menu previews: each map's minimap (loaded on first look), and the car turntable's target
+    let mut map_previews: std::collections::HashMap<String, Option<(Texture2D, Level)>> =
+        Default::default();
+    let car_target = render_target_ex(
+        512,
+        512,
+        RenderTargetParams {
+            sample_count: 1,
+            depth: true,
+        },
+    );
     let mut shown = sim.terrain.height.clone();
     let mut original = shown.clone();
     let mut cam_pos = v(sim.cars[0].centre()) + vec3(0.0, 2.0, 4.0);
     let mut arm = 1.0f32; // share of the full chase-camera arm that's clear of the ground
     // player 2 (split screen): car, time trial, wheel roll, camera, R / F
-    let mut car2 = (current + 1) % 5;
+    let mut car2 = gfx.car2;
     let mut race2 = Race::new(None);
     let mut roll2 = [0.0f32; 4];
     let (mut cam2, mut arm2) = (cam_pos, 1.0f32);
@@ -1770,20 +1971,22 @@ async fn main() {
         let pressed = |k: KeyCode| is_key_pressed(k) || pad_hit.contains(&k);
         let down = |k: KeyCode| is_key_down(k) || pad_held.contains(&k);
         // hot reload: edit a map image, save, and it's here within a second
-        if get_time() >= next_poll || gfx.map != map {
+        // a map picked in the menu loads when the menu closes, not on every step through the list
+        let want = if menu_open { &map } else { &gfx.map }.clone();
+        if get_time() >= next_poll || want != map {
             next_poll = get_time() + 1.0;
-            let now = watched(&gfx.map);
-            let switched = gfx.map != map;
+            let now = watched(&want);
+            let switched = want != map;
             if now != stamps || switched {
                 stamps = now;
-                match load_level(&gfx.map) {
+                match load_level(&want) {
                     Ok((terrain, new)) => {
                         sim.set_terrain(terrain);
                         level = new;
                         if let Some(t) = &level.track {
                             sim.set_soft_dirt(t.soft_dirt.clone());
                         }
-                        map = gfx.map.clone();
+                        map = want;
                         meshes = (0..chunks).map(|c| chunk_mesh(&sim.terrain, c)).collect();
                         colour_tex.update(&colour_image(&sim.terrain));
                         index_tex.update(&index_image(&sim.terrain));
@@ -1848,6 +2051,7 @@ async fn main() {
             menu_open = true;
             menu = Menu::new();
         } else if menu_open {
+            menu.players = gfx.players;
             let enter =
                 pressed(KeyCode::Enter) || pressed(KeyCode::KpEnter) || pressed(KeyCode::Space);
             let back = pressed(KeyCode::Escape) || pressed(KeyCode::Backspace);
@@ -1899,10 +2103,15 @@ async fn main() {
             ]
             .iter()
             .position(|&k| pressed(k))
+            .or((gfx.car != current).then_some(gfx.car))
         };
         if let Some(n) = pick {
             // a new car is a new run: on the map as loaded, its own time trial and best lap
             current = n;
+            if gfx.car != n {
+                gfx.car = n;
+                save_settings(&gfx);
+            }
             playing = None;
             let [x, y, _] = sim.cars[0].centre();
             let h = sim.cars[0].heading();
@@ -1928,7 +2137,7 @@ async fn main() {
         if gfx.players != sim.cars.len() {
             // player 2 joins beside player 1 (or leaves); either way a new run starts
             if gfx.players == 2 {
-                car2 = (current + 1) % 5;
+                car2 = gfx.car2;
                 let [x, y, _] = sim.cars[0].centre();
                 let h = sim.cars[0].heading();
                 let (bx, by) = beside((x as u16, y as u16), h);
@@ -1945,6 +2154,15 @@ async fn main() {
             }
             playing = None;
             recording_run = new_run(&map, &level, current, sim.dig_everywhere, &sim.cars[0]);
+        }
+        if gfx.players == 2 && !menu_open && gfx.car2 != car2 {
+            // player 2's new car, where the old one stands
+            car2 = gfx.car2;
+            let [x, y, _] = sim.cars[1].centre();
+            let h = sim.cars[1].heading();
+            sim.cars[1] = SimCar::spawn_facing(&cars[car2].0, &sim.terrain, x as u16, y as u16, h);
+            race2 = Race::new(best_key(&level, car2).and_then(|k| load_best(&k)));
+            roll2 = [0.0; 4];
         }
         if gfx.players == 2 && !menu_open {
             pending_r2 |= pressed(KeyCode::Tab);
@@ -2269,7 +2487,7 @@ async fn main() {
                     &c.atom_positions(),
                     c.steer_angle(),
                     &car_palette,
-                    &sim.terrain,
+                    &|x, y| sim.terrain.height_at(x, y),
                     sk,
                     r,
                     gfx.textured,
@@ -2291,7 +2509,7 @@ async fn main() {
                     &f.atoms,
                     f.steer,
                     &car_palette,
-                    &sim.terrain,
+                    &|x, y| sim.terrain.height_at(x, y),
                     skin,
                     &f.roll,
                     gfx.textured,
@@ -2473,7 +2691,7 @@ async fn main() {
                 RED,
             );
         }
-        if gfx.minimap {
+        if gfx.minimap && !menu_open {
             // ghost dot: midpoint of the axle atoms 4 and 6, like `SimCar::centre`
             let ghost_at = (gfx.ghost && race.started)
                 .then(|| ghost.at(race.lap_time(ticks)))
@@ -2532,6 +2750,38 @@ async fn main() {
         }
         if menu_open {
             draw_menu(&gfx, &mut menu, get_frame_time());
+            match items(menu.page, gfx.players).get(menu.selected) {
+                Some(Item::Row(Row::Map)) => {
+                    let preview = map_previews.entry(gfx.map.clone()).or_insert_with(|| {
+                        let (terrain, level) = load_level(&gfx.map).ok()?;
+                        let tex = Texture2D::from_image(&colour_image(&terrain));
+                        tex.set_filter(FilterMode::Nearest);
+                        Some((tex, level))
+                    });
+                    if let Some((tex, level)) = preview {
+                        draw_map_preview(&gfx.map, tex, level);
+                    }
+                }
+                Some(&Item::Row(row @ (Row::Car | Row::Car2))) => {
+                    let n = if row == Row::Car { gfx.car } else { gfx.car2 };
+                    let (model, skin) = &cars[n];
+                    let drive = match model.drive {
+                        car::Drive::Rear => "rear-wheel drive",
+                        car::Drive::Front => "front-wheel drive",
+                        car::Drive::All => "four-wheel drive",
+                    };
+                    draw_car_preview(
+                        &car_target,
+                        &format!("car {}  ({drive})", n + 1),
+                        model,
+                        skin,
+                        &car_palette,
+                        gfx.textured,
+                        get_time() as f32 * 0.7,
+                    );
+                }
+                _ => {}
+            }
         }
         if let Some(path) = &shot {
             if get_time() - started > 4.0 {
@@ -2576,7 +2826,7 @@ mod tests {
         // down to Graphics and open it
         none(&mut m, false, true, false, false, false, false);
         none(&mut m, false, true, false, false, false, false);
-        assert_eq!(items(Page::Top)[m.selected], Item::Open(Page::Graphics));
+        assert_eq!(items(Page::Top, 1)[m.selected], Item::Open(Page::Graphics));
         assert_eq!(
             none(&mut m, false, false, false, false, true, false),
             MenuAction::None
@@ -2600,7 +2850,7 @@ mod tests {
             none(&mut m, false, true, false, false, false, false);
         }
         assert_eq!(
-            items(Page::Graphics)[m.selected],
+            items(Page::Graphics, 1)[m.selected],
             Item::Row(Row::Resolution)
         );
         // Esc goes back to the top, on the row we came from; Esc again closes
@@ -2609,7 +2859,7 @@ mod tests {
             MenuAction::None
         );
         assert_eq!(
-            (m.page, items(Page::Top)[m.selected]),
+            (m.page, items(Page::Top, 1)[m.selected]),
             (Page::Top, Item::Open(Page::Graphics))
         );
         assert_eq!(
@@ -2652,6 +2902,8 @@ mod tests {
     fn settings_round_trip() {
         let mut a = Graphics {
             map: "terep1".into(),
+            car: 4,
+            car2: 2,
             players: 1,
             camera: 2,
             nearest: false,
@@ -2667,6 +2919,8 @@ mod tests {
         };
         let mut b = Graphics {
             map: "x".into(),
+            car: 0,
+            car2: 1,
             players: 1,
             camera: 0,
             nearest: true,
@@ -2682,8 +2936,22 @@ mod tests {
         };
         b.apply_text(&a.to_text());
         assert_eq!(b.to_text(), a.to_text());
-        a.apply_text("camera=99\nresolution=x\nbogus=true\nno equals sign");
-        assert_eq!((a.camera, a.resolution), (2, 3), "bad values are skipped");
+        a.apply_text("camera=99\nresolution=x\ncar=0\ncar2=6\nbogus=true\nno equals sign");
+        assert_eq!(
+            (a.camera, a.resolution, a.car, a.car2),
+            (2, 3, 4, 2),
+            "bad values are skipped"
+        );
+    }
+
+    #[test]
+    fn player_two_car_row_only_with_two_players() {
+        let race = |players| items(Page::Race, players);
+        assert!(!race(1).contains(&Item::Row(Row::Car2)));
+        let two = race(2);
+        let at = |r| two.iter().position(|&i| i == Item::Row(r)).unwrap();
+        // listed after Players, so toggling Players doesn't move the selection
+        assert!(at(Row::Players) < at(Row::Car2));
     }
 
     #[test]

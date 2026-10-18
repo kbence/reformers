@@ -18,7 +18,7 @@ cargo run --release
 | Space | B | brake |
 | R | Y | put the car back on its wheels (time trial: on the last checkpoint, facing the next); dents stay |
 | F | Back | repair the car (a fresh one where it stands) |
-| 1–5 | | switch car |
+| 1–5 | | switch car (also Esc menu → Race → Car, with a turning preview; remembered) |
 | C | right shoulder | camera: chase / bumper / orbit (Q/E rotate) / top-down |
 | W | | spring wireframe |
 | P | | save this run as a replay |
@@ -30,14 +30,14 @@ nobody is holding (wheels, pedals, virtual joysticks) can't hold a key down.
 Options (saved to `settings.txt` next to the best laps; flags override them): sound volume, camera, fog (the original's distance fog), texture filter (nearest/smooth), textures on (MAPTEX.PCX material tiles, car
 skins) or off (flat COL.PCX colours), CRT filter, minimap, ghost car, fullscreen, window resolution.
 
-Flags: `--car N` starting car; `--soft` makes all ground diggable so wheels dig tracks (the original
+Flags: `--car N` starting car (instead of the remembered one); `--soft` makes all ground diggable so wheels dig tracks (the original
 only digs ground of colour 0x0f, which no shipped map has); `--smooth`, `--untextured`, `--crt`,
 `--no-minimap`, `--ghost`, `--no-fog`, `--mute` preset the options; `--record-audio FILE` writes
 what the game plays (engine, skid, thuds) to a WAV while you drive, for checking the sound; `--map NAME` picks a map; `--menu` starts paused.
 
 ## Two players
 
-Split screen on one keyboard: Esc menu → Players, or `--players 2`. Player 2 drives with WASD, Left
+Split screen on one keyboard: Esc menu → Players, or `--players 2` (player 2's car: Race → P2 car). Player 2 drives with WASD, Left
 Shift brakes, Tab puts the car back on its wheels, G repairs, and joins beside player 1. Both run
 their own time trial with placings (1st/2nd by laps, checkpoints and distance to the next). The
 cars collide: the original has collision code but never fills its hull table, so Reformers uses
@@ -78,7 +78,8 @@ error and the previous map stays.
 
 Each map is a folder in `assets/maps/`: `MAP` (heights) and `COL` (colours = surface materials), as
 PCX or TEREP1's BMP, plus an optional `CHECK.PCX` that makes it a time trial. Pick one in the Esc
-menu or with `--map NAME`; the last one is remembered. Shipped: `terep2` (the original, with the
+menu (Race → Map shows each map's minimap and checkpoints; it loads when the menu closes) or
+with `--map NAME`; the last one is remembered. Shipped: `terep2` (the original, with the
 time-trial track), `terep2-hills` (its unused `MAPHILL.PCX`) and `terep1` (TEREP1's map, same
 landscape, own palette; heights use TEREP2's scale, so it comes out gentler). A map folder may
 carry its own `MAPTEX.PCX`; otherwise the shared one is used when the palettes match, and the
