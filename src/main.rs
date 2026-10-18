@@ -1022,7 +1022,7 @@ fn car_meshes(
 }
 
 /// The checkpoint guide (#34): a yellow arrow hovering over `car`, pointing at `target` (world
-/// x, y), bobbing gently with `time`. Its tip leans up 35° so the chase camera sees its face.
+/// x, y), level, bobbing gently with `time`.
 fn draw_guide(car: &SimCar, target: [f32; 2], time: f64) {
     let atoms = car.atom_positions();
     let [cx, cy, _] = car.centre();
@@ -1034,9 +1034,8 @@ fn draw_guide(car: &SimCar, target: [f32; 2], time: f64) {
     if len < 1.0 {
         return;
     }
-    let (sin, cos) = 35f32.to_radians().sin_cos();
     let (f, r) = (
-        vec3(dx / len * cos, sin, dz / len * cos),
+        vec3(dx / len, 0.0, dz / len),
         vec3(-dz / len, 0.0, dx / len),
     );
     // in (right, forward) units of 0.55 render units: a head and a shaft, centred on the car
