@@ -44,6 +44,15 @@ their own time trial with placings (1st/2nd by laps, checkpoints and distance to
 cars collide: the original has collision code but never fills its hull table, so Reformers uses
 each car's bounding box (see docs/re-notes.md). Replays are single-player.
 
+Online, two players on two computers (desktop builds; LAN, or the internet with UDP port 47800
+forwarded to the host): one picks Esc → Race → **Host an online race** (or `--host`), the other
+**Join**: type the host's address, or pick one found on the LAN with left/right, then Enter (or
+`--join ADDRESS`). The host's map, cars and skins are used; the one joining needs the same map
+files. Each machine shows its own car; the menu doesn't pause an online race; Enter on Host or
+Join leaves it. The two sims run in lockstep (each sends only its keys, 33 ms ahead) and compare
+a state hash every second: if they ever disagree, or the other player goes quiet for 5 s, you're
+back to driving alone. Online laps aren't saved as best laps or ghosts.
+
 ## Time trial
 
 When a map has a `CHECK.PCX`, it's a time trial. Drive through the start line to start the

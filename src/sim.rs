@@ -626,6 +626,19 @@ fn height(t: &Terrain, x: u16, y: u16) -> (i16, i16, i16, u8) {
 }
 
 impl Sim {
+    /// FNV-1a over every car's atoms (positions, velocities) and the terrain heights: equal on
+    /// two machines exactly when their runs are, for desync checks in networked play.
+    pub fn state_hash(&self) -> u64 {
+        self.cars
+            .iter()
+            .flat_map(|c| c.atoms.iter())
+            .flat_map(|a| a.pos.into_iter().chain(a.vel))
+            .chain(self.terrain.height.iter().map(|&h| h as i32))
+            .fold(0xcbf29ce484222325u64, |h, v| {
+                (h ^ v as u32 as u64).wrapping_mul(0x100000001b3)
+            })
+    }
+
     pub fn new(terrain: Terrain) -> Sim {
         Sim {
             terrain,
@@ -1069,14 +1082,7 @@ mod tests {
                 ..Keys::default()
             }]);
         }
-        let hash = s.cars[0]
-            .atoms
-            .iter()
-            .flat_map(|a| a.pos.into_iter().chain(a.vel))
-            .chain(s.terrain.height.iter().map(|&h| h as i32))
-            .fold(0xcbf29ce484222325u64, |h, v| {
-                (h ^ v as u32 as u64).wrapping_mul(0x100000001b3)
-            });
+        let hash = s.state_hash(); // one car: as this test always hashed it
         assert_eq!(hash, GOLDEN, "{hash:#018x}");
     }
     const GOLDEN: u64 = 0x4711da3abcdc297f;
