@@ -105,21 +105,23 @@ Shared game files live in `assets/` (also found next to the executable, or where
 They and the map images are the original author's copyrighted work; see `assets/READ.ME`. The
 `CHECK.PCX` time-trial track is Reformers' own.
 
-## Licence and the original files
+## Credits and licences
 
-Reformers' code (and the `CHECK.PCX` track, synthesised sounds and web page) is MIT-licensed, see
-`LICENSE`. The engine loops in `assets/sounds/engine/` are CC0 by domasx2 (see `SOURCES.md` there). The
-original DEFORMERS / TEREP2 and TEREP1 files are Nagymáthé Dénes's copyrighted work and are **not**
-covered (see `assets/READ.ME`). Without them the game can't run, and the tests that need them skip
-themselves. To supply them, copy from the original demos:
+- **-DEFORMERS- / TEREP2 and TEREP1** by **Nagymáthé Dénes** (1996–97): the game this remakes.
+  The original files in `assets/` (`CAR1–5.DAT`, `CAR1.PCX`, `CAR2.PCX`, `MAPTEX.PCX`,
+  `TEXTURES.PCX`, `READ.ME`, `FILE_ID.DIZ`) and the `terep1`, `terep2` and `terep2-hills` maps
+  are his work, included with credit as abandonware; he has said publicly that he's fine with
+  forks and rewrites. They stay his, they are not covered by Reformers' licence.
+- **Terep – 30th Anniversary Edition**, compiled by **Rezzy** (2026,
+  <https://archive.org/details/terep-30th-anniversary-edition>): the 105 community maps in
+  `assets/maps/` and the car skins in `assets/skins/`, made by TEREP2 players over the years.
+  Every map's makers are credited in its `INFO.TXT` and in `assets/maps/SOURCES.md`; the skins
+  are listed in `assets/skins/SOURCES.md`. They stay their makers'.
+- **Engine sound loops** in `assets/sounds/engine/`: "racing car engine sound loops" by
+  **domasx2** (OpenGameArt), CC0; see `SOURCES.md` there.
 
-| Put | From |
-|---|---|
-| `assets/MAPTEX.PCX`, `TEXTURES.PCX`, `CAR1–5.DAT`, `CAR1.PCX`, `CAR2.PCX` | TEREP2 |
-| `assets/maps/terep2/MAP.PCX`, `COL.PCX` | TEREP2's `MAP.PCX`, `COL.PCX` |
-| `assets/maps/terep2-hills/MAP.PCX`, `COL.PCX` | TEREP2's `MAPHILL.PCX` (renamed), `COL.PCX` |
-| `assets/maps/terep1/MAP.BMP`, `COL.BMP` | TEREP1 |
-| `assets/skins/*.PCX` (optional) | Terep – 30th Anniversary Edition's `CARTEX` and `Extras/Car Textures` (see `assets/skins/SOURCES.md`) |
+Reformers' own code, the `terep2` time-trial track (`CHECK.PCX`), the synthesised sounds and the
+web page are MIT-licensed, see `LICENSE`.
 
 ## Map editor
 
@@ -178,8 +180,7 @@ python3 -m http.server -d out/web 8000    # then open http://localhost:8000
 
 The browser build loads every asset over HTTP at start (`assets/maps/index.txt` lists the maps,
 since the web can't list folders). No gamepads, no saved settings or best laps, and no hot reload
-there; the rest, CRT filter included, works the same. Hosting it publicly would hand out the
-original game files (see #1).
+there; the rest, CRT filter included, works the same.
 
 ## Releases
 

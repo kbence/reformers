@@ -1,7 +1,6 @@
 # Builds Reformers for Windows, macOS (universal) and Linux and attaches the archives to the
 # release that triggered it. Run it by hand (workflow_dispatch) to build without uploading.
-# The archives contain the original game files from assets/: fine while the repo is private,
-# see issue #1 before publishing.
+# The archives include assets/ (original and community files, credited in the README).
 name: release
 
 on:

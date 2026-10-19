@@ -3,7 +3,7 @@
 Every map folder below comes from **Terep – 30th Anniversary Edition**, a community megapack
 compiled by Rezzy, released 2026-01-14: <https://archive.org/details/terep-30th-anniversary-edition>.
 They were made by TEREP2 players over the years; the pack gives no licence and describes itself
-as a not-for-profit preservation archive. Sort this out before the repository goes public (#1).
+as a not-for-profit preservation archive. Included with credit (see the README's Credits).
 
 Each folder holds `MAP.PCX`, `COL.PCX` and `MAPTEX.PCX` copied byte for byte out of the track's
 ZIP, plus `INFO.TXT`: the name the pack's launcher shows (`PALYAK/LIST.DAT`, or the ZIP name)

@@ -3,8 +3,8 @@
 From **Terep – 30th Anniversary Edition**, a community megapack compiled by Rezzy, released
 2026-01-14: <https://archive.org/details/terep-30th-anniversary-edition>
 (`Terep - 30th Anniversary Edition.zip`). Made by TEREP2 players over the years; the pack gives
-no licence and describes itself as a not-for-profit preservation archive. Sort this out before
-the repository goes public (#1).
+no licence and describes itself as a not-for-profit preservation archive. Included with credit
+(see the README's Credits).
 
 Copied byte for byte. Left out: `DEFAULT1–3.PCX`, identical to the game's own `CAR1.PCX`,
 `CAR2.PCX` and `TEXTURES.PCX`. `index.txt` lists the files with the names the game shows; skins
