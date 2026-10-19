@@ -780,10 +780,10 @@ fn chunk_mesh(t: &Terrain, chunk: usize, baked: Option<&lighting::Baked>) -> Mes
                 }
                 None => Color::new(shade, shade, shade, 1.0),
             };
-            let (u, w) = (
-                (x as f32 + 0.5) / SIZE as f32,
-                (y as f32 + 0.5) / SIZE as f32,
-            );
+            // vertex (x, y) is the corner of cell (x, y): the quad to its right and below is that
+            // cell, one COL colour / MAPTEX tile, as the original draws it (and as the physics
+            // reads materials); texel centres here put the colour edges mid-quad
+            let (u, w) = (x as f32 / SIZE as f32, y as f32 / SIZE as f32);
             vertices.push(Vertex::new(x as f32, h(x, y) / S, y as f32, u, w, colour));
         }
     }
