@@ -339,8 +339,9 @@ fn ground_rgba(doc: &Doc, relief: bool) -> Vec<u8> {
                 let v = doc.height[i].round().clamp(0.0, 255.0) as u8;
                 return [v, v, v, 255];
             }
-            let slope = (h(x.saturating_sub(1), y) - h(x + 1, y)) * 0.4
-                + (h(x, y.saturating_sub(1)) - h(x, y + 1)) * 0.3;
+            // lit from the top left: ground rising toward the bottom right faces the sun
+            let slope = (h(x + 1, y) - h(x.saturating_sub(1), y)) * 0.4
+                + (h(x, y + 1) - h(x, y.saturating_sub(1))) * 0.3;
             let shade = (0.85 + slope / 40.0).clamp(0.45, 1.15);
             let [r, g, b] =
                 doc.palette[doc.colour[i] as usize].map(|c| (c as f32 * shade).min(255.0) as u8);
