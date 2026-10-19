@@ -68,7 +68,7 @@ jobs:
           dir="reformers-$TAG-${{ matrix.name }}"
           mkdir "$dir"
           cp dist/* "$dir"/
-          cp -R assets README.md "$dir"/
+          cp -R assets README.md LICENSE "$dir"/
           if [ "$RUNNER_OS" = Windows ]; then
             7z a "$dir.zip" "$dir" > /dev/null
             echo "ARCHIVE=$dir.zip" >> "$GITHUB_ENV"
