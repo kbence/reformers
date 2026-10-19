@@ -125,7 +125,7 @@ web page are MIT-licensed, see `LICENSE`.
 ## Map editor
 
 `cargo run --release --bin editor -- MAP` (or `editor MAP` from a release) edits a whole map:
-heights, colours and checkpoints, one tab each (F1–F3). The layer's tools are on the left (1–8),
+heights, colours, checkpoints and textures, one tab each (F1–F4). The layer's tools are on the left (1–8),
 the tool's settings on the right, the cell under the mouse at the bottom.
 
 - **Heights:** brush (circle or square, size, hard / smooth / feathered edge; set to a target
@@ -138,6 +138,11 @@ the tool's settings on the right, the cell under the mouse at the bottom.
   gate), renumber (click the gates in driving order; Shift-click gives a fork's other branch the
   same number), reset / boost / slow zones, soft dirt, eraser. The gate list on the right
   selects, reorders and deletes; the map shows each gate's number and arrows to the next.
+- **Textures:** the map's `MAPTEX.PCX` tile sheet (tile = the texture of one colour: row =
+  material, column = shade). Pick a tile on the sheet and paint it zoomed in: pencil, brush,
+  fill, pick; strokes wrap at the tile's edges so patterns line up from cell to cell. Noise
+  makes a tile from a colour's neighbouring shades; tiles copy and paste; a tiled preview shows
+  it as the game lays it. Saved into the map's folder; the shared sheet is never changed.
 
 Wheel zooms, right-drag pans, `[` `]` resize, Alt-click picks, Z / Shift+Z undo and redo, S
 saves each changed layer back into its own file and format (TEREP1's BMPs as PCX), keeping the

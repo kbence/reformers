@@ -528,6 +528,7 @@ fn watched(map: &str) -> Vec<Option<std::time::SystemTime>> {
         "COL.PCX",
         "COL.BMP",
         "CHECK.PCX",
+        "MAPTEX.PCX",
     ]
     .iter()
     .map(|f| assets::modified(&format!("maps/{map}/{f}")))

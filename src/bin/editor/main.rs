@@ -1,6 +1,6 @@
-//! `editor [MAP] [--shot FILE] [--tab 1-3]`: the Reformers map editor (#36, v2 #44). Edits a whole map:
-//! the heights (MAP), the colours / surface materials (COL) and the checkpoint layer (CHECK.PCX,
-//! format in `track.rs`). It saves into the map's folder in each file's own format, keeping the
+//! `editor [MAP] [--shot FILE] [--tab 1-4]`: the Reformers map editor (#36, v2 #44). Edits a whole map:
+//! the heights (MAP), the colours / surface materials (COL), the checkpoint layer (CHECK.PCX,
+//! format in `track.rs`) and the texture tile sheet (MAPTEX.PCX, #45). It saves into the map's folder in each file's own format, keeping the
 //! first original as `*.bak`; a running game on the same map picks the files up within a second
 //! (hot reload), and F5 starts one.
 //!
@@ -23,6 +23,8 @@ enum Tab {
     Height,
     Colour,
     Check,
+    /// MAPTEX.PCX, the tile sheet.
+    Tex,
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -40,6 +42,7 @@ enum Tool {
     Renumber,
     Zone(u8),
     Erase,
+    Fill,
 }
 
 fn tools(tab: Tab) -> &'static [(Tool, &'static str)] {
@@ -65,6 +68,12 @@ fn tools(tab: Tab) -> &'static [(Tool, &'static str)] {
             (Tool::Zone(SLOW), "slow zone"),
             (Tool::Zone(SOFT), "soft dirt"),
             (Tool::Erase, "eraser"),
+        ],
+        Tab::Tex => &[
+            (Tool::Dot, "pencil"),
+            (Tool::Paint, "brush"),
+            (Tool::Fill, "fill"),
+            (Tool::Pick, "pick colour"),
         ],
     }
 }
@@ -152,9 +161,13 @@ struct Doc {
     palette: [[u8; 3]; 256],
     map: Source,
     col: Source,
-    /// MAPTEX tile sheet in this map's palette (as the game picks it), for the colour picker.
-    maptex: Option<Vec<u8>>,
-    saved: (Vec<u8>, Vec<u8>, Layer),
+    /// The MAPTEX tile sheet as the game picks it: the map folder's own, else the shared one when
+    /// the palettes match, else flat tiles (what the game draws then). Saving writes the map's own.
+    maptex: Vec<u8>,
+    tex: Source,
+    /// Where `maptex` came from: the map's own file, the shared one, or neither (flat).
+    tex_from: &'static str,
+    saved: (Vec<u8>, Vec<u8>, Layer, Vec<u8>),
 }
 
 impl Doc {
@@ -171,26 +184,51 @@ impl Doc {
         let heights = map.image.crop(SIZE, SIZE).pixels;
         let colour = col.image.crop(SIZE, SIZE).pixels;
         let palette = col.image.palette;
-        let maptex = std::fs::read(dir.join("MAPTEX.PCX"))
-            .ok()
-            .or_else(|| {
-                let shared = assets::read("MAPTEX.PCX").ok()?;
-                (pcx::decode(&shared).ok()?.palette == palette).then_some(shared)
-            })
-            .and_then(|b| pcx::decode(&b).ok())
-            .filter(|i| i.width >= SIZE && i.height >= SIZE)
-            .map(|i| i.crop(SIZE, SIZE).pixels);
+        let sheet = |b: Vec<u8>| {
+            pcx::decode(&b)
+                .ok()
+                .filter(|i| i.width >= SIZE && i.height >= SIZE)
+        };
+        let own = std::fs::read(dir.join("MAPTEX.PCX")).ok().and_then(sheet);
+        let shared = || {
+            assets::read("MAPTEX.PCX")
+                .ok()
+                .and_then(sheet)
+                .filter(|i| i.palette == palette)
+        };
+        let (image, tex_from) = match own {
+            Some(i) => (i, "this map's own"),
+            None => match shared() {
+                Some(i) => (i, "the shared"),
+                None => (
+                    pcx::Image {
+                        width: SIZE,
+                        height: SIZE,
+                        pixels: edit::flat_sheet(),
+                        palette,
+                    },
+                    "no",
+                ),
+            },
+        };
+        let maptex = image.crop(SIZE, SIZE).pixels;
+        let tex = Source {
+            file: "MAPTEX.PCX".into(),
+            image,
+        };
         Ok(Doc {
             name: name.into(),
             dir,
             height: heights.iter().map(|&v| v as f32).collect(),
-            saved: (heights, colour.clone(), check.clone()),
+            saved: (heights, colour.clone(), check.clone(), maptex.clone()),
             colour,
             check,
             palette,
             map,
             col,
             maptex,
+            tex,
+            tex_from,
         })
     }
 
@@ -201,17 +239,20 @@ impl Doc {
             .collect()
     }
 
-    fn changed(&self) -> [bool; 3] {
+    fn changed(&self) -> [bool; 4] {
         [
             self.heights() != self.saved.0,
             self.colour != self.saved.1,
             self.check != self.saved.2,
+            self.maptex != self.saved.3,
         ]
     }
 
-    /// Writes the changed layers (all of them with `all`); returns what was written.
+    /// Writes the changed layers (all three map layers with `all`); returns what was written.
+    /// The tile sheet only when edited: it goes into this map's folder, never over the shared one.
     fn save(&mut self, all: bool) -> Result<String, String> {
-        let [h, c, k] = self.changed().map(|c| c || all);
+        let [h, c, k, t] = self.changed();
+        let [h, c, k] = [h, c, k].map(|c| c || all);
         let mut wrote = vec![];
         if h {
             wrote.push(self.map.write(&self.dir, &self.heights())?);
@@ -226,7 +267,16 @@ impl Doc {
                 .map_err(|e| format!("{}: {e}", path.display()))?;
             wrote.push("CHECK.PCX".into());
         }
-        self.saved = (self.heights(), self.colour.clone(), self.check.clone());
+        if t {
+            wrote.push(self.tex.write(&self.dir, &self.maptex)?);
+            self.tex_from = "this map's own";
+        }
+        self.saved = (
+            self.heights(),
+            self.colour.clone(),
+            self.check.clone(),
+            self.maptex.clone(),
+        );
         Ok(if wrote.is_empty() {
             "nothing to save".into()
         } else {
@@ -240,6 +290,7 @@ enum Snap {
     Height(Vec<f32>),
     Colour(Vec<u8>),
     Check(Layer),
+    Tex(Vec<u8>),
 }
 
 impl Doc {
@@ -248,6 +299,7 @@ impl Doc {
             Tab::Height => Snap::Height(self.height.clone()),
             Tab::Colour => Snap::Colour(self.colour.clone()),
             Tab::Check => Snap::Check(self.check.clone()),
+            Tab::Tex => Snap::Tex(self.maptex.clone()),
         }
     }
 
@@ -257,6 +309,7 @@ impl Doc {
             Snap::Height(v) => Snap::Height(std::mem::replace(&mut self.height, v)),
             Snap::Colour(v) => Snap::Colour(std::mem::replace(&mut self.colour, v)),
             Snap::Check(v) => Snap::Check(std::mem::replace(&mut self.check, v)),
+            Snap::Tex(v) => Snap::Tex(std::mem::replace(&mut self.maptex, v)),
         }
     }
 }
@@ -448,9 +501,10 @@ async fn main() {
     {
         Some(n) if n == "2" => Tab::Colour,
         Some(n) if n == "3" => Tab::Check,
+        Some(n) if n == "4" => Tab::Tex,
         _ => Tab::Height,
     };
-    let mut tool = [Tool::Brush, Tool::Paint, Tool::Gate]; // per tab
+    let mut tool = [Tool::Brush, Tool::Paint, Tool::Gate, Tool::Dot]; // per tab
     // settings
     let mut target = 64i32;
     let mut hbrush = Brush {
@@ -470,6 +524,11 @@ async fn main() {
     let mut colour = doc.colour[SIZE * SIZE / 2 + SIZE / 2];
     let (mut zone_size, mut zone_strength, mut facing) = (5i32, 8i32, 0u8);
     let mut relief = true;
+    // the tile sheet: the tile being edited, the colour painted on it, the brush, noise
+    let (mut tile, mut tsize, mut noise, mut seed) = (colour, 3i32, 2i32, 1u32);
+    let mut tcolour = colour;
+    let mut clip: Option<[u8; 256]> = None;
+    let mut tlast: Option<[f32; 2]> = None; // a stroke on the tile, in its pixels
     // view
     let (mut zoom, mut pan) = (1.0f32, vec2(0.0, 0.0));
     let mut pan_from: Option<(Vec2, Vec2)> = None;
@@ -573,13 +632,14 @@ async fn main() {
                 (KeyCode::F1, Tab::Height),
                 (KeyCode::F2, Tab::Colour),
                 (KeyCode::F3, Tab::Check),
+                (KeyCode::F4, Tab::Tex),
             ] {
                 if is_key_pressed(k) {
                     tab = tb;
                 }
             }
             if is_key_pressed(KeyCode::Tab) {
-                tab = [Tab::Colour, Tab::Check, Tab::Height][tab as usize];
+                tab = [Tab::Colour, Tab::Check, Tab::Tex, Tab::Height][tab as usize];
             }
             let keys = [
                 KeyCode::Key1,
@@ -626,6 +686,7 @@ async fn main() {
                 - is_key_pressed(KeyCode::LeftBracket) as i32;
             if grow != 0 {
                 match t {
+                    Tool::Paint if tab == Tab::Tex => tsize = (tsize + grow).clamp(1, 8),
                     Tool::Brush | Tool::Smooth => {
                         hbrush.size = (hbrush.size as i32 + grow).clamp(1, 64) as u32
                     }
@@ -660,7 +721,7 @@ async fn main() {
         }
 
         // zoom at the cursor; pan with the right or middle button, or Space + left
-        let over_map = area.contains(mouse) && ask.is_none() && !ui.busy();
+        let over_map = area.contains(mouse) && ask.is_none() && !ui.busy() && tab != Tab::Tex;
         let (_, wheel) = mouse_wheel();
         if wheel != 0.0 && over_map {
             let before = (mouse - origin) / scale;
@@ -887,130 +948,220 @@ async fn main() {
             // MAPTEX tiles (row = material, column = shade), else the palette's colours
             let rgba = (0..SIZE * SIZE)
                 .flat_map(|i| {
-                    let v = match &doc.maptex {
-                        Some(tex) => tex[i],
-                        None => ((i / SIZE / 16) * 16 + i % SIZE / 16) as u8,
-                    };
-                    let [r, g, b] = doc.palette[v as usize];
+                    let [r, g, b] = doc.palette[doc.maptex[i] as usize];
                     [r, g, b, 255]
                 })
                 .collect();
             update(&swatches, rgba);
         }
 
-        // drawing: the map
+        // the tile sheet tab: the whole sheet (pick a tile) beside the tile, big (paint on it)
         clear_background(Color::from_rgba(24, 26, 30, 255));
-        let size = vec2(SIZE as f32, SIZE as f32) * scale;
-        let fade = if tab == Tab::Check { 1.0 } else { 0.35 };
-        for (tex, tint) in [
-            (&ground, WHITE),
-            (&overlay, Color::new(1.0, 1.0, 1.0, fade)),
-        ] {
-            draw_texture_ex(
-                tex,
-                origin.x,
-                origin.y,
-                tint,
-                DrawTextureParams {
-                    dest_size: Some(size),
-                    ..Default::default()
-                },
-            );
-        }
-        let at = |p: Vec2| origin + (p + vec2(0.5, 0.5)) * scale;
-        if tab == Tab::Check {
-            // gates: number labels (S = start/finish), arrows on to the next gate's pieces
-            let order = doc.check.gates();
-            let rank = |s: u8| order.iter().position(|&u| u == s).unwrap();
-            for (s, cells) in pieces.iter().filter(|_| order.len() > 1) {
-                let next = order[(rank(*s) + 1) % order.len()];
-                for (_, to) in pieces.iter().filter(|p| p.0 == next) {
-                    let (a, b) = (at(mean(cells)), at(mean(to)));
-                    let d = (b - a).normalize_or_zero();
-                    let mid = a + (b - a) * 0.55;
-                    let c = Color::new(1.0, 1.0, 1.0, 0.6);
-                    draw_line(a.x, a.y, b.x, b.y, 1.5, c);
-                    let side = vec2(-d.y, d.x) * 6.0;
-                    draw_triangle(mid + d * 10.0, mid + side, mid - side, c);
-                }
+        let side = (area.h - 20.0).min(area.w / 2.0 - 20.0);
+        let sheet_r = Rect::new(area.x + 10.0, area.y + 10.0, side, side);
+        let tile_r = Rect::new(sheet_r.right() + 20.0, area.y + 10.0, side, side);
+        if tab == Tab::Tex {
+            let free = ask.is_none() && !ui.busy();
+            let press = is_mouse_button_pressed(MouseButton::Left) && free;
+            if press && sheet_r.contains(mouse) {
+                let q = ((mouse - sheet_r.point()) / side * 16.0)
+                    .as_ivec2()
+                    .clamp(IVec2::ZERO, IVec2::splat(15));
+                tile = (q.y * 16 + q.x) as u8;
             }
-            for (k, (s, cells)) in pieces.iter().enumerate() {
-                let p = at(mean(cells));
-                let r = rank(*s);
-                let (label, ink) = match renumber.iter().find(|q| q.0 == k) {
-                    Some(q) if q.1 == 0 => ("S".to_string(), GREEN),
-                    Some(q) => (q.1.to_string(), GREEN),
-                    None if t == Tool::Renumber => ("?".into(), GRAY),
-                    None if r == 0 => ("S".into(), YELLOW),
-                    None => (r.to_string(), YELLOW),
-                };
-                if selected == Some(*s) {
-                    draw_circle_lines(p.x, p.y, 15.0, 3.0, SKYBLUE);
-                }
-                draw_circle(p.x, p.y, 11.0, Color::new(0.0, 0.0, 0.0, 0.75));
-                let d = measure_text(&label, None, 20, 1.0);
-                draw_text(&label, p.x - d.width / 2.0, p.y + 6.0, 20.0, ink);
-            }
-            if let Some((x, y, d)) = doc.check.spawn() {
-                let p = at(vec2(x, y));
-                let v = [
-                    vec2(0.0, -1.0),
-                    vec2(1.0, 0.0),
-                    vec2(0.0, 1.0),
-                    vec2(-1.0, 0.0),
-                ][d as usize];
-                let tip = p + v * 22.0;
-                draw_line(p.x, p.y, tip.x, tip.y, 4.0, WHITE);
-                draw_circle(p.x, p.y, 6.0, WHITE);
-                draw_circle(tip.x, tip.y, 4.0, WHITE);
-            }
-        }
-        // the tool under the mouse
-        if over_map && on_map {
-            let outline = |b: &Brush| {
-                let c = origin + Vec2::from(b.centre(m)) * scale;
-                let r = b.size as f32 / 2.0 * scale;
-                match b.shape {
-                    Shape::Circle => draw_circle_lines(c.x, c.y, r, 1.5, WHITE),
-                    Shape::Rect => {
-                        draw_rectangle_lines(c.x - r, c.y - r, 2.0 * r, 2.0 * r, 1.5, WHITE)
+            let p = ((mouse - tile_r.point()) / side * 16.0).to_array();
+            let (px, py) = (p[0].floor() as i32, p[1].floor() as i32);
+            let on_tile = tile_r.contains(mouse);
+            if press && on_tile {
+                if alt || t == Tool::Pick {
+                    tcolour = doc.maptex[edit::tile_px(tile, px as usize, py as usize)];
+                } else {
+                    undo.push(doc.snap(Tab::Tex));
+                    redo.clear();
+                    if t == Tool::Fill {
+                        edit::tile_fill(&mut doc.maptex, tile, px as usize, py as usize, tcolour);
+                        swatch_dirty = true;
+                    } else {
+                        tlast = Some([p[0] - 0.01, p[1]]);
                     }
                 }
-            };
-            match t {
-                Tool::Brush | Tool::Smooth => outline(&hbrush),
-                Tool::Paint => outline(&cbrush),
-                Tool::Pencil | Tool::Dot | Tool::Pick => outline(&Brush::PENCIL),
-                Tool::Zone(_) | Tool::Erase => outline(&Brush {
-                    shape: Shape::Circle,
-                    size: zone_size as u32,
-                    edge: Edge::Hard,
-                    feather: 0.0,
-                }),
-                _ => {}
+            }
+            if !is_mouse_button_down(MouseButton::Left) {
+                tlast = None;
+            }
+            if let Some(from) = tlast {
+                // a stroke wraps at the tile's edges, so draw it in the tile's own pixels
+                let size = if t == Tool::Paint { tsize } else { 1 };
+                for q in edit::stroke(from, p) {
+                    let (x, y) = (q[0].floor() as i32, q[1].floor() as i32);
+                    edit::tile_dab(&mut doc.maptex, tile, x, y, size, tcolour);
+                }
+                tlast = Some(p);
+                swatch_dirty = true;
+            }
+            for (r, src) in [
+                (sheet_r, None),
+                (
+                    tile_r,
+                    Some(Rect::new(
+                        (tile & 15) as f32 * 16.0,
+                        (tile >> 4) as f32 * 16.0,
+                        16.0,
+                        16.0,
+                    )),
+                ),
+            ] {
+                draw_texture_ex(
+                    &swatches,
+                    r.x,
+                    r.y,
+                    WHITE,
+                    DrawTextureParams {
+                        dest_size: Some(vec2(r.w, r.h)),
+                        source: src,
+                        ..Default::default()
+                    },
+                );
+            }
+            let cell = side / 16.0;
+            draw_rectangle_lines(
+                sheet_r.x + (tile & 15) as f32 * cell,
+                sheet_r.y + (tile >> 4) as f32 * cell,
+                cell,
+                cell,
+                2.0,
+                YELLOW,
+            );
+            draw_rectangle_lines(tile_r.x, tile_r.y, tile_r.w, tile_r.h, 1.0, GRAY);
+            if on_tile && free {
+                let size = if t == Tool::Paint { tsize as f32 } else { 1.0 };
+                let off = if size as i32 % 2 == 0 { 0.0 } else { 0.5 };
+                let c = tile_r.point() + (vec2(px as f32, py as f32) + off) * cell;
+                draw_rectangle_lines(
+                    c.x - size / 2.0 * cell,
+                    c.y - size / 2.0 * cell,
+                    size * cell,
+                    size * cell,
+                    1.5,
+                    WHITE,
+                );
             }
         }
-        if let Some(a) = drag {
-            let (p, q) = (
-                at(vec2(a.0 as f32, a.1 as f32)),
-                at(vec2(cx as f32, cy as f32)),
-            );
-            if t == Tool::Ramp {
-                let side = vec2(-(q - p).y, (q - p).x).normalize_or_zero() * ramp_width as f32
-                    / 2.0
-                    * scale;
-                for (u, v) in [
-                    (p + side, q + side),
-                    (q + side, q - side),
-                    (q - side, p - side),
-                    (p - side, p + side),
-                ] {
-                    draw_line(u.x, u.y, v.x, v.y, 2.0, WHITE);
+
+        // drawing: the map
+        if tab != Tab::Tex {
+            let size = vec2(SIZE as f32, SIZE as f32) * scale;
+            let fade = if tab == Tab::Check { 1.0 } else { 0.35 };
+            for (tex, tint) in [
+                (&ground, WHITE),
+                (&overlay, Color::new(1.0, 1.0, 1.0, fade)),
+            ] {
+                draw_texture_ex(
+                    tex,
+                    origin.x,
+                    origin.y,
+                    tint,
+                    DrawTextureParams {
+                        dest_size: Some(size),
+                        ..Default::default()
+                    },
+                );
+            }
+            let at = |p: Vec2| origin + (p + vec2(0.5, 0.5)) * scale;
+            if tab == Tab::Check {
+                // gates: number labels (S = start/finish), arrows on to the next gate's pieces
+                let order = doc.check.gates();
+                let rank = |s: u8| order.iter().position(|&u| u == s).unwrap();
+                for (s, cells) in pieces.iter().filter(|_| order.len() > 1) {
+                    let next = order[(rank(*s) + 1) % order.len()];
+                    for (_, to) in pieces.iter().filter(|p| p.0 == next) {
+                        let (a, b) = (at(mean(cells)), at(mean(to)));
+                        let d = (b - a).normalize_or_zero();
+                        let mid = a + (b - a) * 0.55;
+                        let c = Color::new(1.0, 1.0, 1.0, 0.6);
+                        draw_line(a.x, a.y, b.x, b.y, 1.5, c);
+                        let side = vec2(-d.y, d.x) * 6.0;
+                        draw_triangle(mid + d * 10.0, mid + side, mid - side, c);
+                    }
                 }
-                let from = doc.height[a.1 as usize * SIZE + a.0 as usize].round();
-                text(&format!("{from} to {target}"), q.x + 12.0, q.y, WHITE);
-            } else {
-                draw_line(p.x, p.y, q.x, q.y, 3.0, YELLOW);
+                for (k, (s, cells)) in pieces.iter().enumerate() {
+                    let p = at(mean(cells));
+                    let r = rank(*s);
+                    let (label, ink) = match renumber.iter().find(|q| q.0 == k) {
+                        Some(q) if q.1 == 0 => ("S".to_string(), GREEN),
+                        Some(q) => (q.1.to_string(), GREEN),
+                        None if t == Tool::Renumber => ("?".into(), GRAY),
+                        None if r == 0 => ("S".into(), YELLOW),
+                        None => (r.to_string(), YELLOW),
+                    };
+                    if selected == Some(*s) {
+                        draw_circle_lines(p.x, p.y, 15.0, 3.0, SKYBLUE);
+                    }
+                    draw_circle(p.x, p.y, 11.0, Color::new(0.0, 0.0, 0.0, 0.75));
+                    let d = measure_text(&label, None, 20, 1.0);
+                    draw_text(&label, p.x - d.width / 2.0, p.y + 6.0, 20.0, ink);
+                }
+                if let Some((x, y, d)) = doc.check.spawn() {
+                    let p = at(vec2(x, y));
+                    let v = [
+                        vec2(0.0, -1.0),
+                        vec2(1.0, 0.0),
+                        vec2(0.0, 1.0),
+                        vec2(-1.0, 0.0),
+                    ][d as usize];
+                    let tip = p + v * 22.0;
+                    draw_line(p.x, p.y, tip.x, tip.y, 4.0, WHITE);
+                    draw_circle(p.x, p.y, 6.0, WHITE);
+                    draw_circle(tip.x, tip.y, 4.0, WHITE);
+                }
+            }
+            // the tool under the mouse
+            if over_map && on_map {
+                let outline = |b: &Brush| {
+                    let c = origin + Vec2::from(b.centre(m)) * scale;
+                    let r = b.size as f32 / 2.0 * scale;
+                    match b.shape {
+                        Shape::Circle => draw_circle_lines(c.x, c.y, r, 1.5, WHITE),
+                        Shape::Rect => {
+                            draw_rectangle_lines(c.x - r, c.y - r, 2.0 * r, 2.0 * r, 1.5, WHITE)
+                        }
+                    }
+                };
+                match t {
+                    Tool::Brush | Tool::Smooth => outline(&hbrush),
+                    Tool::Paint => outline(&cbrush),
+                    Tool::Pencil | Tool::Dot | Tool::Pick => outline(&Brush::PENCIL),
+                    Tool::Zone(_) | Tool::Erase => outline(&Brush {
+                        shape: Shape::Circle,
+                        size: zone_size as u32,
+                        edge: Edge::Hard,
+                        feather: 0.0,
+                    }),
+                    _ => {}
+                }
+            }
+            if let Some(a) = drag {
+                let (p, q) = (
+                    at(vec2(a.0 as f32, a.1 as f32)),
+                    at(vec2(cx as f32, cy as f32)),
+                );
+                if t == Tool::Ramp {
+                    let side = vec2(-(q - p).y, (q - p).x).normalize_or_zero() * ramp_width as f32
+                        / 2.0
+                        * scale;
+                    for (u, v) in [
+                        (p + side, q + side),
+                        (q + side, q - side),
+                        (q - side, p - side),
+                        (p - side, p + side),
+                    ] {
+                        draw_line(u.x, u.y, v.x, v.y, 2.0, WHITE);
+                    }
+                    let from = doc.height[a.1 as usize * SIZE + a.0 as usize].round();
+                    text(&format!("{from} to {target}"), q.x + 12.0, q.y, WHITE);
+                } else {
+                    draw_line(p.x, p.y, q.x, q.y, 3.0, YELLOW);
+                }
             }
         }
 
@@ -1025,6 +1176,7 @@ async fn main() {
             (Tab::Height, "Heights F1"),
             (Tab::Colour, "Colours F2"),
             (Tab::Check, "Checkpoints F3"),
+            (Tab::Tex, "Textures F4"),
         ] {
             if ui.button(Rect::new(x, 6.0, 120.0, 28.0), label, tab == tb) {
                 tab = tb;
@@ -1079,192 +1231,275 @@ async fn main() {
         let name = tools(tab).iter().find(|x| x.0 == t).map_or("", |x| x.1);
         text(name, px, col.row(20.0).y + 15.0, WHITE);
         let mut size_i;
-        match t {
-            Tool::Brush | Tool::Smooth => {
-                ui.choice(
-                    col.row(26.0),
-                    &[(Shape::Circle, "circle"), (Shape::Rect, "square")],
-                    &mut hbrush.shape,
-                );
-                size_i = hbrush.size as i32;
-                ui.slider(col.row(26.0), "size", &mut size_i, 1, 64);
-                hbrush.size = size_i as u32;
-                ui.choice(
-                    col.row(26.0),
-                    &[
-                        (Edge::Hard, "hard"),
-                        (Edge::Smooth, "smooth"),
-                        (Edge::Feather, "feather"),
-                    ],
-                    &mut hbrush.edge,
-                );
-                if hbrush.edge == Edge::Feather {
-                    let mut f = hbrush.feather as i32;
-                    ui.slider(col.row(26.0), "feather", &mut f, 1, 32);
-                    hbrush.feather = f as f32;
+        if tab == Tab::Tex {
+            let line = format!("tile {tile}: material {}, shade {}", tile >> 4, tile & 15);
+            text(&line, px, col.row(18.0).y + 13.0, WHITE);
+            let from = format!("from {} sheet; saves as this map's", doc.tex_from);
+            text(&from, px, col.row(18.0).y + 13.0, GRAY);
+            if t == Tool::Paint {
+                ui.slider(col.row(26.0), "size", &mut tsize, 1, 8);
+            }
+            // the palette: what to paint with
+            let g = col.row(pw);
+            let c = g.w / 16.0;
+            for v in 0..=255u8 {
+                let [r, gg, b] = doc.palette[v as usize];
+                let (x, y) = (g.x + (v & 15) as f32 * c, g.y + (v >> 4) as f32 * c);
+                draw_rectangle(x, y, c, c, Color::from_rgba(r, gg, b, 255));
+                if v == tcolour {
+                    draw_rectangle_lines(x, y, c, c, 2.0, YELLOW);
                 }
-                if t == Tool::Brush {
-                    ui.choice(
-                        col.row(26.0),
-                        &[(false, "set height"), (true, "raise / lower")],
-                        &mut raise,
+            }
+            if g.contains(mouse) && is_mouse_button_pressed(MouseButton::Left) {
+                let q = ((mouse - g.point()) / c)
+                    .as_ivec2()
+                    .clamp(IVec2::ZERO, IVec2::splat(15));
+                tcolour = (q.y * 16 + q.x) as u8;
+            }
+            text(
+                &format!("painting colour {tcolour}"),
+                px,
+                col.row(18.0).y + 13.0,
+                WHITE,
+            );
+            col.row(4.0);
+            ui.slider(col.row(26.0), "noise shades", &mut noise, 0, 7);
+            if ui.button(col.row(28.0), "Noise from this colour", false) {
+                undo.push(doc.snap(Tab::Tex));
+                redo.clear();
+                seed = seed.wrapping_add(1);
+                edit::tile_noise(&mut doc.maptex, tile, tcolour, noise as u8, seed);
+                swatch_dirty = true;
+            }
+            let r = col.row(28.0);
+            let half = (r.w - 4.0) / 2.0;
+            if ui.button(Rect::new(r.x, r.y, half, r.h), "Copy tile", false) {
+                clip = Some(edit::tile_copy(&doc.maptex, tile));
+            }
+            if ui.button(
+                Rect::new(r.x + half + 4.0, r.y, half, r.h),
+                "Paste tile",
+                false,
+            ) && let Some(c) = &clip
+            {
+                undo.push(doc.snap(Tab::Tex));
+                redo.clear();
+                edit::tile_paste(&mut doc.maptex, tile, c);
+                swatch_dirty = true;
+            }
+            // as the game lays it: once per cell, side by side
+            text("tiled", px, col.row(18.0).y + 13.0, GRAY);
+            let g = col.row(pw / 2.0);
+            let n = 4;
+            let c = g.h / n as f32;
+            for i in 0..n * 2 {
+                for j in 0..n {
+                    draw_texture_ex(
+                        &swatches,
+                        g.x + i as f32 * c,
+                        g.y + j as f32 * c,
+                        WHITE,
+                        DrawTextureParams {
+                            dest_size: Some(vec2(c, c)),
+                            source: Some(Rect::new(
+                                (tile & 15) as f32 * 16.0,
+                                (tile >> 4) as f32 * 16.0,
+                                16.0,
+                                16.0,
+                            )),
+                            ..Default::default()
+                        },
                     );
-                    if raise {
-                        ui.slider(col.row(26.0), "rate /s", &mut rate, 1, 128);
-                        text("hold Shift to lower", px, col.row(18.0).y + 13.0, GRAY);
-                    } else {
-                        ui.slider(col.row(26.0), "target height", &mut target, 0, 255);
-                    }
-                } else {
-                    ui.slider(col.row(26.0), "strength", &mut strength, 1, 100);
-                    col.row(6.0);
-                    text("whole map", px, col.row(18.0).y + 13.0, GRAY);
-                    ui.slider(col.row(26.0), "passes", &mut passes, 1, 20);
-                    if ui.button(col.row(28.0), "Smooth whole map", false) {
-                        undo.push(doc.snap(Tab::Height));
-                        redo.clear();
-                        edit::smooth_all(&mut doc.height, passes as u32);
-                        ground_dirty = true;
-                    }
                 }
             }
-            Tool::Pencil | Tool::Pick if tab == Tab::Height => {
-                ui.slider(col.row(26.0), "target height", &mut target, 0, 255);
-            }
-            Tool::Ramp => {
-                ui.slider(col.row(26.0), "width", &mut ramp_width, 1, 32);
-                ui.slider(col.row(26.0), "end height", &mut target, 0, 255);
-                text(
-                    "drag from the start; it starts at the",
-                    px,
-                    col.row(18.0).y + 13.0,
-                    GRAY,
-                );
-                text(
-                    "height there and ends at this one",
-                    px,
-                    col.row(18.0).y + 13.0,
-                    GRAY,
-                );
-            }
-            Tool::Paint | Tool::Dot | Tool::Pick => {
-                if t == Tool::Paint {
+        } else {
+            match t {
+                Tool::Brush | Tool::Smooth => {
                     ui.choice(
                         col.row(26.0),
                         &[(Shape::Circle, "circle"), (Shape::Rect, "square")],
-                        &mut cbrush.shape,
+                        &mut hbrush.shape,
                     );
-                    size_i = cbrush.size as i32;
+                    size_i = hbrush.size as i32;
                     ui.slider(col.row(26.0), "size", &mut size_i, 1, 64);
-                    cbrush.size = size_i as u32;
-                }
-                // the swatches: 16 materials (rows) × 16 shades (columns)
-                let g = col.row(pw);
-                draw_texture_ex(
-                    &swatches,
-                    g.x,
-                    g.y,
-                    WHITE,
-                    DrawTextureParams {
-                        dest_size: Some(vec2(g.w, g.h)),
-                        ..Default::default()
-                    },
-                );
-                let tile = g.w / 16.0;
-                let mark = |v: u8, c: Color| {
-                    let (r, k) = ((v >> 4) as f32, (v & 15) as f32);
-                    draw_rectangle_lines(g.x + k * tile, g.y + r * tile, tile, tile, 2.0, c);
-                };
-                let mut shown = colour;
-                if g.contains(mouse) {
-                    let v = (((mouse.y - g.y) / tile) as u8).min(15) << 4
-                        | (((mouse.x - g.x) / tile) as u8).min(15);
-                    mark(v, WHITE);
-                    shown = v;
-                    if is_mouse_button_pressed(MouseButton::Left) {
-                        colour = v;
-                        if t == Tool::Pick {
-                            tool[tab as usize] = Tool::Paint;
+                    hbrush.size = size_i as u32;
+                    ui.choice(
+                        col.row(26.0),
+                        &[
+                            (Edge::Hard, "hard"),
+                            (Edge::Smooth, "smooth"),
+                            (Edge::Feather, "feather"),
+                        ],
+                        &mut hbrush.edge,
+                    );
+                    if hbrush.edge == Edge::Feather {
+                        let mut f = hbrush.feather as i32;
+                        ui.slider(col.row(26.0), "feather", &mut f, 1, 32);
+                        hbrush.feather = f as f32;
+                    }
+                    if t == Tool::Brush {
+                        ui.choice(
+                            col.row(26.0),
+                            &[(false, "set height"), (true, "raise / lower")],
+                            &mut raise,
+                        );
+                        if raise {
+                            ui.slider(col.row(26.0), "rate /s", &mut rate, 1, 128);
+                            text("hold Shift to lower", px, col.row(18.0).y + 13.0, GRAY);
+                        } else {
+                            ui.slider(col.row(26.0), "target height", &mut target, 0, 255);
+                        }
+                    } else {
+                        ui.slider(col.row(26.0), "strength", &mut strength, 1, 100);
+                        col.row(6.0);
+                        text("whole map", px, col.row(18.0).y + 13.0, GRAY);
+                        ui.slider(col.row(26.0), "passes", &mut passes, 1, 20);
+                        if ui.button(col.row(28.0), "Smooth whole map", false) {
+                            undo.push(doc.snap(Tab::Height));
+                            redo.clear();
+                            edit::smooth_all(&mut doc.height, passes as u32);
+                            ground_dirty = true;
                         }
                     }
                 }
-                mark(colour, YELLOW);
-                let [r, gg, b] = doc.palette[shown as usize];
-                draw_rectangle(px, col.y, 26.0, 26.0, Color::from_rgba(r, gg, b, 255));
-                text(
-                    &format!(
-                        "colour {shown}: material {}, shade {}",
-                        shown >> 4,
-                        shown & 15
-                    ),
-                    px + 32.0,
-                    col.y + 18.0,
-                    WHITE,
-                );
-                col.row(26.0);
-                if doc.maptex.is_none() {
+                Tool::Pencil | Tool::Pick if tab == Tab::Height => {
+                    ui.slider(col.row(26.0), "target height", &mut target, 0, 255);
+                }
+                Tool::Ramp => {
+                    ui.slider(col.row(26.0), "width", &mut ramp_width, 1, 32);
+                    ui.slider(col.row(26.0), "end height", &mut target, 0, 255);
                     text(
-                        "(no MAPTEX for this palette: flat colours)",
+                        "drag from the start; it starts at the",
+                        px,
+                        col.row(18.0).y + 13.0,
+                        GRAY,
+                    );
+                    text(
+                        "height there and ends at this one",
                         px,
                         col.row(18.0).y + 13.0,
                         GRAY,
                     );
                 }
-            }
-            Tool::Spawn => {
-                ui.choice(
-                    col.row(26.0),
-                    &[(0, "up"), (1, "right"), (2, "down"), (3, "left")],
-                    &mut facing,
-                );
-                text(
-                    "click to place; arrows turn it",
-                    px,
-                    col.row(18.0).y + 13.0,
-                    GRAY,
-                );
-            }
-            Tool::Zone(_) | Tool::Erase => {
-                ui.slider(col.row(26.0), "size", &mut zone_size, 1, 32);
-                if matches!(t, Tool::Zone(z) if z == BOOST || z == SLOW) {
-                    ui.slider(col.row(26.0), "strength", &mut zone_strength, 0, 15);
+                Tool::Paint | Tool::Dot | Tool::Pick => {
+                    if t == Tool::Paint {
+                        ui.choice(
+                            col.row(26.0),
+                            &[(Shape::Circle, "circle"), (Shape::Rect, "square")],
+                            &mut cbrush.shape,
+                        );
+                        size_i = cbrush.size as i32;
+                        ui.slider(col.row(26.0), "size", &mut size_i, 1, 64);
+                        cbrush.size = size_i as u32;
+                    }
+                    // the swatches: 16 materials (rows) × 16 shades (columns)
+                    let g = col.row(pw);
+                    draw_texture_ex(
+                        &swatches,
+                        g.x,
+                        g.y,
+                        WHITE,
+                        DrawTextureParams {
+                            dest_size: Some(vec2(g.w, g.h)),
+                            ..Default::default()
+                        },
+                    );
+                    let tile = g.w / 16.0;
+                    let mark = |v: u8, c: Color| {
+                        let (r, k) = ((v >> 4) as f32, (v & 15) as f32);
+                        draw_rectangle_lines(g.x + k * tile, g.y + r * tile, tile, tile, 2.0, c);
+                    };
+                    let mut shown = colour;
+                    if g.contains(mouse) {
+                        let v = (((mouse.y - g.y) / tile) as u8).min(15) << 4
+                            | (((mouse.x - g.x) / tile) as u8).min(15);
+                        mark(v, WHITE);
+                        shown = v;
+                        if is_mouse_button_pressed(MouseButton::Left) {
+                            colour = v;
+                            if t == Tool::Pick {
+                                tool[tab as usize] = Tool::Paint;
+                            }
+                        }
+                    }
+                    mark(colour, YELLOW);
+                    let [r, gg, b] = doc.palette[shown as usize];
+                    draw_rectangle(px, col.y, 26.0, 26.0, Color::from_rgba(r, gg, b, 255));
+                    text(
+                        &format!(
+                            "colour {shown}: material {}, shade {}",
+                            shown >> 4,
+                            shown & 15
+                        ),
+                        px + 32.0,
+                        col.y + 18.0,
+                        WHITE,
+                    );
+                    col.row(26.0);
+                    if doc.tex_from == "no" {
+                        text(
+                            "(no MAPTEX for this palette: flat colours)",
+                            px,
+                            col.row(18.0).y + 13.0,
+                            GRAY,
+                        );
+                    }
                 }
+                Tool::Spawn => {
+                    ui.choice(
+                        col.row(26.0),
+                        &[(0, "up"), (1, "right"), (2, "down"), (3, "left")],
+                        &mut facing,
+                    );
+                    text(
+                        "click to place; arrows turn it",
+                        px,
+                        col.row(18.0).y + 13.0,
+                        GRAY,
+                    );
+                }
+                Tool::Zone(_) | Tool::Erase => {
+                    ui.slider(col.row(26.0), "size", &mut zone_size, 1, 32);
+                    if matches!(t, Tool::Zone(z) if z == BOOST || z == SLOW) {
+                        ui.slider(col.row(26.0), "strength", &mut zone_strength, 0, 15);
+                    }
+                }
+                Tool::Gate => {
+                    text(
+                        "drag a line across the road; it goes",
+                        px,
+                        col.row(18.0).y + 13.0,
+                        GRAY,
+                    );
+                    text(
+                        "after the selected gate (click one)",
+                        px,
+                        col.row(18.0).y + 13.0,
+                        GRAY,
+                    );
+                }
+                Tool::Renumber => {
+                    text(
+                        "click the gates in driving order;",
+                        px,
+                        col.row(18.0).y + 13.0,
+                        GRAY,
+                    );
+                    text(
+                        "Shift-click: same number (a fork)",
+                        px,
+                        col.row(18.0).y + 13.0,
+                        GRAY,
+                    );
+                    text(
+                        "Enter applies, Esc starts over",
+                        px,
+                        col.row(18.0).y + 13.0,
+                        GRAY,
+                    );
+                }
+                _ => {}
             }
-            Tool::Gate => {
-                text(
-                    "drag a line across the road; it goes",
-                    px,
-                    col.row(18.0).y + 13.0,
-                    GRAY,
-                );
-                text(
-                    "after the selected gate (click one)",
-                    px,
-                    col.row(18.0).y + 13.0,
-                    GRAY,
-                );
-            }
-            Tool::Renumber => {
-                text(
-                    "click the gates in driving order;",
-                    px,
-                    col.row(18.0).y + 13.0,
-                    GRAY,
-                );
-                text(
-                    "Shift-click: same number (a fork)",
-                    px,
-                    col.row(18.0).y + 13.0,
-                    GRAY,
-                );
-                text(
-                    "Enter applies, Esc starts over",
-                    px,
-                    col.row(18.0).y + 13.0,
-                    GRAY,
-                );
-            }
-            _ => {}
         }
         if tab == Tab::Check {
             // the gates in lap order: select, move, delete
@@ -1323,7 +1558,7 @@ async fn main() {
                 };
                 if let Some(s) = from.pop() {
                     to.push(doc.restore(s));
-                    (ground_dirty, check_dirty) = (true, true);
+                    (ground_dirty, check_dirty, swatch_dirty) = (true, true, true);
                 }
             }
             Some("save") => {
@@ -1359,7 +1594,7 @@ async fn main() {
         }
 
         // bottom: the cell under the mouse
-        if on_map {
+        if on_map && tab != Tab::Tex {
             let v = doc.colour[cell];
             text(
                 &format!(

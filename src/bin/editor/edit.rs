@@ -183,6 +183,93 @@ pub fn paint(grid: &mut [u8], cells: &[(usize, f32)], v: u8) {
     }
 }
 
+/// MAPTEX.PCX's sheet: 16×16 tiles of 16×16 pixels; tile `t` is the texture of COL colour `t`
+/// (row = material, column = shade). Pixel (x, y) of tile `t` in the 256×256 sheet.
+pub fn tile_px(t: u8, x: usize, y: usize) -> usize {
+    ((t >> 4) as usize * 16 + y % 16) * SIZE + (t & 15) as usize * 16 + x % 16
+}
+
+/// A sheet of flat tiles, each its own colour: what the game draws for maps without a MAPTEX.
+pub fn flat_sheet() -> Vec<u8> {
+    (0..SIZE * SIZE)
+        .map(|i| ((i / SIZE / 16) * 16 + i % SIZE / 16) as u8)
+        .collect()
+}
+
+/// A round dab of `size` pixels on tile `t` at (x, y), wrapping at the tile's edges so a
+/// pattern lines up from cell to cell (the game repeats a tile once per cell).
+pub fn tile_dab(sheet: &mut [u8], t: u8, x: i32, y: i32, size: i32, v: u8) {
+    let r = size as f32 / 2.0;
+    let (lo, hi) = (-(size / 2), (size - 1) / 2);
+    for dy in lo..=hi {
+        for dx in lo..=hi {
+            let off = if size % 2 == 0 { 0.5 } else { 0.0 };
+            if ((dx as f32 + off).powi(2) + (dy as f32 + off).powi(2)).sqrt() < r + 0.01
+                || size <= 2
+            {
+                let (px, py) = ((x + dx).rem_euclid(16), (y + dy).rem_euclid(16));
+                sheet[tile_px(t, px as usize, py as usize)] = v;
+            }
+        }
+    }
+}
+
+/// Flood fill on tile `t` from (x, y): the 4-connected pixels of that colour become `v`.
+pub fn tile_fill(sheet: &mut [u8], t: u8, x: usize, y: usize, v: u8) {
+    let old = sheet[tile_px(t, x, y)];
+    if old == v {
+        return;
+    }
+    let mut todo = vec![(x, y)];
+    while let Some((x, y)) = todo.pop() {
+        let i = tile_px(t, x, y);
+        if sheet[i] != old {
+            continue;
+        }
+        sheet[i] = v;
+        if x > 0 {
+            todo.push((x - 1, y));
+        }
+        if x < 15 {
+            todo.push((x + 1, y));
+        }
+        if y > 0 {
+            todo.push((x, y - 1));
+        }
+        if y < 15 {
+            todo.push((x, y + 1));
+        }
+    }
+}
+
+/// Tile `t` as noise around colour `base`: each pixel a shade of `base`'s material row up to
+/// `amount` shades either side, like the original sheet's swatches. `seed` varies the pattern.
+pub fn tile_noise(sheet: &mut [u8], t: u8, base: u8, amount: u8, seed: u32) {
+    let mut r = seed.wrapping_mul(2654435761) | 1;
+    for y in 0..16 {
+        for x in 0..16 {
+            // xorshift32
+            r ^= r << 13;
+            r ^= r >> 17;
+            r ^= r << 5;
+            let spread = 2 * amount as i32 + 1;
+            let shade =
+                ((base & 15) as i32 + (r % spread as u32) as i32 - amount as i32).clamp(0, 15);
+            sheet[tile_px(t, x, y)] = (base & 0xF0) | shade as u8;
+        }
+    }
+}
+
+pub fn tile_copy(sheet: &[u8], t: u8) -> [u8; 256] {
+    std::array::from_fn(|i| sheet[tile_px(t, i % 16, i / 16)])
+}
+
+pub fn tile_paste(sheet: &mut [u8], t: u8, tile: &[u8; 256]) {
+    for (i, &v) in tile.iter().enumerate() {
+        sheet[tile_px(t, i % 16, i / 16)] = v;
+    }
+}
+
 /// The checkpoint layer (CHECK.PCX, format in `track.rs`): one index per terrain cell.
 #[derive(Clone, PartialEq, Debug)]
 pub struct Layer(pub Vec<u8>);
@@ -386,6 +473,48 @@ mod tests {
 
     fn at(x: usize, y: usize) -> usize {
         y * SIZE + x
+    }
+
+    #[test]
+    fn tiles() {
+        let mut sheet = flat_sheet();
+        assert_eq!(
+            sheet[tile_px(0x35, 3, 7)],
+            0x35,
+            "flat tiles are their own colour"
+        );
+        assert_eq!(tile_px(0x35, 0, 0), 48 * SIZE + 80);
+        // a dab at the tile's corner wraps to the opposite edges, and stays in the tile
+        tile_dab(&mut sheet, 0x35, 0, 0, 3, 9);
+        for (x, y) in [(0, 0), (15, 0), (0, 15), (15, 15), (1, 0), (0, 1)] {
+            assert_eq!(sheet[tile_px(0x35, x, y)], 9, "({x}, {y})");
+        }
+        assert_eq!(
+            sheet[tile_px(0x34, 15, 0)],
+            0x34,
+            "the neighbour tile is untouched"
+        );
+        assert_eq!(
+            tile_copy(&sheet, 0x35).iter().filter(|&&v| v == 9).count(),
+            9
+        );
+        // fill: the dab's pixels are a separate region from the rest
+        tile_fill(&mut sheet, 0x35, 8, 8, 7);
+        assert_eq!(
+            tile_copy(&sheet, 0x35).iter().filter(|&&v| v == 7).count(),
+            256 - 9
+        );
+        assert_eq!(sheet[tile_px(0x36, 8, 8)], 0x36);
+        // noise stays in the base colour's material row, within the amount
+        tile_noise(&mut sheet, 0x35, 0x48, 2, 1);
+        let tile = tile_copy(&sheet, 0x35);
+        assert!(
+            tile.iter()
+                .all(|&v| v >> 4 == 4 && (6..=10).contains(&(v & 15)))
+        );
+        assert!(tile.iter().any(|&v| v != tile[0]), "it varies");
+        tile_paste(&mut sheet, 0x00, &tile);
+        assert_eq!(tile_copy(&sheet, 0x00), tile);
     }
 
     #[test]
