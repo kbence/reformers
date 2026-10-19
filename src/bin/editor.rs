@@ -560,7 +560,7 @@ mod tests {
             (128, 140, 0x8000)
         );
         assert_eq!(t.gates.len(), 3);
-        let cell = |g: usize| t.gates[g].map(|v| (v / 256.0) as i32);
+        let cell = |g: usize| t.gates[g][0].centre.map(|v| (v / 256.0) as i32);
         assert_eq!(cell(0), [128, 130], "start/finish is gate 0");
         assert_eq!(cell(1), [200, 68]);
         assert_eq!(t.zone_at(60, 200), Some(Zone::Boost(9)));

@@ -4,6 +4,7 @@
 //! right). Same convention as COL.PCX: index >> 4 = element, index & 15 = setting.
 //! - row 1 (16–31): spawn; setting 0–3 = facing up / right / down / left on the image
 //! - row 2 (32–47): gate; setting = lap order (sorted, gaps allowed), the lowest is start/finish
+//!   (paint one number on several branches for a fork: passing any branch counts)
 //! - row 3 (48–63): reset zone; driving in puts the car back like R
 //! - row 4 (64–79): boost pad; setting = strength
 //! - row 5 (80–95): slow zone (mud); setting = strength
@@ -38,12 +39,21 @@ pub struct Spawn {
     pub heading: u16,
 }
 
+/// One connected stretch of a gate. A gate painted on several branches of a fork has a piece
+/// on each; driving through any of them counts.
+pub struct Piece {
+    /// World x, y.
+    pub centre: [f32; 2],
+    /// The two end cells (world x, y of the cell centres): where the posts stand.
+    pub ends: [[f32; 2]; 2],
+    /// The painted cells.
+    pub cells: Vec<(usize, usize)>,
+}
+
 pub struct Track {
     pub spawn: Option<Spawn>,
-    /// Gate centres (world x, y) in lap order; `gates[0]` is start/finish.
-    pub gates: Vec<[f32; 2]>,
-    /// Each gate's two end cells (world x, y of the cell centres): where its posts stand.
-    pub ends: Vec<[[f32; 2]; 2]>,
+    /// Gates in lap order, each one piece or more; `gates[0]` is start/finish.
+    pub gates: Vec<Vec<Piece>>,
     /// Per cell: lap-order index + 1 of the gate painted there, 0 = none.
     cells: Vec<u8>,
     /// Per cell: the raw CHECK.PCX index where it paints a zone (rows 3–5), else 0.
@@ -54,6 +64,55 @@ pub struct Track {
 
 fn cell(p: [f32; 2]) -> (i32, i32) {
     ((p[0] / CELL).floor() as i32, (p[1] / CELL).floor() as i32)
+}
+
+/// The connected pieces of gate `g` (cells holding `g`). Cells up to 2 apart join, so a line
+/// painted with a small gap stays one piece.
+fn pieces(cells: &[u8], g: u8) -> Vec<Vec<(usize, usize)>> {
+    let mut seen = vec![false; cells.len()];
+    let mut out = vec![];
+    for start in 0..cells.len() {
+        if cells[start] != g || seen[start] {
+            continue;
+        }
+        seen[start] = true;
+        let (mut todo, mut piece) = (vec![start], vec![]);
+        while let Some(i) = todo.pop() {
+            let (x, y) = (i % SIZE, i / SIZE);
+            piece.push((x, y));
+            for ny in y.saturating_sub(2)..(y + 3).min(SIZE) {
+                for nx in x.saturating_sub(2)..(x + 3).min(SIZE) {
+                    let j = ny * SIZE + nx;
+                    if cells[j] == g && !seen[j] {
+                        seen[j] = true;
+                        todo.push(j);
+                    }
+                }
+            }
+        }
+        out.push(piece);
+    }
+    out
+}
+
+fn piece(cells: Vec<(usize, usize)>) -> Piece {
+    let world = |(x, y): (usize, usize)| [(x as f32 + 0.5) * CELL, (y as f32 + 0.5) * CELL];
+    let n = cells.len() as f32;
+    let (sx, sy) = cells.iter().fold((0.0, 0.0), |(sx, sy), &(x, y)| {
+        (sx + x as f32, sy + y as f32)
+    });
+    // ends: the extreme cells along the longer side of the line's bounding box
+    let span = |f: fn(&(usize, usize)) -> usize| {
+        cells.iter().map(f).max().unwrap() - cells.iter().map(f).min().unwrap()
+    };
+    let wide = span(|p| p.0) >= span(|p| p.1);
+    let key = |p: &&(usize, usize)| if wide { p.0 } else { p.1 };
+    let (a, b) = (cells.iter().min_by_key(key), cells.iter().max_by_key(key));
+    Piece {
+        centre: [(sx / n + 0.5) * CELL, (sy / n + 0.5) * CELL],
+        ends: [world(*a.unwrap()), world(*b.unwrap())],
+        cells,
+    }
 }
 
 impl Track {
@@ -67,7 +126,7 @@ impl Track {
         }
         let img = img.crop(SIZE, SIZE);
         let mut spawn: Option<(u8, [usize; 4], [f64; 3])> = None; // setting, bbox, (Σx, Σy, n)
-        let mut gates = [[0f64; 3]; 16];
+        let mut present = [false; 16];
         for (i, &p) in img.pixels.iter().enumerate() {
             let (x, y, setting) = (i % SIZE, i / SIZE, p & 15);
             match p >> 4 {
@@ -91,12 +150,7 @@ impl Track {
                     s.2[1] += y as f64;
                     s.2[2] += 1.0;
                 }
-                GATE => {
-                    let g = &mut gates[setting as usize];
-                    g[0] += x as f64;
-                    g[1] += y as f64;
-                    g[2] += 1.0;
-                }
+                GATE => present[setting as usize] = true,
                 _ => {}
             }
         }
@@ -124,7 +178,7 @@ impl Track {
             None => None,
         };
         // lap order: present settings, sorted
-        let order: Vec<usize> = (0..16).filter(|&s| gates[s][2] > 0.0).collect();
+        let order: Vec<usize> = (0..16).filter(|&s| present[s]).collect();
         let mut rank = [0u8; 16];
         for (r, &s) in order.iter().enumerate() {
             rank[s] = r as u8 + 1;
@@ -140,22 +194,8 @@ impl Track {
                 }
             })
             .collect();
-        // ends: the extreme cells along the longer side of the line's bounding box
-        let world = |(x, y): (usize, usize)| [(x as f32 + 0.5) * CELL, (y as f32 + 0.5) * CELL];
-        let ends = (1..=order.len() as u8)
-            .map(|g| {
-                let pts: Vec<(usize, usize)> = (0..SIZE * SIZE)
-                    .filter(|&i| cells[i] == g)
-                    .map(|i| (i % SIZE, i / SIZE))
-                    .collect();
-                let span = |f: fn(&(usize, usize)) -> usize| {
-                    pts.iter().map(f).max().unwrap() - pts.iter().map(f).min().unwrap()
-                };
-                let wide = span(|p| p.0) >= span(|p| p.1);
-                let key = |p: &&(usize, usize)| if wide { p.0 } else { p.1 };
-                let (a, b) = (pts.iter().min_by_key(key), pts.iter().max_by_key(key));
-                [world(*a.unwrap()), world(*b.unwrap())]
-            })
+        let gates = (1..=order.len() as u8)
+            .map(|g| pieces(&cells, g).into_iter().map(piece).collect())
             .collect();
         let zones = img
             .pixels
@@ -170,12 +210,21 @@ impl Track {
             .collect();
         Ok(Track {
             spawn,
-            gates: order.iter().map(|&s| centre(&gates[s])).collect(),
-            ends,
+            gates,
             cells,
             zones,
             soft_dirt: img.pixels.iter().map(|&p| p >> 4 == SOFT).collect(),
         })
+    }
+
+    /// The piece of gate `g` nearest to world point `p`.
+    // ponytail: straight-line distance, not wrapped at the map edge; gates sit well inside it
+    pub fn piece(&self, g: usize, p: [f32; 2]) -> &Piece {
+        let d = |q: &&Piece| (q.centre[0] - p[0]).hypot(q.centre[1] - p[1]);
+        self.gates[g]
+            .iter()
+            .min_by(|a, b| d(a).total_cmp(&d(b)))
+            .unwrap()
     }
 
     /// The zone painted on cell (x, y), if any.
@@ -259,6 +308,8 @@ pub struct Race {
     /// Completed laps.
     pub laps: u32,
     pub last_gate: Option<usize>,
+    /// Where the car passed `last_gate`: picks the piece of a forked gate.
+    passed_at: [f32; 2],
     pub last_lap: Option<u64>,
     pub best: Option<Lap>,
     lap_start: u64,
@@ -274,6 +325,7 @@ impl Race {
             started: false,
             laps: 0,
             last_gate: None,
+            passed_at: [0.0; 2],
             last_lap: None,
             best,
             lap_start: 0,
@@ -302,6 +354,7 @@ impl Race {
         }
         let gate = self.next;
         self.last_gate = Some(gate);
+        self.passed_at = pos;
         self.next = (gate + 1) % n;
         if !self.started {
             self.started = true;
@@ -335,8 +388,10 @@ impl Race {
             return 0.0;
         }
         let passed = (self.next + n - 1) % n;
-        let from = track.gates[self.last_gate.unwrap_or(0)];
-        let to = track.gates[self.next];
+        let from = track
+            .piece(self.last_gate.unwrap_or(0), self.passed_at)
+            .centre;
+        let to = track.piece(self.next, pos).centre;
         let dist = |a: [f32; 2], b: [f32; 2]| (a[0] - b[0]).hypot(a[1] - b[1]);
         let part = 1.0 - (dist(pos, to) / dist(from, to).max(1.0)).min(1.0);
         (self.laps as usize * n + passed) as f32 + part
@@ -358,11 +413,13 @@ impl Race {
         Some(self.splits[i] as i64 - *best as i64)
     }
 
-    /// Where R puts the car: on the last gate passed facing the next one, else the spawn.
+    /// Where R puts the car: on the piece of the last gate it passed, facing the nearest piece of
+    /// the next one; else the spawn.
     pub fn respawn(&self, track: &Track) -> Option<([f32; 2], u16)> {
         match self.last_gate {
             Some(g) => {
-                let ([x, y], [nx, ny]) = (track.gates[g], track.gates[self.next]);
+                let [x, y] = track.piece(g, self.passed_at).centre;
+                let [nx, ny] = track.piece(self.next, [x, y]).centre;
                 let heading = if g == self.next {
                     0
                 } else {
@@ -436,12 +493,12 @@ mod tests {
         assert_eq!((s.x, s.y), (11 * 256, 21 * 256)); // centroid (10.5, 20.5) + half a cell
         assert_eq!(s.heading, 0x4000);
         assert_eq!(t.gates.len(), 3);
-        assert_eq!(t.gates[0], at(102.0, 60.0));
-        assert_eq!(t.gates[1], at(102.0, 50.0));
+        assert_eq!(t.gates[0][0].centre, at(102.0, 60.0));
+        assert_eq!(t.gates[1][0].centre, at(102.0, 50.0));
         assert_eq!(t.gate_at(100, 70), Some(2));
-        assert_eq!(t.ends[0], [at(100.0, 60.0), at(104.0, 60.0)]);
+        assert_eq!(t.gates[0][0].ends, [at(100.0, 60.0), at(104.0, 60.0)]);
         let diag = track(&(0..5).map(|i| (50 + i, 90 - 2 * i, 32)).collect::<Vec<_>>()).unwrap();
-        assert_eq!(diag.ends[0], [at(54.0, 82.0), at(50.0, 90.0)]); // steeper than 45°: by y
+        assert_eq!(diag.gates[0][0].ends, [at(54.0, 82.0), at(50.0, 90.0)]); // steeper than 45°: by y
         assert_eq!(t.gate_at(99, 70), None);
         let z = track(&[(5, 5, 48), (6, 5, 64 + 9), (7, 5, 80 + 3), (8, 5, 96)]).unwrap();
         assert_eq!(z.zone_at(5, 5), Some(Zone::Reset));
@@ -582,6 +639,30 @@ mod tests {
         assert!(started, "gate crossing missed");
     }
 
+    /// A fork: gate 1 painted on two branches. Either branch counts; the piece the car took is
+    /// where R puts it and what progress measures from; one stray-gap line stays one piece.
+    #[test]
+    fn forked_gate_has_pieces() {
+        let mut paint: Vec<_> = (95..106).map(|x| (x, 150, 32)).collect(); // start
+        paint.extend((55..66).map(|x| (x, 100, 33))); // left branch
+        paint.extend((135..146).map(|x| (x, 100, 33))); // right branch
+        paint.extend((95..106).filter(|&x| x != 100).map(|x| (x, 50, 34))); // a 1-cell gap
+        let t = track(&paint).unwrap();
+        assert_eq!(t.gates.iter().map(Vec::len).collect::<Vec<_>>(), [1, 2, 1]);
+        assert_eq!(t.piece(1, at(150.0, 120.0)).centre, at(140.0, 100.0));
+        for x in [60.0, 140.0] {
+            let mut r = Race::new(None);
+            r.place(&t, at(100.0, 151.0));
+            r.update(&t, at(100.0, 150.0), 1); // start
+            r.place(&t, at(x, 101.0));
+            assert_eq!(r.update(&t, at(x, 100.0), 2), Some(Event::Gate(1)));
+            let (p, _) = r.respawn(&t).unwrap();
+            assert_eq!(p, at(x, 100.0), "R puts the car on the branch it took");
+            let near = r.progress(&t, at(x, 90.0));
+            assert!(near > 1.0 && near < 2.0, "{near}");
+        }
+    }
+
     #[test]
     fn spawn_faces_heading() {
         crate::need_assets!();
@@ -649,10 +730,10 @@ mod tests {
                 a[6][1] + a[7][1] - a[4][1] - a[5][1],
             ];
             // pure pursuit along the line from the last gate (or spawn) to the next one
-            let g = t.gates[r.next];
+            let g = t.piece(r.next, [x, y]).centre;
             let p = r
                 .last_gate
-                .map_or([sp.x as f32, sp.y as f32], |i| t.gates[i]);
+                .map_or([sp.x as f32, sp.y as f32], |i| t.piece(i, [x, y]).centre);
             let seg = [g[0] - p[0], g[1] - p[1]];
             let len = (seg[0] * seg[0] + seg[1] * seg[1]).sqrt().max(1.0);
             let u = [seg[0] / len, seg[1] / len];

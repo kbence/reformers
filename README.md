@@ -71,7 +71,7 @@ the right is a legend and is ignored), so tracks can be painted in any paint pro
 |---|---|---|
 | 0–15 | nothing | – |
 | 16–19 | spawn: a small blob, the car starts at its centre | facing up / right / down / left |
-| 32–47 | checkpoint: paint a line across the road (1 px is enough) | lap order; the lowest is start/finish, gaps allowed, up to 16 |
+| 32–47 | checkpoint: paint a line across the road (1 px is enough) | lap order; the lowest is start/finish, gaps allowed, up to 16. For a fork, paint the same number on each branch: either one counts |
 | 48–63 | reset zone: driving in puts the car back like R (paint it over cliffs and water) | – |
 | 64–79 | boost pad (cyan on the ground) | strength |
 | 80–95 | slow zone, mud (brown on the ground) | strength |

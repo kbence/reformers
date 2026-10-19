@@ -508,7 +508,6 @@ struct Level {
     /// Hash of MAP + COL (+ CHECK): replays only replay on the files they were recorded on.
     hash: u64,
     /// (x, y, gate) for every painted gate cell.
-    gate_cells: Vec<(usize, usize, usize)>,
     /// (x, y, zone) for every painted zone cell.
     zone_cells: Vec<(usize, usize, Zone)>,
     /// MAPTEX tile sheet for this map's palette: the map folder's own, or the shared one when
@@ -573,14 +572,6 @@ fn load_level(name: &str) -> Result<(Terrain, Level), String> {
             (pcx::decode(&shared).ok()?.palette == terrain.palette).then_some(shared)
         });
     let track = check.as_deref().map(Track::load).transpose()?;
-    let gate_cells = track.as_ref().map_or(vec![], |t| {
-        (0..SIZE * SIZE)
-            .filter_map(|i| {
-                t.gate_at(i % SIZE, i / SIZE)
-                    .map(|g| (i % SIZE, i / SIZE, g))
-            })
-            .collect()
-    });
     let zone_cells = track.as_ref().map_or(vec![], |t| {
         (0..SIZE * SIZE)
             .filter_map(|i| {
@@ -598,7 +589,6 @@ fn load_level(name: &str) -> Result<(Terrain, Level), String> {
         track,
         key: check.as_ref().map(|c| track_hash(&[&map, &col, c])),
         hash: track_hash(&[&map, &col, check.as_deref().unwrap_or_default()]),
-        gate_cells,
         zone_cells,
         maptex,
     };
@@ -1684,8 +1674,13 @@ fn draw_map_view(
         draw_rectangle(x0 + x as f32 * cell, y0 + y as f32 * cell, cell, cell, c);
     }
     if let Some(t) = track {
-        for (g, ends) in t.ends.iter().enumerate() {
-            let (a, b) = (to_map(ends[0]), to_map(ends[1]));
+        for (g, piece) in t
+            .gates
+            .iter()
+            .enumerate()
+            .flat_map(|(g, ps)| ps.iter().map(move |p| (g, p)))
+        {
+            let (a, b) = (to_map(piece.ends[0]), to_map(piece.ends[1]));
             let (w, c) = match g {
                 _ if Some(g) == next => (4.0, YELLOW),
                 0 => (2.5, WHITE),
@@ -3136,29 +3131,34 @@ async fn main() {
             }
             // gates: an arch (two posts and a banner) over each painted line
             if let Some(t) = &level.track {
-                let mut top = vec![f32::MIN; t.gates.len()];
-                for &(x, y, g) in &level.gate_cells {
-                    let ground = sim
-                        .terrain
-                        .height_at((x as f32 + 0.5) * S, (y as f32 + 0.5) * S);
-                    top[g] = top[g].max(ground);
-                }
                 // the bright next gate first: translucent ones after it, so they don't hide it
                 let next = if view == 0 { race.next } else { race2.next };
                 let order = std::iter::once(next).chain((0..t.gates.len()).filter(|&g| g != next));
                 for g in order {
-                    draw_gate(
-                        &sim.terrain,
-                        t.ends[g],
-                        top[g] + GATE_HEIGHT * S,
-                        g == 0,
-                        g == next,
-                        position,
-                    );
+                    for piece in &t.gates[g] {
+                        let top = piece
+                            .cells
+                            .iter()
+                            .map(|&(x, y)| {
+                                sim.terrain
+                                    .height_at((x as f32 + 0.5) * S, (y as f32 + 0.5) * S)
+                            })
+                            .fold(f32::MIN, f32::max);
+                        draw_gate(
+                            &sim.terrain,
+                            piece.ends,
+                            top + GATE_HEIGHT * S,
+                            g == 0,
+                            g == next,
+                            position,
+                        );
+                    }
                 }
                 if gfx.guide && gfx.camera != 1 {
                     // (not from the bumper camera: it would hover above the screen's top edge)
-                    draw_guide(&sim.cars[view], t.gates[next], get_time());
+                    // forks: the nearest piece of the next gate
+                    let [cx, cy, _] = sim.cars[view].centre();
+                    draw_guide(&sim.cars[view], t.piece(next, [cx, cy]).centre, get_time());
                 }
             }
             for p in sim.particle_positions() {
