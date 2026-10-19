@@ -141,8 +141,8 @@ the tool's settings on the right, the cell under the mouse at the bottom.
 Wheel zooms, right-drag pans, `[` `]` resize, Alt-click picks, Z / Shift+Z undo and redo, S
 saves each changed layer back into its own file and format (TEREP1's BMPs as PCX), keeping the
 first original as `*.bak`. F5 saves and starts the game on the map; a game already running on it
-reloads each save within a second. New makes a flat map (target height, current colour), Save as
-copies this one to a new folder.
+reloads each save within a second. Open (O) switches to another map (type to filter the list), New makes a flat map (target
+height, current colour), Save as copies this one to a new folder.
 
 ## Tools
 

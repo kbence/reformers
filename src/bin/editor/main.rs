@@ -325,6 +325,8 @@ fn test_drive(map: &str) -> Result<(), String> {
 enum Ask {
     New,
     SaveAs,
+    /// The typed text filters the map list.
+    Open,
 }
 
 /// The ground as seen from above: the colours shaded by slope (relief), or the heights as grey.
@@ -371,6 +373,15 @@ fn piece_near(pieces: &[(u8, Vec<(usize, usize)>)], x: i32, y: i32) -> Option<us
         .filter(|&(_, d)| d <= 3)
         .min_by_key(|&(_, d)| d)
         .map(|(k, _)| k)
+}
+
+/// The maps whose names contain `filter` (any case).
+fn matching<'a>(maps: &'a [String], filter: &str) -> Vec<&'a str> {
+    let f = filter.to_lowercase();
+    maps.iter()
+        .filter(|m| m.to_lowercase().contains(&f))
+        .map(String::as_str)
+        .collect()
 }
 
 fn mean(cells: &[(usize, usize)]) -> Vec2 {
@@ -469,6 +480,8 @@ async fn main() {
     let mut selected: Option<u8> = None; // gate setting
     let mut renumber: Vec<(usize, u8)> = vec![]; // clicked pieces, rank
     let mut ask: Option<(Ask, String)> = None;
+    let mut map_list: Vec<String> = vec![];
+    let mut open: Option<String> = None; // a map to switch to at the end of the frame
     let mut note = (String::new(), 0.0);
     let mut quit_asked = false;
     // derived, redone when the doc changes
@@ -531,6 +544,10 @@ async fn main() {
                 let (kind, text) = (*kind, text.clone());
                 ask = None;
                 let made = match kind {
+                    Ask::Open => {
+                        open = matching(&map_list, &text).first().map(|m| m.to_string());
+                        Ok("")
+                    }
                     Ask::New => create_map(&doc, &text, target as u8, colour).map(|_| "created"),
                     Ask::SaveAs => copy_map(&doc, &text).and_then(|dir| {
                         let (old_dir, old_name) = (doc.dir.clone(), doc.name.clone());
@@ -540,15 +557,14 @@ async fn main() {
                         })
                     }),
                 };
-                note = match made.and_then(|how| Doc::load(&text).map(|d| (how, d))) {
-                    Ok((how, d)) => {
-                        doc = d;
-                        (undo, redo) = (vec![], vec![]);
-                        (ground_dirty, check_dirty, swatch_dirty) = (true, true, true);
-                        (format!("{how} {}", doc.dir.display()), get_time() + 4.0)
+                match made {
+                    Ok("") => {}
+                    Ok(how) => {
+                        note = (format!("{how} {text}"), get_time() + 4.0);
+                        open = Some(text);
                     }
-                    Err(e) => (e, get_time() + 6.0),
-                };
+                    Err(e) => note = (e, get_time() + 6.0),
+                }
             }
         } else {
             while get_char_pressed().is_some() {}
@@ -627,6 +643,9 @@ async fn main() {
             }
             if is_key_pressed(KeyCode::S) {
                 action = Some("save");
+            }
+            if is_key_pressed(KeyCode::O) {
+                action = Some("open");
             }
             if is_key_pressed(KeyCode::F5) {
                 action = Some("drive");
@@ -1031,6 +1050,7 @@ async fn main() {
         for (label, act, bw) in [
             ("Test drive F5", "drive", 120.0),
             ("New", "new", 56.0),
+            ("Open", "open", 60.0),
             ("Save as", "save as", 76.0),
             ("Save", "save", 60.0),
             ("Redo", "redo", 60.0),
@@ -1321,14 +1341,18 @@ async fn main() {
                     Err(e) => (e, get_time() + 8.0),
                 };
             }
-            // (a new map replaces this one in the window)
-            Some("new") if unsaved => {
+            // (a new or opened map replaces this one in the window)
+            Some("new" | "open") if unsaved => {
                 note = (
-                    "save first: a new map replaces this one".into(),
+                    "save first: the map you open replaces this one".into(),
                     get_time() + 5.0,
                 )
             }
             Some("new") => ask = Some((Ask::New, String::new())),
+            Some("open") => {
+                map_list = assets::maps();
+                ask = Some((Ask::Open, String::new()));
+            }
             Some("save as") => ask = Some((Ask::SaveAs, format!("{}-2", doc.name))),
             _ => {}
         }
@@ -1349,7 +1373,7 @@ async fn main() {
                 WHITE,
             );
         }
-        let help = "wheel zoom | right-drag pan | 0 fit | [ ] size | Alt-click pick | Z undo | Shift+Z redo | S save";
+        let help = "wheel zoom | right-drag pan | 0 fit | [ ] size | Alt-click pick | Z undo | Shift+Z redo | S save | O open";
         let status = if tab == Tab::Check {
             check.as_str()
         } else {
@@ -1369,17 +1393,64 @@ async fn main() {
             );
             draw_text(&note.0, nx, ny, 22.0, YELLOW);
         }
-        if let Some((kind, name)) = &ask {
+        if let Some((Ask::Open, filter)) = &ask {
+            // the map folders in columns, narrowed by what's typed; click one
+            let list = matching(&map_list, filter);
+            let (cols, cw, rh) = (5, 150.0, 22.0);
+            let rows = ((h - 220.0) / rh).max(1.0) as usize;
+            let r = Rect::new(w / 2.0 - 390.0, 70.0, 780.0, 110.0 + rows as f32 * rh);
+            draw_rectangle(r.x, r.y, r.w, r.h, Color::new(0.05, 0.05, 0.06, 0.97));
+            draw_rectangle_lines(r.x, r.y, r.w, r.h, 2.0, YELLOW);
+            text(
+                "Open map: type to filter, click one or Enter for the first",
+                r.x + 16.0,
+                r.y + 28.0,
+                WHITE,
+            );
+            draw_text(format!("{filter}_"), r.x + 16.0, r.y + 60.0, 26.0, YELLOW);
+            for (i, m) in list.iter().take(cols * rows).enumerate() {
+                let b = Rect::new(
+                    r.x + 16.0 + (i / rows) as f32 * cw,
+                    r.y + 76.0 + (i % rows) as f32 * rh,
+                    cw - 4.0,
+                    rh - 2.0,
+                );
+                if ui.button(b, m, *m == doc.name) {
+                    open = Some(m.to_string());
+                }
+            }
+            let more = list.len().saturating_sub(cols * rows);
+            let foot = if more > 0 {
+                format!("{more} more: type to narrow   Esc: cancel")
+            } else {
+                "Esc: cancel".into()
+            };
+            text(&foot, r.x + 16.0, r.y + r.h - 10.0, GRAY);
+        } else if let Some((kind, name)) = &ask {
             let r = Rect::new(w / 2.0 - 260.0, h / 2.0 - 60.0, 520.0, 120.0);
             draw_rectangle(r.x, r.y, r.w, r.h, Color::new(0.05, 0.05, 0.06, 0.97));
             draw_rectangle_lines(r.x, r.y, r.w, r.h, 2.0, YELLOW);
             let q = match kind {
                 Ask::New => format!("New flat map, height {target}, colour {colour}. Folder name:"),
                 Ask::SaveAs => "Save a copy of this map as folder:".into(),
+                Ask::Open => unreachable!(),
             };
             text(&q, r.x + 16.0, r.y + 30.0, WHITE);
             draw_text(format!("{name}_"), r.x + 16.0, r.y + 68.0, 26.0, YELLOW);
             text("Enter: ok   Esc: cancel", r.x + 16.0, r.y + 100.0, GRAY);
+        }
+
+        // another map in the window: opened, created or saved as
+        if let Some(name) = open.take() {
+            ask = None;
+            match Doc::load(&name) {
+                Ok(d) => {
+                    doc = d;
+                    (undo, redo, selected) = (vec![], vec![], None);
+                    (ground_dirty, check_dirty, swatch_dirty) = (true, true, true);
+                }
+                Err(e) => note = (e, get_time() + 6.0),
+            }
         }
 
         if let Some(f) = &shot
