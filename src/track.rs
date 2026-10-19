@@ -68,7 +68,7 @@ fn cell(p: [f32; 2]) -> (i32, i32) {
 
 /// The connected pieces of gate `g` (cells holding `g`). Cells up to 2 apart join, so a line
 /// painted with a small gap stays one piece.
-fn pieces(cells: &[u8], g: u8) -> Vec<Vec<(usize, usize)>> {
+pub fn pieces(cells: &[u8], g: u8) -> Vec<Vec<(usize, usize)>> {
     let mut seen = vec![false; cells.len()];
     let mut out = vec![];
     for start in 0..cells.len() {

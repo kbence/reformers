@@ -123,14 +123,26 @@ themselves. To supply them, copy from the original demos:
 
 ## Map editor
 
-`cargo run --release --bin editor -- MAP` (or `editor MAP` from a release) edits a map's
-checkpoints, saving `CHECK.PCX` into its folder; keep the game running on the same map and it
-reloads each save within a second. Tools: 1 spawn (arrow keys set its facing), 2 gates (drag a
-line; they're numbered in the order drawn, S = start/finish; right-click deletes one), 3 reset
-zone, 4 boost pad, 5 slow zone (`[` `]` strength), 6 soft dirt, 7 eraser (`-` `=` brush size).
-Wheel zooms, middle-drag (or Space + drag) pans, Z undoes, S saves. The top line says how the
-game will read the result (gates, spawn, or why it won't load). Terrain painting comes later
-(#36); heights can already come from any heightmap tool as `MAP.PNG` / `MAP.PGM`.
+`cargo run --release --bin editor -- MAP` (or `editor MAP` from a release) edits a whole map:
+heights, colours and checkpoints, one tab each (F1–F3). The layer's tools are on the left (1–8),
+the tool's settings on the right, the cell under the mouse at the bottom.
+
+- **Heights:** brush (circle or square, size, hard / smooth / feathered edge; set to a target
+  height or raise, Shift lowers), pencil, smooth (also the whole map at once), ramp (drag: from
+  the height at the start to the target height, set width), pick. The view shows the colours
+  in relief, or the heights as grey.
+- **Colours:** brush, pencil, pick. The picker shows the map's MAPTEX tiles: row = surface
+  material, column = shade.
+- **Checkpoints:** spawn (arrow keys turn it), gate (drag a line; it goes after the selected
+  gate), renumber (click the gates in driving order; Shift-click gives a fork's other branch the
+  same number), reset / boost / slow zones, soft dirt, eraser. The gate list on the right
+  selects, reorders and deletes; the map shows each gate's number and arrows to the next.
+
+Wheel zooms, right-drag pans, `[` `]` resize, Alt-click picks, Z / Shift+Z undo and redo, S
+saves each changed layer back into its own file and format (TEREP1's BMPs as PCX), keeping the
+first original as `*.bak`. F5 saves and starts the game on the map; a game already running on it
+reloads each save within a second. New makes a flat map (target height, current colour), Save as
+copies this one to a new folder.
 
 ## Tools
 

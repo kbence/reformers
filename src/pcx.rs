@@ -2,7 +2,7 @@
 //! or 24-bit (3 planes), of which only the first (red) plane is kept: one community height map
 //! (the pack's TUNDRA) was saved that way, and height maps are grey, so red is the height.
 
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Image {
     pub width: usize,
     pub height: usize,
