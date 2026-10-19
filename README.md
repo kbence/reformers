@@ -110,8 +110,7 @@ They and the map images are the original author's copyrighted work; see `assets/
 - **-DEFORMERS- / TEREP2 and TEREP1** by **Nagymáthé Dénes** (1996–97): the game this remakes.
   The original files in `assets/` (`CAR1–5.DAT`, `CAR1.PCX`, `CAR2.PCX`, `MAPTEX.PCX`,
   `TEXTURES.PCX`, `READ.ME`, `FILE_ID.DIZ`) and the `terep1`, `terep2` and `terep2-hills` maps
-  are his work, included with credit as abandonware; he has said publicly that he's fine with
-  forks and rewrites. They stay his, they are not covered by Reformers' licence.
+  are his work. They stay his, they are not covered by Reformers' licence.
 - **Terep – 30th Anniversary Edition**, compiled by **Rezzy** (2026,
   <https://archive.org/details/terep-30th-anniversary-edition>): the 105 community maps in
   `assets/maps/` and the car skins in `assets/skins/`, made by TEREP2 players over the years.
