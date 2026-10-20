@@ -22,6 +22,7 @@ cargo run --release
 | C | right shoulder | camera: chase / bumper / orbit (Q/E rotate) / top-down |
 | W | | spring wireframe |
 | P | | save this run as a replay |
+| F12 | | screenshot: a PNG in `screenshots/` in the data folder (`~/.local/share/reformers/`, `%APPDATA%\reformers\` on Windows), named by the time (UTC); on a Mac keyboard fn + F12. Not in the web build |
 | Esc | Start | options (pauses the game); d-pad and A in the menu |
 
 A controller joins once you press one of its buttons, so devices Windows lists as gamepads but
