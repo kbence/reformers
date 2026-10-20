@@ -3348,8 +3348,9 @@ async fn main() {
                     colour,
                 );
             }
-            // gates: an arch (two posts and a banner) over each painted line
-            if let Some(t) = &level.track {
+            // gates: an arch (two posts and a banner) over each painted line, and the arrow to the
+            // next (a CHECK.PCX may have only a spawn, or zones: no gates, nothing to point at)
+            if let Some(t) = level.track.as_ref().filter(|t| !t.gates.is_empty()) {
                 // the bright next gate first: translucent ones after it, so they don't hide it
                 let next = if view == 0 { race.next } else { race2.next };
                 let order = std::iter::once(next).chain((0..t.gates.len()).filter(|&g| g != next));
