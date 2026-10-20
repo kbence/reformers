@@ -93,6 +93,7 @@ tdesk
 terep1
 terep1-pack
 terep2
+terep2-forest
 terep2-hills
 tongkoki
 trx1

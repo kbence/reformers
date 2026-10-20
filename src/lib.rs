@@ -5,6 +5,7 @@ pub mod ghost;
 pub mod lighting;
 // on the web the sockets don't open (browsers can't do UDP): online play says so
 pub mod net;
+pub mod objects;
 pub mod pcx;
 pub mod run;
 pub mod sim;

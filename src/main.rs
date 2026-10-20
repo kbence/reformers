@@ -18,7 +18,7 @@ use reformers::run::{self, Replay};
 use reformers::sim::{Keys, Sim, SimCar, TICK_HZ};
 use reformers::terrain::{SIZE, Terrain};
 use reformers::track::{Event, Lap, Race, Track, Zone, format_time};
-use reformers::{assets, lighting, net, pcx, sound};
+use reformers::{assets, lighting, net, objects, pcx, sound};
 use std::path::PathBuf;
 
 const S: f32 = 256.0; // world units per render unit (one terrain cell)
@@ -513,6 +513,10 @@ struct Level {
     /// MAPTEX tile sheet for this map's palette: the map folder's own, or the shared one when
     /// the palettes match (TEREP1's BMP palette doesn't, so it draws flat colours).
     maptex: Option<Vec<u8>>,
+    /// Trees and the like from the optional OBJECTS.PCX (#47), and the sprite sheet they're drawn
+    /// from: the folder's own OBJTEX.PCX, else the shared one.
+    objects: Vec<objects::Object>,
+    objtex: Option<pcx::Image>,
     /// From the folder's optional INFO.TXT: the map's name (first line) and its credits (the rest).
     title: Option<String>,
     credits: String,
@@ -529,6 +533,8 @@ fn watched(map: &str) -> Vec<Option<std::time::SystemTime>> {
         "COL.BMP",
         "CHECK.PCX",
         "MAPTEX.PCX",
+        "OBJECTS.PCX",
+        "OBJTEX.PCX",
     ]
     .iter()
     .map(|f| assets::modified(&format!("maps/{map}/{f}")))
@@ -573,6 +579,14 @@ fn load_level(name: &str) -> Result<(Terrain, Level), String> {
             (pcx::decode(&shared).ok()?.palette == terrain.palette).then_some(shared)
         });
     let track = check.as_deref().map(Track::load).transpose()?;
+    let objects = match assets::read(&format!("maps/{name}/OBJECTS.PCX")) {
+        Ok(b) => objects::load(&b).map_err(|e| format!("maps/{name}/OBJECTS.PCX: {e}"))?,
+        Err(_) => vec![],
+    };
+    let objtex = assets::read(&format!("maps/{name}/OBJTEX.PCX"))
+        .or_else(|_| assets::read("OBJTEX.PCX"))
+        .ok()
+        .and_then(|b| pcx::decode(&b).ok());
     let zone_cells = track.as_ref().map_or(vec![], |t| {
         (0..SIZE * SIZE)
             .filter_map(|i| {
@@ -592,6 +606,8 @@ fn load_level(name: &str) -> Result<(Terrain, Level), String> {
         hash: track_hash(&[&map, &col, check.as_deref().unwrap_or_default()]),
         zone_cells,
         maptex,
+        objects,
+        objtex,
     };
     Ok((terrain, level))
 }
@@ -649,6 +665,86 @@ fn tiles(level: &Level, palette: &[[u8; 3]; 256]) -> Texture2D {
         || Texture2D::from_rgba8(1, 1, &[255, 255, 255, 255]),
         |b| maptex_texture(b, palette),
     )
+}
+
+/// OBJTEX.PCX through its own palette, colour 0 clear; with each kind's sprite (see `objects`).
+type Sprites = [Option<([usize; 4], [f32; 2])>; 16];
+fn objtex_texture(level: &Level) -> (Texture2D, Sprites) {
+    let Some(img) = &level.objtex else {
+        return (Texture2D::from_rgba8(1, 1, &[0; 4]), [None; 16]);
+    };
+    let rgba: Vec<u8> = img
+        .pixels
+        .iter()
+        .flat_map(|&i| {
+            let [r, g, b] = img.palette[i as usize];
+            [r, g, b, if i == 0 { 0 } else { 255 }]
+        })
+        .collect();
+    let tex = Texture2D::from_rgba8(img.width as u16, img.height as u16, &rgba);
+    tex.set_filter(FilterMode::Nearest);
+    (tex, std::array::from_fn(|k| objects::sprite(img, k as u8)))
+}
+
+/// The objects within fog range of `eye` as upright sprites turned to face it (around the
+/// vertical only, so trunks stay upright), standing on the ground.
+fn object_meshes(
+    level: &Level,
+    terrain: &Terrain,
+    sheet: &Texture2D,
+    sprites: &Sprites,
+    eye: Vec3,
+) -> Vec<Mesh> {
+    let (w, h) = (sheet.width(), sheet.height());
+    let mut out: Vec<Mesh> = vec![];
+    for o in &level.objects {
+        let Some(([x, y, sw, sh], foot)) = sprites[o.kind as usize] else {
+            continue;
+        };
+        let base = v([o.pos[0], o.pos[1], terrain.height_at(o.pos[0], o.pos[1])]);
+        let to_eye = vec3(eye.x - base.x, 0.0, eye.z - base.z);
+        // ponytail: a fixed cull radius (the fog's far end); a grid lookup if maps get dense
+        if to_eye.length() > FOG_RANGE[1] + 2.0 {
+            continue;
+        }
+        let right = vec3(to_eye.z, 0.0, -to_eye.x).normalize_or(Vec3::X);
+        let k = objects::PIXEL * o.scale / S; // render units per sprite pixel
+        // the foot sinks a pixel into the ground, so slopes don't show a gap under it
+        let at = |px: f32, py: f32| {
+            base + right * (px - foot[0]) * k + Vec3::Y * (foot[1] - py - 1.0) * k
+        };
+        let (u0, u1) = if o.flip {
+            ((x + sw) as f32 / w, x as f32 / w)
+        } else {
+            (x as f32 / w, (x + sw) as f32 / w)
+        };
+        let (v0, v1) = (y as f32 / h, (y + sh) as f32 / h);
+        let (sw, sh) = (sw as f32, sh as f32);
+        let quad = [
+            (at(0.0, 0.0), u0, v0),
+            (at(sw, 0.0), u1, v0),
+            (at(sw, sh), u1, v1),
+            (at(0.0, sh), u0, v1),
+        ];
+        if out
+            .last()
+            .is_none_or(|m| m.vertices.len() + 4 > u16::MAX as usize)
+        {
+            out.push(Mesh {
+                vertices: vec![],
+                indices: vec![],
+                texture: Some(sheet.clone()),
+            });
+        }
+        let m = out.last_mut().unwrap();
+        let i = m.vertices.len() as u16;
+        m.indices.extend([i, i + 1, i + 2, i, i + 2, i + 3]);
+        m.vertices.extend(
+            quad.iter()
+                .map(|&(p, u, vv)| Vertex::new(p.x, p.y, p.z, u, vv, WHITE)),
+        );
+    }
+    out
 }
 
 /// MAPTEX.PCX's 256×256 tile sheet through the palette: row = colour >> 4, column = colour & 15,
@@ -715,6 +811,21 @@ uniform vec3 FogColor;
 void main() {
     vec4 c = texture2D(Texture, uv) * shade;
     gl_FragColor = vec4(mix(c.rgb, FogColor, fog), c.a);
+}
+";
+
+/// Objects: the fog look, with colour 0 cut out (not blended, so they need no sorting).
+const OBJECT_FRAGMENT: &str = "#version 100
+precision mediump float;
+varying lowp vec2 uv;
+varying lowp vec4 shade;
+varying mediump float fog;
+uniform sampler2D Texture;
+uniform vec3 FogColor;
+void main() {
+    vec4 c = texture2D(Texture, uv) * shade;
+    if (c.a < 0.5) discard;
+    gl_FragColor = vec4(mix(c.rgb, FogColor, fog), 1.0);
 }
 ";
 
@@ -2101,6 +2212,8 @@ async fn main() {
         vec!["ColIdx".into(), "MapTex".into()],
     );
     let fog = fog_material(TERRAIN_VERTEX, FOG_FRAGMENT, vec![]);
+    let object_material = fog_material(TERRAIN_VERTEX, OBJECT_FRAGMENT, vec![]);
+    let (mut objtex, mut sprites) = objtex_texture(&level);
     terrain_material.set_texture("MapTex", maptex.clone());
     let index_tex = Texture2D::from_image(&index_image(&sim.terrain));
     index_tex.set_filter(FilterMode::Nearest);
@@ -2336,6 +2449,7 @@ async fn main() {
                         index_tex.update(&index_image(&sim.terrain));
                         maptex = tiles(&level, &sim.terrain.palette);
                         terrain_material.set_texture("MapTex", maptex.clone());
+                        (objtex, sprites) = objtex_texture(&level);
                         shown.copy_from_slice(&sim.terrain.height);
                         original.copy_from_slice(&sim.terrain.height);
                         shown_colour.copy_from_slice(&sim.terrain.colour);
@@ -3013,7 +3127,7 @@ async fn main() {
         });
         // fog off: push it past anything on screen
         let range = if gfx.fog { FOG_RANGE } else { [1e6, 1e6 + 1.0] };
-        for m in [&fog, &terrain_material] {
+        for m in [&fog, &terrain_material, &object_material] {
             m.set_uniform("FogColor", FOG_COLOUR);
             m.set_uniform("FogRange", range);
         }
@@ -3059,6 +3173,10 @@ async fn main() {
             for m in &mut meshes {
                 m.texture = Some(colour_tex.clone());
                 draw_mesh(m);
+            }
+            gl_use_material(&object_material);
+            for m in object_meshes(&level, &sim.terrain, &objtex, &sprites, position) {
+                draw_mesh(&m);
             }
             gl_use_material(&fog);
             for (ci, c) in sim.cars.iter().enumerate() {

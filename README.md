@@ -100,6 +100,15 @@ terrain is drawn in flat colours when they don't. Plus 105 community maps from T
 Anniversary Edition (free drive: none has checkpoints), each with an `INFO.TXT` holding its name
 and credits, shown under the map preview; their origin is in `assets/maps/SOURCES.md`.
 
+A map can also carry scenery (#47): `OBJECTS.PCX`, a 256×256 indexed image on the same grid,
+one object per cell (colour index ÷ 16 = kind 1–15, mod 16 = size, 0 = nothing), drawn from the
+sprite sheet `OBJTEX.PCX` (the map folder's own, else the shared `assets/OBJTEX.PCX`): 32×64-pixel
+slots, eight per row, kind k in slot k − 1, colour 0 transparent, in the sheet's own palette.
+The shared sheet has 1 pine, 2 leafy tree, 3 bush, 4 birch, 5 dead tree, 6 rock. Each object
+stands near its cell's centre, nudged and scaled a little by a hash of the cell, and turns to
+face the camera. `terep2-forest` is TEREP2's map and track with a forest. Trees can't be hit
+yet (#49).
+
 Shared game files live in `assets/` (also found next to the executable, or wherever
 `REFORMERS_ASSETS` points): `MAPTEX.PCX`, `TEXTURES.PCX`, `CAR1–5.DAT`, `CAR1.PCX`, `CAR2.PCX`.
 They and the map images are the original author's copyrighted work; see `assets/READ.ME`. The
@@ -119,8 +128,9 @@ They and the map images are the original author's copyrighted work; see `assets/
 - **Engine sound loops** in `assets/sounds/engine/`: "racing car engine sound loops" by
   **domasx2** (OpenGameArt), CC0; see `SOURCES.md` there.
 
-Reformers' own code, the `terep2` time-trial track (`CHECK.PCX`), the synthesised sounds and the
-web page are MIT-licensed, see `LICENSE`.
+Reformers' own code, the `terep2` time-trial track (`CHECK.PCX`), the object sprites
+(`assets/OBJTEX.PCX`) and `terep2-forest`'s `OBJECTS.PCX`, the synthesised sounds and the web page
+are MIT-licensed, see `LICENSE`.
 
 ## Map editor
 
