@@ -101,7 +101,8 @@ Anniversary Edition (free drive: none has checkpoints), each with an `INFO.TXT` 
 and credits, shown under the map preview; their origin is in `assets/maps/SOURCES.md`.
 
 A map can also carry scenery (#47): `OBJECTS.PCX`, a 256×256 indexed image on the same grid,
-one object per cell (colour index ÷ 16 = kind 1–15, mod 16 = size, 0 = nothing), drawn from the
+one object per cell (colour index ÷ 16 = kind 1–15, mod 16 = size, 0 = nothing; its palette gives
+each kind a colour, brighter when bigger, so it reads in a paint program), drawn from the
 sprite sheet `OBJTEX.PCX` (the map folder's own, else the shared `assets/OBJTEX.PCX`): 32×64-pixel
 slots, eight per row, kind k in slot k − 1, colour 0 transparent, in the sheet's own palette.
 The shared sheet has 1 pine, 2 leafy tree, 3 bush, 4 birch, 5 dead tree, 6 rock. Each object

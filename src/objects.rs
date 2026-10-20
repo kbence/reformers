@@ -28,6 +28,36 @@ pub struct Object {
     pub flip: bool,
 }
 
+/// OBJECTS.PCX's palette, so the file reads in a paint program: a colour per kind (pine dark
+/// green, leafy tree green, bush light green, birch white, dead tree brown, rock grey, then
+/// spare hues), brighter for bigger sizes; 0–15 (nothing) black.
+pub fn palette() -> [[u8; 3]; 256] {
+    const KINDS: [[u8; 3]; 15] = [
+        [30, 100, 45],
+        [70, 160, 50],
+        [150, 200, 80],
+        [235, 235, 220],
+        [130, 90, 55],
+        [150, 150, 155],
+        [200, 60, 60],
+        [60, 100, 220],
+        [220, 180, 40],
+        [180, 70, 200],
+        [40, 190, 190],
+        [230, 120, 30],
+        [120, 200, 150],
+        [200, 120, 160],
+        [110, 110, 60],
+    ];
+    std::array::from_fn(|i| match i >> 4 {
+        0 => [0; 3],
+        k => {
+            let shade = 0.55 + 0.45 * (i & 15) as f32 / 15.0;
+            KINDS[k - 1].map(|c| (c as f32 * shade) as u8)
+        }
+    })
+}
+
 /// A fixed hash of a cell (any machine, any build): the jitter's source.
 fn hash(x: usize, y: usize) -> u32 {
     let mut h = (x as u32).wrapping_mul(0x9E37_79B1) ^ (y as u32).wrapping_mul(0x85EB_CA77);
@@ -125,6 +155,15 @@ mod tests {
         assert!((1.8..=2.2).contains(&b.scale), "{}", b.scale);
         assert_ne!(a.pos, b.pos, "the jitter differs per cell");
         assert_eq!(load(&pcx(vec![0; SIZE * SIZE])).unwrap(), []);
+    }
+
+    /// terep2-forest's OBJECTS.PCX carries the palette, so it reads in a paint program.
+    #[test]
+    fn shipped_objects_have_the_palette() {
+        crate::need_assets!();
+        let b = crate::assets::read("maps/terep2-forest/OBJECTS.PCX").unwrap();
+        assert_eq!(pcx::decode(&b).unwrap().palette, palette());
+        assert!(!load(&b).unwrap().is_empty());
     }
 
     #[test]
