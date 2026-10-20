@@ -52,14 +52,17 @@ their own time trial with placings (1st/2nd by laps, checkpoints and distance to
 cars collide: the original has collision code but never fills its hull table, so Reformers uses
 each car's bounding box (see docs/re-notes.md). Replays are single-player.
 
-Online, two players on two computers (desktop builds; LAN, or the internet with UDP port 47800
-forwarded to the host): one picks Esc → Race → **Host an online race** (or `--host`), the other
-**Join**: type the host's address, or pick one found on the LAN with left/right, then Enter (or
-`--join ADDRESS`). The host's map, cars and skins are used; the one joining needs the same map
-files. Each machine shows its own car; the menu doesn't pause an online race; Enter on Host or
-Join leaves it. The two sims run in lockstep (each sends only its keys, 33 ms ahead) and compare
-a state hash every second: if they ever disagree, or the other player goes quiet for 5 s, you're
-back to driving alone. Online laps aren't saved as best laps or ghosts.
+Online, up to four players on their own computers (desktop builds; LAN, or the internet with
+UDP port 47800 forwarded to the host): one picks Esc → Race → **Host an online race** (or
+`--host`), the others **Join**: type the host's address, or pick one found on the LAN with
+left/right, then Enter (or `--join ADDRESS`). They wait in the host's lobby; the host presses
+Enter on Host to start once everyone's in (`--host N` starts by itself when N cars are in). The
+host's map is used, with everyone's own car and skin, on a starting grid; joiners need the same
+map files. Each machine shows its own car; the menu doesn't pause an online race; Enter on Host
+or Join leaves it. The sims run in lockstep: each player sends only their keys, 33 ms ahead, to
+the host, which sends everyone's back, and they compare a state hash every second. A player who
+leaves or goes quiet for 5 s just stops, and the race goes on; if the host goes, or the sims
+ever disagree, you're back to driving alone. Online laps aren't saved as best laps or ghosts.
 
 ## Time trial
 

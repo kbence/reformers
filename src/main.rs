@@ -439,12 +439,14 @@ fn follow_camera(
     }
 }
 
-/// Where player 2 joins: 1.5 cells to the right of `spawn`, facing the same way.
-fn beside(spawn: (u16, u16), heading: u16) -> (u16, u16) {
+/// Car `i`'s place on the starting grid, all facing `heading`: two side by side (the second 1.5
+/// cells to the right of `spawn`), each further row 2.5 cells back.
+fn grid(spawn: (u16, u16), heading: u16, i: usize) -> (u16, u16) {
     let a = heading as f32 / 65536.0 * std::f32::consts::TAU;
+    let (right, back) = ((i % 2) as f32 * 384.0, (i / 2) as f32 * 640.0);
     (
-        (spawn.0 as f32 + a.cos() * 384.0) as u16,
-        (spawn.1 as f32 + a.sin() * 384.0) as u16,
+        (spawn.0 as f32 + a.cos() * right - a.sin() * back) as u16,
+        (spawn.1 as f32 + a.sin() * right + a.cos() * back) as u16,
     )
 }
 
@@ -2444,12 +2446,20 @@ async fn main() {
     // online race (#33): getting together, the running link with what it started from, a race
     // to set up once its map is loaded, hosts found on the LAN, and why we're leaving one
     let mut lobby = Lobby::Off;
+    let mut go = false; // the host pressed start
+    let mut gone_seen: Vec<bool> = vec![]; // online: who we've said left
     let mut online: Option<(net::Link, net::Start)> = None;
     let mut starting: Option<net::Start> = None;
     let mut force_load = false;
     let mut discovery: Option<net::Discovery> = None;
     let mut leave: Option<String> = None;
-    // --host / --join ADDRESS: straight into the lobby
+    // --host [N] / --join ADDRESS: straight into the lobby; with N, the race starts by itself
+    // once N cars are in
+    let auto_start = args
+        .iter()
+        .position(|a| a == "--host")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|n| n.parse::<usize>().ok());
     if args.iter().any(|a| a == "--host") {
         match net::Host::bind(net::PORT) {
             Ok(h) => lobby = Lobby::Hosting(h),
@@ -2500,10 +2510,14 @@ async fn main() {
         let (pad_held, pad_hit) = poll_pad(&mut gilrs, &mut pad_id);
         let pressed = |k: KeyCode| is_key_pressed(k) || pad_hit.contains(&k);
         let down = |k: KeyCode| is_key_down(k) || pad_held.contains(&k);
-        // online: a player turns up (host) or the host answers (joiner) → set up the race
-        let (mut joined, mut begin) = (None, None);
+        // online: players gather in the host's lobby; the host starts (Enter on Host), the
+        // joiners get the start
+        let mut begin = None;
         match &mut lobby {
-            Lobby::Hosting(h) => joined = h.poll(&map),
+            Lobby::Hosting(h) => {
+                h.poll(&map);
+                go |= auto_start.is_some_and(|n| h.guests.len() + 1 >= n.min(net::MAX_PLAYERS));
+            }
             Lobby::Joining(j) => match j.poll() {
                 net::JoinState::Waiting => {}
                 net::JoinState::Started(s) => begin = Some(s),
@@ -2514,30 +2528,40 @@ async fn main() {
             },
             Lobby::Off => {}
         }
-        if let Some((from, car, skin)) = joined
+        if std::mem::take(&mut go)
             && let Lobby::Hosting(h) = std::mem::replace(&mut lobby, Lobby::Off)
         {
-            // the host decides everything, spawns included (worked out here, sent as numbers)
+            // the host decides everything, the grid included (worked out here, sent as numbers)
             let ((sx, sy), sh) = level
                 .track
                 .as_ref()
                 .and_then(|t| t.spawn.as_ref())
                 .map_or((SPAWN, 0), |s| ((s.x, s.y), s.heading));
-            let (bx, by) = beside((sx, sy), sh);
+            let cars: Vec<u8> = std::iter::once(players[0].car as u8)
+                .chain(h.guests.iter().map(|g| g.car.min(CARS as u8 - 1)))
+                .collect();
             let start = net::Start {
                 map: map.clone(),
                 map_hash: level.hash,
                 soft: sim.dig_everywhere,
-                cars: [players[0].car as u8, car.min(CARS as u8 - 1)],
-                skins: [gfx.skin.clone(), skin],
-                spawns: [[sx, sy, sh], [bx, by, sh]],
+                skins: std::iter::once(gfx.skin.clone())
+                    .chain(h.guests.iter().map(|g| g.skin.clone()))
+                    .collect(),
+                spawns: (0..cars.len())
+                    .map(|i| {
+                        let (x, y) = grid((sx, sy), sh, i);
+                        [x, y, sh]
+                    })
+                    .collect(),
+                cars,
+                you: 0,
             };
-            online = Some((h.start(from, start.clone()), start.clone()));
+            online = Some((h.start(start.clone()), start.clone()));
             begin = Some(start);
         } else if let Some(s) = &begin
             && let Lobby::Joining(j) = std::mem::replace(&mut lobby, Lobby::Off)
         {
-            online = Some((j.start(), s.clone()));
+            online = Some((j.start(s), s.clone()));
         }
         if let Some(s) = begin {
             // both load the map fresh (undoing any digging) before the cars go down
@@ -2599,7 +2623,7 @@ async fn main() {
                             );
                             players[0].roll = [0.0; 4];
                             if sim.cars.len() > 1 {
-                                let (bx, by) = beside((sx, sy), h);
+                                let (bx, by) = grid((sx, sy), h, 1);
                                 sim.cars[1] = SimCar::spawn_facing(
                                     &cars[players[1].car].0,
                                     &sim.terrain,
@@ -2677,8 +2701,14 @@ async fn main() {
                 recording = Ghost::default();
                 menu_open = false;
                 let me = online.as_ref().map_or(0, |(l, _)| l.me);
+                gone_seen = vec![false; start.cars.len()];
                 banner = Some((
-                    format!("online race on {}: you're P{}", start.map, me + 1),
+                    format!(
+                        "online race on {}, {} cars: you're P{}",
+                        start.map,
+                        start.cars.len(),
+                        me + 1
+                    ),
                     get_time() + 4.0,
                 ));
             }
@@ -2686,9 +2716,22 @@ async fn main() {
         if let Some((link, _)) = &mut online {
             link.poll();
             if let Some(t) = link.desync {
-                leave = Some(format!("out of sync with the other player (tick {t})"));
+                leave = Some(format!("out of sync with the host (tick {t})"));
             } else if link.lost {
-                leave = Some("the other player left".into());
+                leave = Some(match link.me {
+                    0 => "everyone else left".into(),
+                    _ => "the host left".into(),
+                });
+            } else {
+                for (c, seen) in gone_seen.iter_mut().enumerate() {
+                    if link.gone[c] && !*seen {
+                        *seen = true;
+                        banner = Some((
+                            format!("P{} left: their car stops", c + 1),
+                            get_time() + 4.0,
+                        ));
+                    }
+                }
             }
         }
         if let Some(why) = leave.take() {
@@ -2734,10 +2777,15 @@ async fn main() {
             (Some((l, s)), _) => {
                 format!("Online: you're P{} on {}  (Enter: leave)", l.me + 1, s.map)
             }
-            (None, Lobby::Hosting(_)) => format!(
+            (None, Lobby::Hosting(h)) if h.guests.is_empty() => format!(
                 "Hosting on {}:{}, waiting...  (Enter: stop)",
                 net::local_ip().map_or("this machine".into(), |ip| ip.to_string()),
                 net::PORT
+            ),
+            (None, Lobby::Hosting(h)) => format!(
+                "Hosting: {} of {} in  (Enter: start, left/right: stop)",
+                h.guests.len() + 1,
+                net::MAX_PLAYERS
             ),
             _ => "Host an online race".into(),
         };
@@ -2745,7 +2793,10 @@ async fn main() {
         let cursor = if on_join { "_" } else { "" };
         gfx.join_label = match (&online, &lobby) {
             (Some(_), _) => "Join: (in a race)".into(),
-            (None, Lobby::Joining(_)) => format!("Joining {}...  (Enter: cancel)", gfx.join),
+            (None, Lobby::Joining(j)) => match j.lobby {
+                Some(n) => format!("In the lobby, {n} in: waiting for the host  (Enter: leave)"),
+                None => format!("Joining {}...  (Enter: cancel)", gfx.join),
+            },
             _ if found > 0 => format!(
                 "Join: {}{cursor}  ({found} on the LAN: left/right)",
                 gfx.join
@@ -2770,11 +2821,16 @@ async fn main() {
             ) {
                 MenuAction::Close => menu_open = false,
                 MenuAction::Quit => break,
-                MenuAction::Change(Row::Host, _) => {
+                MenuAction::Change(Row::Host, step) => {
                     if online.is_some() {
                         leave = Some("you left the online race".into());
-                    } else if matches!(lobby, Lobby::Hosting(_)) {
-                        lobby = Lobby::Off;
+                    } else if let Lobby::Hosting(h) = &lobby {
+                        // Enter starts once someone's in; left / right (or Enter alone) stop
+                        if step == 0 && !h.guests.is_empty() {
+                            (go, menu_open) = (true, false);
+                        } else {
+                            lobby = Lobby::Off;
+                        }
                     } else {
                         match net::Host::bind(net::PORT) {
                             Ok(h) => lobby = Lobby::Hosting(h),
@@ -2785,7 +2841,8 @@ async fn main() {
                 MenuAction::Change(Row::Join, 0) => {
                     if online.is_some() {
                         leave = Some("you left the online race".into());
-                    } else if matches!(lobby, Lobby::Joining(_)) {
+                    } else if let Lobby::Joining(j) = &lobby {
+                        j.bye();
                         lobby = Lobby::Off;
                     } else {
                         let addr = if gfx.join.contains(':') {
@@ -2934,7 +2991,7 @@ async fn main() {
             if gfx.players == 2 {
                 let [x, y, _] = sim.cars[0].centre();
                 let h = sim.cars[0].heading();
-                let (bx, by) = beside((x as u16, y as u16), h);
+                let (bx, by) = grid((x as u16, y as u16), h, 1);
                 sim.cars.push(SimCar::spawn_facing(
                     &cars[gfx.car2].0,
                     &sim.terrain,
@@ -3029,7 +3086,7 @@ async fn main() {
             };
             acc -= 1.0 / TICK_HZ as f32;
             ticks += 1;
-            let byte = match (net_inputs, &mut playing) {
+            let byte = match (&net_inputs, &mut playing) {
                 (Some(i), _) => i[0],
                 (None, Some((r, i))) => {
                     *i += 1;
@@ -3045,7 +3102,7 @@ async fn main() {
             // on WASD (online, R / F wait for the next input sent, which may be a tick or two away)
             let mut inputs = vec![byte];
             for (i, p) in players.iter_mut().enumerate().skip(1) {
-                inputs.push(match net_inputs {
+                inputs.push(match &net_inputs {
                     Some(n) => n[i],
                     None => run::input(keys2, p.reset, p.repair),
                 });
@@ -3166,8 +3223,14 @@ async fn main() {
             };
             // the original's engine (0x02cf): pitch from the driven wheels' spin, loudness from
             // the throttle control word; one per car in split screen
-            for p in 0..2 {
-                let (fnum, gain) = match sim.cars.get(p) {
+            // ours and the first other car
+            let me = online.as_ref().map_or(0, |(l, _)| l.me);
+            let heard = [
+                me,
+                (0..sim.cars.len()).find(|&c| c != me).unwrap_or(usize::MAX),
+            ];
+            for (p, &c) in heard.iter().enumerate() {
+                let (fnum, gain) = match sim.cars.get(c) {
                     Some(c) => (
                         sound::engine_fnum(c.revs()) as f32,
                         sound::engine_gain(c.throttle_word()),
@@ -3535,8 +3598,24 @@ async fn main() {
                         .get(ahead)
                         .copied()
                         .unwrap_or("");
-                    let colour = [YELLOW, SKYBLUE, PINK, LIME][i % 4];
-                    let text = line(&p.race, &format!("P{} {place}  ", i + 1));
+                    let colour = [YELLOW, SKYBLUE, PINK, ORANGE][i % 4];
+                    // three or four columns: just the place, lap, time and checkpoints
+                    let text = if players.len() > 2 {
+                        let r = &p.race;
+                        match r.started {
+                            true => format!(
+                                "P{} {place}  lap {}  {}  {}/{}",
+                                i + 1,
+                                r.laps + 1,
+                                format_time(r.lap_time(ticks)),
+                                (r.next + n - 1) % n,
+                                n - 1
+                            ),
+                            false => format!("P{} {place}  to the start", i + 1),
+                        }
+                    } else {
+                        line(&p.race, &format!("P{} {place}  ", i + 1))
+                    };
                     text_px(text, i as f32 * column + 12.0, 52.0, size, colour);
                 }
                 if split {
