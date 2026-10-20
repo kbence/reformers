@@ -40,6 +40,8 @@ static WEB_FILES: std::sync::Mutex<Vec<(String, Vec<u8>)>> = std::sync::Mutex::n
 #[cfg(target_arch = "wasm32")]
 const SHARED: [&str; 9] = [
     "MAPTEX.PCX",
+    "OBJTEX.PCX",
+    "OBJTEX.TXT",
     "TEXTURES.PCX",
     "CAR1.DAT",
     "CAR2.DAT",
@@ -84,6 +86,9 @@ pub async fn preload() {
                 "COL.BMP",
                 "CHECK.PCX",
                 "MAPTEX.PCX",
+                "OBJECTS.PCX",
+                "OBJTEX.PCX",
+                "OBJTEX.TXT",
                 "INFO.TXT",
             ] {
                 fetch(format!("maps/{map}/{f}")).await;
