@@ -1537,7 +1537,7 @@ async fn main() {
                     }
                     draw_circle(p.x, p.y, 11.0, Color::new(0.0, 0.0, 0.0, 0.75));
                     let d = measure_text(&label, None, 20, 1.0);
-                    draw_text(&label, p.x - d.width / 2.0, p.y + 6.0, 20.0, ink);
+                    ui::text_sized(&label, p.x - d.width / 2.0, p.y + 6.0, 20.0, ink);
                 }
                 if let Some((x, y, d)) = doc.check.spawn() {
                     let p = at(vec2(x, y));
@@ -2235,7 +2235,7 @@ async fn main() {
                 28.0,
                 Color::new(0.0, 0.0, 0.0, 0.8),
             );
-            draw_text(&note.0, nx, ny, 22.0, YELLOW);
+            ui::text_sized(&note.0, nx, ny, 22.0, YELLOW);
         }
         if let Some((Ask::Open, filter)) = &ask {
             // the map folders in columns, narrowed by what's typed; click one
@@ -2251,7 +2251,7 @@ async fn main() {
                 r.y + 28.0,
                 WHITE,
             );
-            draw_text(format!("{filter}_"), r.x + 16.0, r.y + 60.0, 26.0, YELLOW);
+            ui::text_sized(format!("{filter}_"), r.x + 16.0, r.y + 60.0, 26.0, YELLOW);
             for (i, m) in list.iter().take(cols * rows).enumerate() {
                 let b = Rect::new(
                     r.x + 16.0 + (i / rows) as f32 * cw,
@@ -2280,7 +2280,7 @@ async fn main() {
                 Ask::Open => unreachable!(),
             };
             text(&q, r.x + 16.0, r.y + 30.0, WHITE);
-            draw_text(format!("{name}_"), r.x + 16.0, r.y + 68.0, 26.0, YELLOW);
+            ui::text_sized(format!("{name}_"), r.x + 16.0, r.y + 68.0, 26.0, YELLOW);
             text("Enter: ok   Esc: cancel", r.x + 16.0, r.y + 100.0, GRAY);
         }
 

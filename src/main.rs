@@ -676,6 +676,13 @@ fn track_hash(files: &[&[u8]]) -> u64 {
 
 /// World (x, y, z-up) → render space (y-up). The world is left-handed (PCX rows run down),
 /// so y maps to +z; mapping it to −z would show the map mirrored.
+/// `draw_text` on whole device pixels: placed between them (centred text lands on halves), its
+/// thin strokes blur away on a 1× screen.
+fn text_px(s: impl AsRef<str>, x: f32, y: f32, size: f32, c: Color) -> TextDimensions {
+    let snap = |v: f32| (v * screen_dpi_scale()).round() / screen_dpi_scale();
+    draw_text(s.as_ref(), snap(x), snap(y), size, c)
+}
+
 fn v(p: [f32; 3]) -> Vec3 {
     vec3(p[0] / S, p[2] / S, p[1] / S)
 }
@@ -1917,7 +1924,7 @@ fn draw_map_preview(name: &str, colour: &Texture2D, level: &Level) {
     };
     let centred = |text: &str, y: f32, size: f32, colour: Color| {
         let dims = measure_text(text, None, size as u16, 1.0);
-        draw_text(text, r.x + (r.w - dims.width) / 2.0, y, size, colour);
+        text_px(text, r.x + (r.w - dims.width) / 2.0, y, size, colour);
     };
     centred(&caption, r.y + r.w + 32.0, 24.0, WHITE);
     // the credits, cut to the preview's width
@@ -2015,7 +2022,7 @@ fn draw_car_preview(
         },
     );
     let dims = measure_text(caption, None, 24, 1.0);
-    draw_text(
+    text_px(
         caption,
         r.x + (r.w - dims.width) / 2.0,
         r.y + r.w + 32.0,
@@ -2041,7 +2048,7 @@ fn draw_menu(gfx: &Graphics, menu: &mut Menu, dt: f32) {
         w / 2.0
     };
     let size = measure_text(&title, None, 40, 1.0);
-    draw_text(&title, cx - size.width / 2.0, h * 0.14, 40.0, WHITE);
+    text_px(&title, cx - size.width / 2.0, h * 0.14, 40.0, WHITE);
     let (cy, radius, step) = (h * 0.52, h * 0.3, 0.18f32);
     let list = items(menu.page, gfx.players);
     for (i, item) in list.iter().enumerate() {
@@ -2067,7 +2074,7 @@ fn draw_menu(gfx: &Graphics, menu: &mut Menu, dt: f32) {
         } else {
             Color::new(1.0, 1.0, 1.0, fade * 0.85)
         };
-        draw_text(&text, cx - dims.width / 2.0, y, font, colour);
+        text_px(&text, cx - dims.width / 2.0, y, font, colour);
         if chosen {
             let bar = dims.width + 40.0;
             draw_rectangle_lines(
@@ -2085,7 +2092,7 @@ fn draw_menu(gfx: &Graphics, menu: &mut Menu, dt: f32) {
         _ => "up/down select   left/right/enter change   esc back",
     };
     let size = measure_text(hint, None, 18, 1.0);
-    draw_text(hint, cx - size.width / 2.0, h * 0.93, 18.0, GRAY);
+    text_px(hint, cx - size.width / 2.0, h * 0.93, 18.0, GRAY);
 }
 
 const CRT_VERTEX: &str = "#version 100
@@ -3385,7 +3392,7 @@ async fn main() {
             band,
             Color::new(0.0, 0.0, 0.0, 0.45),
         );
-        draw_text(&hud, 12.0, 22.0, 18.0, WHITE);
+        text_px(&hud, 12.0, 22.0, 18.0, WHITE);
         if let Some(t) = &level.track {
             let n = t.gates.len();
             let line = |race: &Race, place: &str| {
@@ -3417,14 +3424,14 @@ async fn main() {
                 let p1_ahead = race.progress(t, at(0)) >= race2.progress(t, at(1));
                 let place = |first: bool| if first { "1st  " } else { "2nd  " };
                 let size = if screen_width() < 1400.0 { 20.0 } else { 26.0 };
-                draw_text(
+                text_px(
                     line(&race, &format!("P1 {}", place(p1_ahead))),
                     12.0,
                     52.0,
                     size,
                     YELLOW,
                 );
-                draw_text(
+                text_px(
                     line(&race2, &format!("P2 {}", place(!p1_ahead))),
                     screen_width() / 2.0 + 12.0,
                     52.0,
@@ -3442,7 +3449,7 @@ async fn main() {
                     );
                 }
             } else {
-                draw_text(line(&race, ""), 12.0, 52.0, 30.0, YELLOW);
+                text_px(line(&race, ""), 12.0, 52.0, 30.0, YELLOW);
             }
         }
         if let Some((r, i)) = &playing {
@@ -3452,7 +3459,7 @@ async fn main() {
                 format_time(r.inputs.len() as u64)
             );
             let size = measure_text(&msg, None, 30, 1.0);
-            draw_text(
+            text_px(
                 &msg,
                 (screen_width() - size.width) / 2.0,
                 band + 36.0,
@@ -3492,7 +3499,7 @@ async fn main() {
             && !menu_open
         {
             let size = measure_text(msg, None, 48, 1.0);
-            draw_text(
+            text_px(
                 msg,
                 (screen_width() - size.width) / 2.0,
                 screen_height() * 0.2,
@@ -3503,7 +3510,7 @@ async fn main() {
         if split && sim.cars[1].upside_down() && !menu_open {
             let msg = "P2 upside down - Tab";
             let size = measure_text(msg, None, 36, 1.0);
-            draw_text(
+            text_px(
                 msg,
                 screen_width() * 0.75 - size.width / 2.0,
                 screen_height() * 0.3,
@@ -3514,7 +3521,7 @@ async fn main() {
         if sim.cars[me].upside_down() && !menu_open {
             let msg = "upside down - press R";
             let size = measure_text(msg, None, 40, 1.0);
-            draw_text(
+            text_px(
                 msg,
                 (screen_width() - size.width) / 2.0,
                 screen_height() * 0.3,

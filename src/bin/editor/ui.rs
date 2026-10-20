@@ -51,7 +51,7 @@ impl Ui {
         draw_rectangle(r.x, r.y, r.w, r.h, fill);
         let d = measure_text(label, None, TEXT as u16, 1.0);
         let ink = if on { BLACK } else { WHITE };
-        draw_text(
+        text_sized(
             label,
             r.x + (r.w - d.width) / 2.0,
             r.y + (r.h + d.offset_y) / 2.0 - 1.0,
@@ -84,7 +84,7 @@ impl Ui {
         draw_rectangle(r.x, r.y, r.w, r.h, IDLE);
         let t = (*v - min) as f32 / (max - min).max(1) as f32;
         draw_rectangle(r.x, r.y, r.w * t, r.h, Color::new(0.45, 0.36, 0.08, 1.0));
-        draw_text(
+        text_sized(
             format!("{label}: {v}"),
             r.x + 6.0,
             r.y + r.h / 2.0 + 5.0,
@@ -99,5 +99,12 @@ pub fn panel(r: Rect) {
 }
 
 pub fn text(s: &str, x: f32, y: f32, c: Color) {
-    draw_text(s, x, y, TEXT, c);
+    text_sized(s, x, y, TEXT, c);
+}
+
+/// Text on whole device pixels: placed between them (centred labels land on halves), its thin
+/// strokes blur away on a 1× screen.
+pub fn text_sized(s: impl AsRef<str>, x: f32, y: f32, size: f32, c: Color) {
+    let snap = |v: f32| (v * screen_dpi_scale()).round() / screen_dpi_scale();
+    draw_text(s.as_ref(), snap(x), snap(y), size, c);
 }
