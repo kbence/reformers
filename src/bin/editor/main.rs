@@ -197,8 +197,10 @@ struct Doc {
     objpal: [[u8; 3]; 256],
     obj: Source,
     obj_from: &'static str,
+    /// Each kind's trunk (OBJTEX.TXT next to the sheet, else measured off the sprite).
+    colliders: objects::Colliders,
     /// Each layer's bytes as last loaded or saved (see `layers`).
-    saved: [Vec<u8>; 6],
+    saved: [Vec<u8>; 7],
 }
 
 impl Doc {
@@ -251,6 +253,17 @@ impl Doc {
             .ok()
             .and_then(sheet)
             .map_or(vec![0; SIZE * SIZE], |i| i.crop(SIZE, SIZE).pixels);
+        // the colliders go with the sheet, as the game reads them: the map's own OBJTEX.TXT,
+        // else the shared one unless the map has its own sheet
+        let own_sheet = dir.join("OBJTEX.PCX").exists();
+        let txt = std::fs::read(dir.join("OBJTEX.TXT"))
+            .ok()
+            .or_else(|| {
+                (!own_sheet)
+                    .then(|| assets::read("OBJTEX.TXT").ok())
+                    .flatten()
+            })
+            .map(|b| String::from_utf8_lossy(&b).into_owned());
         let (image, obj_from) = match std::fs::read(dir.join("OBJTEX.PCX")).ok().and_then(sheet) {
             Some(i) => (i, "this map's own"),
             None => match assets::read("OBJTEX.PCX").ok().and_then(sheet) {
@@ -266,6 +279,8 @@ impl Doc {
                 ),
             },
         };
+        let colliders = objects::colliders(txt.as_deref(), Some(&image))
+            .map_err(|e| format!("{}: {e}", dir.display()))?;
         let mut doc = Doc {
             name: name.into(),
             dir,
@@ -286,6 +301,7 @@ impl Doc {
                 image,
             },
             obj_from,
+            colliders,
             saved: Default::default(),
         };
         doc.saved = doc.layers();
@@ -294,7 +310,7 @@ impl Doc {
 
     /// Every layer's bytes, to tell what changed: heights, colours, checkpoints, tiles, objects,
     /// sprites (with their palette).
-    fn layers(&self) -> [Vec<u8>; 6] {
+    fn layers(&self) -> [Vec<u8>; 7] {
         [
             self.heights(),
             self.colour.clone(),
@@ -302,6 +318,11 @@ impl Doc {
             self.maptex.clone(),
             self.objects.clone(),
             [self.objtex.clone(), self.objpal.concat()].concat(),
+            self.colliders
+                .iter()
+                .flatten()
+                .flat_map(|v| v.to_le_bytes())
+                .collect(),
         ]
     }
 
@@ -312,7 +333,7 @@ impl Doc {
             .collect()
     }
 
-    fn changed(&self) -> [bool; 6] {
+    fn changed(&self) -> [bool; 7] {
         let now = self.layers();
         std::array::from_fn(|i| now[i] != self.saved[i])
     }
@@ -320,7 +341,7 @@ impl Doc {
     /// Writes the changed layers (all three map layers with `all`); returns what was written.
     /// The sheets only when edited: they go into this map's folder, never over the shared ones.
     fn save(&mut self, all: bool) -> Result<String, String> {
-        let [h, c, k, t, o, sp] = self.changed();
+        let [h, c, k, t, o, sp, co] = self.changed();
         let [h, c, k] = [h, c, k].map(|c| c || all);
         let mut wrote = vec![];
         if h {
@@ -358,6 +379,14 @@ impl Doc {
             wrote.push(self.obj.write(&self.dir, &self.objtex)?);
             self.obj_from = "this map's own";
         }
+        // with the map's own sheet the shared colliders no longer apply: write them too
+        if co || sp {
+            let path = self.dir.join("OBJTEX.TXT");
+            backup(&path)?;
+            std::fs::write(&path, objects::colliders_text(&self.colliders))
+                .map_err(|e| format!("{}: {e}", path.display()))?;
+            wrote.push("OBJTEX.TXT".into());
+        }
         self.saved = self.layers();
         Ok(if wrote.is_empty() {
             "nothing to save".into()
@@ -374,7 +403,7 @@ enum Snap {
     Check(Layer),
     Tex(Vec<u8>),
     Objects(Vec<u8>),
-    Sprites(Vec<u8>, [[u8; 3]; 256]),
+    Sprites(Vec<u8>, [[u8; 3]; 256], objects::Colliders),
 }
 
 impl Doc {
@@ -385,7 +414,7 @@ impl Doc {
             Tab::Check => Snap::Check(self.check.clone()),
             Tab::Tex => Snap::Tex(self.maptex.clone()),
             Tab::Objects => Snap::Objects(self.objects.clone()),
-            Tab::Sprites => Snap::Sprites(self.objtex.clone(), self.objpal),
+            Tab::Sprites => Snap::Sprites(self.objtex.clone(), self.objpal, self.colliders),
         }
     }
 
@@ -397,9 +426,10 @@ impl Doc {
             Snap::Check(v) => Snap::Check(std::mem::replace(&mut self.check, v)),
             Snap::Tex(v) => Snap::Tex(std::mem::replace(&mut self.maptex, v)),
             Snap::Objects(v) => Snap::Objects(std::mem::replace(&mut self.objects, v)),
-            Snap::Sprites(v, p) => Snap::Sprites(
+            Snap::Sprites(v, p, c) => Snap::Sprites(
                 std::mem::replace(&mut self.objtex, v),
                 std::mem::replace(&mut self.objpal, p),
+                std::mem::replace(&mut self.colliders, c),
             ),
         }
     }
@@ -1384,6 +1414,15 @@ async fn main() {
                 YELLOW,
             );
             draw_rectangle_lines(spr_r.x, spr_r.y, spr_r.w, spr_r.h, 1.0, GRAY);
+            // the trunk the car hits, from the side: a box around the foot (the slot's bottom
+            // centre), 2 × radius wide and the height tall, at 10 world units per pixel
+            let [r, hgt] = doc.colliders[skind as usize].map(|v| v as f32 / 10.0 * px_size);
+            if r > 0.0 {
+                let (fx, fy) = (spr_r.x + spr_r.w / 2.0, spr_r.bottom());
+                let red = Color::new(1.0, 0.2, 0.2, 0.25);
+                draw_rectangle(fx - r, fy - hgt, 2.0 * r, hgt, red);
+                draw_rectangle_lines(fx - r, fy - hgt, 2.0 * r, hgt, 2.0, RED);
+            }
             if on {
                 let size = if matches!(t, Tool::Paint | Tool::Erase) {
                     spsize as f32
@@ -1759,6 +1798,33 @@ async fn main() {
                 cel.paste(&mut doc.objtex, c);
                 sprites_dirty = true;
             }
+            // what a car hits (OBJTEX.TXT, saved with the sheet); the red box on the sprite
+            col.row(4.0);
+            text("collider (red box)", px, col.row(18.0).y + 13.0, GRAY);
+            let area_r = Rect::new(px, col.y, pw, 3.0 * 32.0);
+            if area_r.contains(mouse) && is_mouse_button_pressed(MouseButton::Left) {
+                undo.push(doc.snap(Tab::Sprites));
+                redo.clear();
+            }
+            let [r0, h0] = doc.colliders[skind as usize];
+            let mut solid = r0 > 0;
+            ui.choice(
+                col.row(26.0),
+                &[(true, "solid"), (false, "drive through")],
+                &mut solid,
+            );
+            let (mut r, mut hgt) = (r0 as i32, h0 as i32);
+            if solid {
+                // switched back on: a thin trunk as tall as the sprite's slot
+                if r == 0 {
+                    (r, hgt) = (15, hgt.max(640));
+                }
+                ui.slider(col.row(26.0), "trunk radius", &mut r, 1, 320);
+                ui.slider(col.row(26.0), "height", &mut hgt, 10, 1280);
+            } else {
+                r = 0;
+            }
+            doc.colliders[skind as usize] = [r as u16, hgt as u16];
         } else if tab == Tab::Tex {
             let line = format!("tile {tile}: material {}, shade {}", tile >> 4, tile & 15);
             text(&line, px, col.row(18.0).y + 13.0, WHITE);

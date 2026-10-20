@@ -16,27 +16,62 @@ pub const SLOT: [usize; 2] = [32, 64];
 pub const PIXEL: f32 = 10.0;
 const CELL: i32 = 256;
 
-/// Each kind's collider at size 1 (#49), world units: trunk radius and how high it reaches
-/// above the ground, measured off the shared OBJTEX (a pine's trunk is 3 px wide, 62 px tall).
-/// 0 = none: a bush (kind 3) is soft, cars drive through it; the spare kinds 7–15 have none
-/// until they mean something.
-const TRUNKS: [[u16; 2]; 15] = [
-    [15, 620],  // pine
-    [20, 610],  // leafy tree
-    [0, 0],     // bush
-    [15, 620],  // birch
-    [15, 550],  // dead tree
-    [120, 160], // rock: wide and low, you can jump it
-    [0, 0],
-    [0, 0],
-    [0, 0],
-    [0, 0],
-    [0, 0],
-    [0, 0],
-    [0, 0],
-    [0, 0],
-    [0, 0],
-];
+/// Each kind's collider at size 1 (#49): [radius, height] in world units, indexed by kind
+/// (`[0]` unused); radius 0 = none, cars drive through (a bush). They come from the sheet's
+/// OBJTEX.TXT, else from the sprite itself (see `colliders`).
+pub type Colliders = [[u16; 2]; 16];
+
+/// World units per sprite pixel at size 1, for the colliders (integer, as the sim needs).
+const PIXEL_UNITS: u16 = 10;
+
+/// The colliders for a sprite sheet: OBJTEX.TXT's `kind radius height` lines (`#` starts a
+/// comment) where it lists a kind, else measured off the sprite: half the width of its painted
+/// bottom row (the trunk) and its painted height. A kind with neither has none.
+pub fn colliders(txt: Option<&str>, sheet: Option<&pcx::Image>) -> Result<Colliders, String> {
+    let mut out: Colliders = std::array::from_fn(|k| {
+        let Some(sheet) = sheet else { return [0, 0] };
+        let Some(([x, y, w, h], _)) = sprite(sheet, k as u8) else {
+            return [0, 0];
+        };
+        let bottom = (x..x + w).filter(|&px| sheet.pixels[(y + h - 1) * sheet.width + px] != 0);
+        let (lo, hi) = (bottom.clone().min().unwrap_or(0), bottom.max().unwrap_or(0));
+        let width = (hi - lo + 1) as u16;
+        [(width * PIXEL_UNITS).div_ceil(2), h as u16 * PIXEL_UNITS]
+    });
+    for (n, line) in txt.unwrap_or("").lines().enumerate() {
+        let line = line.split('#').next().unwrap().trim();
+        if line.is_empty() {
+            continue;
+        }
+        let bad = || {
+            format!(
+                "OBJTEX.TXT line {}: want `kind radius height`, got {line:?}",
+                n + 1
+            )
+        };
+        let v: Vec<u16> = line
+            .split_whitespace()
+            .map(|f| f.parse().map_err(|_| bad()))
+            .collect::<Result<_, _>>()?;
+        match v[..] {
+            [k @ 1..=15, r, h] => out[k as usize] = [r, h],
+            _ => return Err(bad()),
+        }
+    }
+    Ok(out)
+}
+
+/// OBJTEX.TXT for `c`: every kind, so what's saved is what's used.
+pub fn colliders_text(c: &Colliders) -> String {
+    let mut s = String::from(
+        "# Object colliders (Reformers #49): kind, trunk radius, height, in world units at size 1\n\
+         # (10 per sprite pixel; a car is ~210 long). Radius 0: cars drive through it.\n",
+    );
+    for (k, [r, h]) in c.iter().enumerate().skip(1) {
+        s += &format!("{k} {r} {h}\n");
+    }
+    s
+}
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Object {
@@ -58,9 +93,9 @@ impl Object {
     }
 
     /// Its trunk in the sim, scaled with the sprite; None for kinds you drive through.
-    pub fn trunk(&self) -> Option<Trunk> {
+    pub fn trunk(&self, colliders: &Colliders) -> Option<Trunk> {
         let [r, h] =
-            TRUNKS[self.kind as usize - 1].map(|v| ((v as u32 * self.size as u32) >> 8) as u16);
+            colliders[self.kind as usize].map(|v| ((v as u32 * self.size as u32) >> 8) as u16);
         (r > 0).then_some(Trunk {
             x: self.pos[0],
             y: self.pos[1],
@@ -201,13 +236,15 @@ mod tests {
         }
         assert!((0.89..=1.1).contains(&a.scale()), "{}", a.scale());
         assert!((1.79..=2.2).contains(&b.scale()), "{}", b.scale());
-        let t = a.trunk().unwrap();
+        let mut c: Colliders = [[0, 0]; 16];
+        c[1] = [15, 620];
+        let t = a.trunk(&c).unwrap();
         assert_eq!(
             ([t.x, t.y], t.r),
             (a.pos, ((15 * a.size as u32) >> 8) as u16)
         );
         let bush = Object { kind: 3, ..a };
-        assert_eq!(bush.trunk(), None, "bushes are soft");
+        assert_eq!(bush.trunk(&c), None, "no collider: drive through");
         assert_ne!(a.pos, b.pos, "the jitter differs per cell");
         assert_eq!(load(&pcx(vec![0; SIZE * SIZE])).unwrap(), []);
     }
@@ -219,6 +256,60 @@ mod tests {
         let b = crate::assets::read("maps/terep2-forest/OBJECTS.PCX").unwrap();
         assert_eq!(pcx::decode(&b).unwrap().palette, palette());
         assert!(!load(&b).unwrap().is_empty());
+    }
+
+    #[test]
+    fn colliders_from_text_else_sprite() {
+        let mut sheet = pcx::Image {
+            width: SIZE,
+            height: SIZE,
+            pixels: vec![0; SIZE * SIZE],
+            palette: [[0; 3]; 256],
+        };
+        // kind 1: a 20 px canopy over a 3 px trunk, 40 px tall in all
+        for y in 24..64 {
+            let (x0, x1) = if y < 50 { (6, 26) } else { (15, 18) };
+            for x in x0..x1 {
+                sheet.pixels[y * SIZE + x] = 7;
+            }
+        }
+        let c = colliders(None, Some(&sheet)).unwrap();
+        assert_eq!(
+            c[1],
+            [15, 400],
+            "the trunk's half-width, the painted height"
+        );
+        assert_eq!(c[2], [0, 0], "no sprite, no collider");
+        let txt = "# comment\n2 40 300\n\n1 0 0  # soft after all\n";
+        let c = colliders(Some(txt), Some(&sheet)).unwrap();
+        assert_eq!((c[1], c[2]), ([0, 0], [40, 300]));
+        assert_eq!(
+            colliders(Some(&colliders_text(&c)), None).unwrap(),
+            c,
+            "round trip"
+        );
+        assert!(colliders(Some("16 1 1"), None).is_err());
+        assert!(colliders(Some("1 x 2"), None).is_err());
+    }
+
+    /// The shared sheet's OBJTEX.TXT gives what the starter sprites were measured at.
+    #[test]
+    fn shared_colliders() {
+        crate::need_assets!();
+        let txt = crate::assets::read("OBJTEX.TXT").unwrap();
+        let sheet = pcx::decode(&crate::assets::read("OBJTEX.PCX").unwrap()).unwrap();
+        let c = colliders(Some(&String::from_utf8(txt).unwrap()), Some(&sheet)).unwrap();
+        assert_eq!(
+            &c[1..7],
+            [
+                [15, 620],
+                [20, 610],
+                [0, 0],
+                [15, 620],
+                [15, 550],
+                [120, 160]
+            ]
+        );
     }
 
     #[test]

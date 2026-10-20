@@ -108,8 +108,11 @@ slots, eight per row, kind k in slot k − 1, colour 0 transparent, in the sheet
 The shared sheet has 1 pine, 2 leafy tree, 3 bush, 4 birch, 5 dead tree, 6 rock. Each object
 stands near its cell's centre, nudged and scaled a little by a hash of the cell, and turns to
 face the camera. Trunks and rocks are solid: the car's frame stops against them and dents like
-in any crash (rocks are low enough to jump; bushes are soft, you drive through them; kinds 7–15
-don't collide). The collision runs in the same fixed-point physics, so it replays and races
+in any crash (rocks are low enough to jump; bushes are soft, you drive through them). Each
+kind's trunk (radius and height, in world units at size 1) comes from `OBJTEX.TXT` next to the
+sheet, one `kind radius height` line per kind, radius 0 = drive through; a kind it doesn't list
+gets one measured off its sprite (half its bottom row's width, its height). A map with its own
+sheet uses its own `OBJTEX.TXT`, never the shared one. The collision runs in the same fixed-point physics, so it replays and races
 online bit-exact; replays and best laps belong to a map's `OBJECTS.PCX` too. `terep2-forest` is
 TEREP2's map and track with a forest.
 
@@ -162,8 +165,9 @@ the tool's settings on the right, the cell under the mouse at the bottom.
   with kinds picked at random from the selected sprites (Shift-click mixes kinds) and sizes from
   a range; place one, eraser, pick. Dots on the map; zoomed in, the sprites themselves.
 - **Sprites:** the `OBJTEX.PCX` sheet, edited like Textures (pencil, brush, fill, eraser for
-  colour 0 = transparent, pick, copy and paste), with RGB sliders for its own palette. Saved
-  into the map's folder; the shared sheet is never changed.
+  colour 0 = transparent, pick, copy and paste), with RGB sliders for its own palette, and each
+  sprite's collider (solid or drive through, trunk radius, height) drawn as a red box on it.
+  Saved into the map's folder (`OBJTEX.PCX`, `OBJTEX.TXT`); the shared ones are never changed.
 
 Wheel zooms, right-drag pans, `[` `]` resize, Alt-click picks, Z / Shift+Z undo and redo, S
 saves each changed layer back into its own file and format (TEREP1's BMPs as PCX), keeping the

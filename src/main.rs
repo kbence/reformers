@@ -517,6 +517,8 @@ struct Level {
     /// from: the folder's own OBJTEX.PCX, else the shared one.
     objects: Vec<objects::Object>,
     objtex: Option<pcx::Image>,
+    /// Each object kind's trunk (OBJTEX.TXT, else measured off the sprite).
+    colliders: objects::Colliders,
     /// From the folder's optional INFO.TXT: the map's name (first line) and its credits (the rest).
     title: Option<String>,
     credits: String,
@@ -535,6 +537,7 @@ fn watched(map: &str) -> Vec<Option<std::time::SystemTime>> {
         "MAPTEX.PCX",
         "OBJECTS.PCX",
         "OBJTEX.PCX",
+        "OBJTEX.TXT",
     ]
     .iter()
     .map(|f| assets::modified(&format!("maps/{map}/{f}")))
@@ -585,10 +588,33 @@ fn load_level(name: &str) -> Result<(Terrain, Level), String> {
     } else {
         objects::load(&objects_pcx).map_err(|e| format!("maps/{name}/OBJECTS.PCX: {e}"))?
     };
-    let objtex = assets::read(&format!("maps/{name}/OBJTEX.PCX"))
-        .or_else(|_| assets::read("OBJTEX.PCX"))
+    // the sheet and its colliders: the map's own, else the shared ones (a map may carry its
+    // own OBJTEX.TXT for the shared sprites; its own sheet never takes the shared colliders)
+    let own_sheet = assets::read(&format!("maps/{name}/OBJTEX.PCX")).ok();
+    let txt = assets::read(&format!("maps/{name}/OBJTEX.TXT"))
         .ok()
+        .or_else(|| {
+            own_sheet
+                .is_none()
+                .then(|| assets::read("OBJTEX.TXT").ok())
+                .flatten()
+        });
+    let objtex = own_sheet
+        .or_else(|| assets::read("OBJTEX.PCX").ok())
         .and_then(|b| pcx::decode(&b).ok());
+    let txt = txt.map(|b| String::from_utf8_lossy(&b).into_owned());
+    let colliders = objects::colliders(txt.as_deref(), objtex.as_ref())
+        .map_err(|e| format!("maps/{name}: {e}"))?;
+    // what the trees are made of counts too, once there are trees
+    let collider_bytes: Vec<u8> = if objects_pcx.is_empty() {
+        vec![]
+    } else {
+        colliders
+            .iter()
+            .flatten()
+            .flat_map(|v| v.to_le_bytes())
+            .collect()
+    };
     let zone_cells = track.as_ref().map_or(vec![], |t| {
         (0..SIZE * SIZE)
             .filter_map(|i| {
@@ -607,17 +633,19 @@ fn load_level(name: &str) -> Result<(Terrain, Level), String> {
         // the trees are in both (they're hit now); without OBJECTS.PCX both stay what they were
         key: check
             .as_ref()
-            .map(|c| track_hash(&[&map, &col, c, &objects_pcx])),
+            .map(|c| track_hash(&[&map, &col, c, &objects_pcx, &collider_bytes])),
         hash: track_hash(&[
             &map,
             &col,
             check.as_deref().unwrap_or_default(),
             &objects_pcx,
+            &collider_bytes,
         ]),
         zone_cells,
         maptex,
         objects,
         objtex,
+        colliders,
     };
     Ok((terrain, level))
 }
@@ -627,7 +655,7 @@ impl Level {
     fn trunks(&self) -> Vec<Trunk> {
         self.objects
             .iter()
-            .filter_map(objects::Object::trunk)
+            .filter_map(|o| o.trunk(&self.colliders))
             .collect()
     }
 }

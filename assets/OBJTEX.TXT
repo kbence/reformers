@@ -1,0 +1,9 @@
+# Object colliders (Reformers #49): kind, trunk radius, height, in world units at size 1
+# (10 per sprite pixel; a car is ~210 long). Radius 0: cars drive through it.
+# Kinds not listed get one measured off their sprite: half its bottom row's width, its height.
+1 15 620
+2 20 610
+3 0 0
+4 15 620
+5 15 550
+6 120 160
