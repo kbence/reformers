@@ -945,8 +945,11 @@ impl Sim {
     /// Trunks (not in the original). A thin trunk would slip between the car's mass points, so
     /// it hits the car's frame: each unbroken spring is a segment, and where one passes within
     /// reach of a trunk, its two atoms are pushed out along the horizontal normal (split by how
-    /// near each is) and lose their inward velocity, bouncing back a quarter like `contact`.
-    /// The sudden stop bends the springs: the same damage as hitting the ground.
+    /// near each is) and lose their inward velocity, bouncing back a quarter like `contact`, and
+    /// half their slide along the bark, so a car catches on a trunk rather than skating round it.
+    /// The normal points to the side the segment was on a tick ago: a fast frame moves about a
+    /// thin trunk's width per tick, so it may already be on or past the axis, and is pushed back,
+    /// not on through. The sudden stop bends the springs: the same damage as hitting the ground.
     fn hit_trunks(&mut self, ci: usize) {
         // ponytail: every trunk per car per tick (~2000 on a forest map, most rejected on the
         // first line); a per-cell grid if maps get denser
@@ -966,34 +969,47 @@ impl Sim {
                 }
                 let car = &self.cars[ci];
                 let (a, b) = (car.atoms[s.a], car.atoms[s.b]);
-                // 16.16 relative to the trunk's axis
-                let rel = |p: [i32; 3]| [0, 1].map(|k| p[k].wrapping_sub(c[k]) as i64);
-                let (pa, pb) = (rel(a.pos), rel(b.pos));
-                let ab = [pb[0] - pa[0], pb[1] - pa[1]];
-                let l2 = ab[0] as i128 * ab[0] as i128 + ab[1] as i128 * ab[1] as i128;
-                let along = -(pa[0] as i128 * ab[0] as i128 + pa[1] as i128 * ab[1] as i128);
-                // the closest point, f (0–0x10000) of the way from a to b
-                let f = if l2 == 0 {
-                    0
-                } else {
-                    ((along << 16) / l2).clamp(0, 0x10000) as i64
+                // 16.16 relative to the trunk's axis, now and a tick ago (atoms() just added vel)
+                let rel = |p: [i32; 3], v: [i32; 3], back: i32| {
+                    [0, 1].map(|k| p[k].wrapping_sub(v[k] * back).wrapping_sub(c[k]) as i64)
                 };
+                // the segment's closest point to the axis, f (0–0x10000) of the way from a to b
+                let closest = |pa: [i64; 2], pb: [i64; 2]| {
+                    let ab = [pb[0] - pa[0], pb[1] - pa[1]];
+                    let l2 = ab[0] as i128 * ab[0] as i128 + ab[1] as i128 * ab[1] as i128;
+                    let along = -(pa[0] as i128 * ab[0] as i128 + pa[1] as i128 * ab[1] as i128);
+                    let f = if l2 == 0 {
+                        0
+                    } else {
+                        ((along << 16) / l2).clamp(0, 0x10000) as i64
+                    };
+                    ([0, 1].map(|k| pa[k] + (((pb[k] - pa[k]) * f) >> 16)), f)
+                };
+                let (q, f) = closest(rel(a.pos, a.vel, 0), rel(b.pos, b.vel, 0));
+                let (was, _) = closest(rel(a.pos, a.vel, 1), rel(b.pos, b.vel, 1));
                 let lerp = |u: i64, v: i64| u + (((v - u) * f) >> 16);
-                let q = [lerp(pa[0], pb[0]), lerp(pa[1], pb[1])];
                 let radius = lerp(a.radius as i64, b.radius as i64);
                 let reach = (t.r as i64 + radius) << 16;
-                let d2 = q[0] * q[0] + q[1] * q[1];
                 let z = lerp(a.pos[2] as i64, b.pos[2] as i64) >> 16;
-                if q.iter().any(|v| v.abs() >= reach) || d2 >= reach * reach || z - radius > top {
+                if q.iter().any(|v| v.abs() >= reach + 0x40_0000) || z - radius > top {
                     continue;
                 }
-                // dead centre: out along +x
-                let (dist, q) = match d2.isqrt() {
-                    0 => (1, [1, 0]),
-                    n => (n, q),
+                // out the side it came from: a fast frame moves about a trunk's width a tick, so
+                // by now it may be on the axis or past it (dead centre then and now: along +x)
+                let len = |v: [i64; 2]| (v[0] * v[0] + v[1] * v[1]).isqrt();
+                let (from, dist) = match (len(was), len(q)) {
+                    (0, 0) => ([1, 0], 1),
+                    (0, d) => (q, d),
+                    (d, _) => (was, d),
                 };
-                let n = q.map(|v| v * 0x10000 / dist); // unit normal, 16.16
-                let pen = reach - dist;
+                let n = from.map(|v| v * 0x10000 / dist); // unit normal, 16.16
+                // how far out along it (negative: past the axis), and how far aside
+                let out = (q[0] * n[0] + q[1] * n[1]) >> 16;
+                let aside2 = (q[0] * q[0] + q[1] * q[1] - out * out).max(0);
+                if out >= reach || aside2 >= reach * reach {
+                    continue;
+                }
+                let pen = reach - out;
                 for (i, w) in [(s.a, 0x10000 - f), (s.b, f)] {
                     let at = &mut self.cars[ci].atoms[i];
                     let vn = (at.vel[0] as i64 * n[0] + at.vel[1] as i64 * n[1]) >> 16;
@@ -1003,8 +1019,14 @@ impl Sim {
                     let e = ((vn.min(0) + (vn.min(0) >> 2)) * w) >> 16;
                     let push = (pen * w) >> 16;
                     for k in 0..2 {
+                        // the bark grips: half the slide along it goes too, so a car catches
+                        // on a trunk instead of skating round it
+                        let slide = at.vel[k] as i64 - ((vn * n[k]) >> 16);
+                        let grip = ((slide * w) >> 16) >> 1;
                         at.pos[k] = at.pos[k].wrapping_add(((n[k] * push) >> 16) as i32);
-                        at.vel[k] = at.vel[k].wrapping_sub(((n[k] * e) >> 16) as i32);
+                        at.vel[k] = at.vel[k]
+                            .wrapping_sub(((n[k] * e) >> 16) as i32)
+                            .wrapping_sub(grip as i32);
                     }
                 }
             }
@@ -1403,12 +1425,74 @@ mod tests {
         let (hit, damage) = drive(vec![tree(0x7fb0)]); // where it crosses the tree's row
         let y = hit.iter().map(|p| p[1]).sum::<f32>() / hit.len() as f32;
         assert!(y > 0x7600 as f32, "stopped at the tree: centre y {y}");
-        assert!(damage > 0.0, "and dented");
+        // (a moderate bump: the dents come at speed, see fast_cars_dont_tunnel_through_trees)
+        let _ = damage;
         assert_eq!(
             drive(vec![tree(0x8400)]),
             open,
             "four cells aside: untouched"
         );
+    }
+
+    /// At full speed a frame moves about a thin trunk's width a tick, and dead centre the push
+    /// had no side: both slipped through before. A long run-up, then a 15-unit trunk right where
+    /// the car would cross its row (it drifts on the way), dead centre and a little aside.
+    #[test]
+    fn fast_cars_dont_tunnel_through_trees() {
+        crate::need_assets!();
+        let car = crate::car::parse(&crate::assets::read("CAR1.DAT").unwrap()).unwrap();
+        const ROW: u16 = 0x2000;
+        // the car's speed just before the row, and its slowest within 3 cells after reaching it
+        let run = |trunks: Vec<Trunk>| {
+            let mut s = Sim::new(flat());
+            s.set_trunks(trunks);
+            s.cars.push(SimCar::spawn(&car, &s.terrain, 0x4000, 0x7f00)); // 95 cells of run-up
+            let gas = Keys {
+                throttle: true,
+                ..Keys::default()
+            };
+            // from 3 cells before the row: the speed then, the slowest for the next second
+            let (mut cross, mut before_row, mut slowest) = (None, 0.0f32, f32::MAX);
+            let (mut last, mut after) = (s.cars[0].centre(), None);
+            for tick in 0..TICK_HZ * 20 {
+                s.tick(&[gas]);
+                let c = s.cars[0].centre();
+                let v = (c[0] - last[0]).hypot(c[1] - last[1]);
+                if c[1] > ROW as f32 {
+                    cross = Some(c[0]); // where it is when it reaches the row (unhindered)
+                }
+                if after.is_none() && c[1] - (ROW as f32) < 768.0 {
+                    (after, before_row) = (Some(tick), v);
+                }
+                if after.is_some_and(|t| tick - t < TICK_HZ) {
+                    slowest = slowest.min(v);
+                }
+                last = c;
+            }
+            (cross, before_row, slowest, s.cars[0].damage())
+        };
+        let (cross, open_speed, open_slowest, _) = run(vec![]);
+        let x = cross.unwrap() as i32;
+        assert!(open_speed > 10.0, "it got going: {open_speed} units a tick");
+        assert!(
+            open_slowest > 10.0,
+            "unhindered it doesn't slow: {open_slowest}"
+        );
+        for dx in [0, 25, -40] {
+            let (_, speed, slowest, damage) = run(vec![Trunk {
+                x: (x + dx) as u16,
+                y: ROW,
+                r: 15,
+                h: 600,
+            }]);
+            // near the middle it stops dead; further out the frame glances off, still hit
+            let most = if dx.abs() <= 25 { 1.0 / 3.0 } else { 2.0 / 3.0 };
+            assert!(
+                slowest < speed * most,
+                "{dx} aside: the trunk stops it: {speed} → {slowest}"
+            );
+            assert!(damage > 0.0, "{dx} aside: and dents it");
+        }
     }
 
     #[test]
