@@ -5,6 +5,13 @@ Nagymáthé Dénes. The physics is a literal 16.16 fixed-point port of the origi
 masses joined by springs that yield and break, driven over a 256×256 height map.
 How the original works: [docs/re-notes.md](docs/re-notes.md).
 
+| | |
+|---|---|
+| ![TEREP2's valley, chase camera](docs/screenshots/terep2.png) | ![A time trial: the checkpoint arrow, lap timer and minimap](docs/screenshots/time-trial.png) |
+| TEREP2's valley | A time trial: checkpoint arrow, lap timer, minimap |
+| ![A community map with a skinned buggy](docs/screenshots/community-map.png) | ![terep2 forest: trees and birches around the car](docs/screenshots/forest.png) |
+| A community map, with a community skin | terep2 forest: scenery objects |
+
 ## Play
 
 ```bash
@@ -141,6 +148,8 @@ Reformers' own code, the `terep2` time-trial track (`CHECK.PCX`), the object spr
 are MIT-licensed, see `LICENSE`.
 
 ## Map editor
+
+![The map editor on terep2 forest: checkpoints tab, gates numbered with arrows to the next, the gate list on the right](docs/screenshots/editor.png)
 
 `cargo run --release --bin editor -- MAP` (or `editor MAP` from a release) edits a whole map:
 heights, colours, checkpoints, textures, objects and their sprites, one tab each (F1–F4,
