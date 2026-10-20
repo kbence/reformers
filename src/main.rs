@@ -15,7 +15,7 @@ use macroquad::prelude::*;
 use reformers::car::{self, Car, Prim};
 use reformers::ghost::{self, Frame, Ghost};
 use reformers::run::{self, Replay};
-use reformers::sim::{Keys, Sim, SimCar, TICK_HZ};
+use reformers::sim::{Keys, Sim, SimCar, TICK_HZ, Trunk};
 use reformers::terrain::{SIZE, Terrain};
 use reformers::track::{Event, Lap, Race, Track, Zone, format_time};
 use reformers::{assets, lighting, net, objects, pcx, sound};
@@ -505,7 +505,7 @@ struct Level {
     track: Option<Track>,
     /// Identifies these exact files, so best laps belong to one track; None without a time trial.
     key: Option<u64>,
-    /// Hash of MAP + COL (+ CHECK): replays only replay on the files they were recorded on.
+    /// Hash of MAP + COL (+ CHECK, OBJECTS): replays only replay on the files they were recorded on.
     hash: u64,
     /// (x, y, gate) for every painted gate cell.
     /// (x, y, zone) for every painted zone cell.
@@ -579,9 +579,11 @@ fn load_level(name: &str) -> Result<(Terrain, Level), String> {
             (pcx::decode(&shared).ok()?.palette == terrain.palette).then_some(shared)
         });
     let track = check.as_deref().map(Track::load).transpose()?;
-    let objects = match assets::read(&format!("maps/{name}/OBJECTS.PCX")) {
-        Ok(b) => objects::load(&b).map_err(|e| format!("maps/{name}/OBJECTS.PCX: {e}"))?,
-        Err(_) => vec![],
+    let objects_pcx = assets::read(&format!("maps/{name}/OBJECTS.PCX")).unwrap_or_default();
+    let objects = if objects_pcx.is_empty() {
+        vec![]
+    } else {
+        objects::load(&objects_pcx).map_err(|e| format!("maps/{name}/OBJECTS.PCX: {e}"))?
     };
     let objtex = assets::read(&format!("maps/{name}/OBJTEX.PCX"))
         .or_else(|_| assets::read("OBJTEX.PCX"))
@@ -602,14 +604,32 @@ fn load_level(name: &str) -> Result<(Terrain, Level), String> {
         title: lines.next().filter(|l| !l.is_empty()).map(String::from),
         credits: lines.collect::<Vec<_>>().join(" ").trim().to_string(),
         track,
-        key: check.as_ref().map(|c| track_hash(&[&map, &col, c])),
-        hash: track_hash(&[&map, &col, check.as_deref().unwrap_or_default()]),
+        // the trees are in both (they're hit now); without OBJECTS.PCX both stay what they were
+        key: check
+            .as_ref()
+            .map(|c| track_hash(&[&map, &col, c, &objects_pcx])),
+        hash: track_hash(&[
+            &map,
+            &col,
+            check.as_deref().unwrap_or_default(),
+            &objects_pcx,
+        ]),
         zone_cells,
         maptex,
         objects,
         objtex,
     };
     Ok((terrain, level))
+}
+
+impl Level {
+    /// The objects' colliders, for `Sim::set_trunks`.
+    fn trunks(&self) -> Vec<Trunk> {
+        self.objects
+            .iter()
+            .filter_map(objects::Object::trunk)
+            .collect()
+    }
 }
 
 fn best_key(level: &Level, car: usize) -> Option<String> {
@@ -701,14 +721,15 @@ fn object_meshes(
         let Some(([x, y, sw, sh], foot)) = sprites[o.kind as usize] else {
             continue;
         };
-        let base = v([o.pos[0], o.pos[1], terrain.height_at(o.pos[0], o.pos[1])]);
+        let [x0, y0] = o.pos.map(f32::from);
+        let base = v([x0, y0, terrain.height_at(x0, y0)]);
         let to_eye = vec3(eye.x - base.x, 0.0, eye.z - base.z);
         // ponytail: a fixed cull radius (the fog's far end); a grid lookup if maps get dense
         if to_eye.length() > FOG_RANGE[1] + 2.0 {
             continue;
         }
         let right = vec3(to_eye.z, 0.0, -to_eye.x).normalize_or(Vec3::X);
-        let k = objects::PIXEL * o.scale / S; // render units per sprite pixel
+        let k = objects::PIXEL * o.scale() / S; // render units per sprite pixel
         // the foot sinks a pixel into the ground, so slopes don't show a gap under it
         let at = |px: f32, py: f32| {
             base + right * (px - foot[0]) * k + Vec3::Y * (foot[1] - py - 1.0) * k
@@ -2120,6 +2141,7 @@ async fn main() {
     if let Some(t) = &level.track {
         sim.set_soft_dirt(t.soft_dirt.clone());
     }
+    sim.set_trunks(level.trunks());
     let mut stamps = watched(&map);
     let mut next_poll = 0.0;
     // All five original cars, switchable with 1–5. Only CAR1/CAR2 ship a skin; the rest use TEXTURES.PCX like 0x1323.
@@ -2440,6 +2462,7 @@ async fn main() {
                         if let Some(t) = &level.track {
                             sim.set_soft_dirt(t.soft_dirt.clone());
                         }
+                        sim.set_trunks(level.trunks());
                         map = want;
                         baked = gfx.lighting.then(|| lighting::bake(&sim.terrain));
                         meshes = (0..chunks)

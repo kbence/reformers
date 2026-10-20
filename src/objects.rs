@@ -8,24 +8,66 @@
 //! is slot k − 1 of 32 slots, 32×64 pixels each, 8 per row; a sprite stands on its slot's
 //! bottom-centre pixel.
 
-use crate::{pcx, terrain::SIZE};
+use crate::{pcx, sim::Trunk, terrain::SIZE};
 
 /// Sprite slot size in OBJTEX pixels.
 pub const SLOT: [usize; 2] = [32, 64];
 /// World units per sprite pixel at size 1 (a 64 px tree is ~12 m; a car is ~210 units, 4 m).
 pub const PIXEL: f32 = 10.0;
-const CELL: f32 = 256.0;
+const CELL: i32 = 256;
+
+/// Each kind's collider at size 1 (#49), world units: trunk radius and how high it reaches
+/// above the ground, measured off the shared OBJTEX (a pine's trunk is 3 px wide, 62 px tall).
+/// 0 = none: a bush (kind 3) is soft, cars drive through it; the spare kinds 7–15 have none
+/// until they mean something.
+const TRUNKS: [[u16; 2]; 15] = [
+    [15, 620],  // pine
+    [20, 610],  // leafy tree
+    [0, 0],     // bush
+    [15, 620],  // birch
+    [15, 550],  // dead tree
+    [120, 160], // rock: wide and low, you can jump it
+    [0, 0],
+    [0, 0],
+    [0, 0],
+    [0, 0],
+    [0, 0],
+    [0, 0],
+    [0, 0],
+    [0, 0],
+    [0, 0],
+];
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Object {
     /// 1–15: the OBJTEX slot (kind − 1).
     pub kind: u8,
-    /// Where it stands, world x, y.
-    pub pos: [f32; 2],
-    /// × the sprite's size in `PIXEL`s: the variant (0 = half, 5 = 1, 15 = 2) with ±10% jitter.
-    pub scale: f32,
+    /// Where it stands, world x, y. Integers, so the sim's colliders are the same on every machine.
+    pub pos: [u16; 2],
+    /// × the sprite's size in `PIXEL`s, in 256ths: the variant (0 = half, 5 = 1, 15 = 2) with
+    /// ±10% jitter.
+    pub size: u16,
     /// Mirrored, for variety.
     pub flip: bool,
+}
+
+impl Object {
+    /// × the sprite's size in `PIXEL`s.
+    pub fn scale(&self) -> f32 {
+        self.size as f32 / 256.0
+    }
+
+    /// Its trunk in the sim, scaled with the sprite; None for kinds you drive through.
+    pub fn trunk(&self) -> Option<Trunk> {
+        let [r, h] =
+            TRUNKS[self.kind as usize - 1].map(|v| ((v as u32 * self.size as u32) >> 8) as u16);
+        (r > 0).then_some(Trunk {
+            x: self.pos[0],
+            y: self.pos[1],
+            r,
+            h,
+        })
+    }
 }
 
 /// OBJECTS.PCX's palette, so the file reads in a paint program: a colour per kind (pine dark
@@ -68,7 +110,8 @@ fn hash(x: usize, y: usize) -> u32 {
 }
 
 /// The objects an OBJECTS.PCX places, row by row. Each stands near its cell's centre: offset
-/// up to 0.3 cells, scale ±10%, maybe mirrored, all from the cell's hash.
+/// up to 0.3 cells, scale ±10%, maybe mirrored, all from the cell's hash. Integer maths: the
+/// sim collides with these positions.
 pub fn load(objects_pcx: &[u8]) -> Result<Vec<Object>, String> {
     let img = pcx::decode_image(objects_pcx)?;
     if img.width < SIZE || img.height < SIZE {
@@ -86,14 +129,15 @@ pub fn load(objects_pcx: &[u8]) -> Result<Vec<Object>, String> {
         .map(|(i, &v)| {
             let (x, y) = (i % SIZE, i / SIZE);
             let h = hash(x, y);
-            let unit = |shift: u32| ((h >> shift) & 0xff) as f32 / 255.0; // 0–1
+            let byte = |shift: u32| ((h >> shift) & 0xff) as i32;
+            // ±0.3 cells: (0–255 − 128) × 0.6 = −76..76 units
+            let at =
+                |c: usize, shift| (c as i32 * CELL + CELL / 2 + (byte(shift) - 128) * 3 / 5) as u16;
             Object {
                 kind: v >> 4,
-                pos: [
-                    (x as f32 + 0.5 + (unit(0) - 0.5) * 0.6) * CELL,
-                    (y as f32 + 0.5 + (unit(8) - 0.5) * 0.6) * CELL,
-                ],
-                scale: (0.5 + (v & 15) as f32 / 10.0) * (0.9 + unit(16) * 0.2),
+                pos: [at(x, 0), at(y, 8)],
+                // (5 + variant) / 10 × (230–281) / 256: 0.5–2, ±10%
+                size: ((5 + (v & 15) as i32) * (230 + byte(16) / 5) / 10) as u16,
                 flip: h >> 31 == 1,
             }
         })
@@ -148,11 +192,22 @@ mod tests {
         let (a, b) = (objs[0], objs[1]);
         assert_eq!((a.kind, b.kind), (1, 2));
         for (o, (x, y)) in [(a, (20.0, 10.0)), (b, (20.0, 11.0))] {
-            let (dx, dy) = (o.pos[0] / CELL - x - 0.5, o.pos[1] / CELL - y - 0.5);
+            let cell = CELL as f32;
+            let (dx, dy) = (
+                o.pos[0] as f32 / cell - x - 0.5,
+                o.pos[1] as f32 / cell - y - 0.5,
+            );
             assert!(dx.abs() <= 0.3 && dy.abs() <= 0.3, "{o:?}");
         }
-        assert!((0.9..=1.1).contains(&a.scale), "{}", a.scale);
-        assert!((1.8..=2.2).contains(&b.scale), "{}", b.scale);
+        assert!((0.89..=1.1).contains(&a.scale()), "{}", a.scale());
+        assert!((1.79..=2.2).contains(&b.scale()), "{}", b.scale());
+        let t = a.trunk().unwrap();
+        assert_eq!(
+            ([t.x, t.y], t.r),
+            (a.pos, ((15 * a.size as u32) >> 8) as u16)
+        );
+        let bush = Object { kind: 3, ..a };
+        assert_eq!(bush.trunk(), None, "bushes are soft");
         assert_ne!(a.pos, b.pos, "the jitter differs per cell");
         assert_eq!(load(&pcx(vec![0; SIZE * SIZE])).unwrap(), []);
     }

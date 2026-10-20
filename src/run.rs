@@ -122,7 +122,7 @@ pub fn tick_all(
 /// A recorded run: where and how it started, then one input byte per tick.
 #[derive(Debug, PartialEq)]
 pub struct Replay {
-    /// Map folder name, and the hash of its MAP/COL/CHECK files (it only replays on those).
+    /// Map folder name, and the hash of its MAP/COL/CHECK/OBJECTS files (it only replays on those).
     pub map: String,
     pub key: u64,
     /// Car 1–5.

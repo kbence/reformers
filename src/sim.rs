@@ -222,6 +222,16 @@ struct Particle {
     colour: u16,
 }
 
+/// A tree trunk or rock (#49): a vertical cylinder standing at world (x, y), `r` units around,
+/// reaching `h` above the ground there. Integers, so every machine collides the same.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Trunk {
+    pub x: u16,
+    pub y: u16,
+    pub r: u16,
+    pub h: u16,
+}
+
 /// Per-contact scratch that the asm keeps in DS globals.
 struct Contact {
     n: [i32; 4], // A, B, C, D = [0xe9a0], [0xe9a4], [0xe9a8], [0xe9ac]
@@ -244,6 +254,8 @@ pub struct Sim {
     /// Soft dirt (CHECK.PCX): cells that dig on every pass, down to `rut_floor`. Not in the original.
     soft_dirt: Vec<bool>,
     rut_floor: Vec<u8>,
+    /// Scenery colliders (OBJECTS.PCX). Not in the original.
+    trunks: Vec<Trunk>,
     /// Hard landings so far (vn < −6.0, where `0x4a71` calls the thud sound `0x5864`).
     pub impacts: u32,
 }
@@ -649,6 +661,7 @@ impl Sim {
             soft: vec![true; SIZE * SIZE],
             soft_dirt: vec![false; SIZE * SIZE],
             rut_floor: vec![0; SIZE * SIZE],
+            trunks: Vec::new(),
             impacts: 0,
         }
     }
@@ -670,6 +683,11 @@ impl Sim {
             .map(|h| h.saturating_sub(MAX_RUT))
             .collect();
         self.soft_dirt = cells;
+    }
+
+    /// The scenery the cars hit. Kept across `set_terrain`: it's the map's, not the ground's.
+    pub fn set_trunks(&mut self, trunks: Vec<Trunk>) {
+        self.trunks = trunks;
     }
 
     /// Live dirt particle positions in world units.
@@ -696,6 +714,7 @@ impl Sim {
             car.drive();
             self.springs(i);
             self.atoms(i);
+            self.hit_trunks(i);
         }
         self.collide_cars();
         self.step_particles();
@@ -920,6 +939,75 @@ impl Sim {
             self.body_friction(ci, i, &c, tx, ty);
         } else {
             self.wheel_friction(ci, i, &c, tx, ty);
+        }
+    }
+
+    /// Trunks (not in the original). A thin trunk would slip between the car's mass points, so
+    /// it hits the car's frame: each unbroken spring is a segment, and where one passes within
+    /// reach of a trunk, its two atoms are pushed out along the horizontal normal (split by how
+    /// near each is) and lose their inward velocity, bouncing back a quarter like `contact`.
+    /// The sudden stop bends the springs: the same damage as hitting the ground.
+    fn hit_trunks(&mut self, ci: usize) {
+        // ponytail: every trunk per car per tick (~2000 on a forest map, most rejected on the
+        // first line); a per-cell grid if maps get denser
+        for ti in 0..self.trunks.len() {
+            let t = self.trunks[ti];
+            let c = [(t.x as i32) << 16, (t.y as i32) << 16];
+            let p0 = self.cars[ci].atoms[0].pos;
+            // near enough to touch: the car's far corner plus the widest rock
+            if (0..2).any(|k| (p0[k].wrapping_sub(c[k]) >> 16).abs() > 0x300) {
+                continue;
+            }
+            let top = height(&self.terrain, t.x, t.y).0 as i64 + t.h as i64;
+            for si in 0..self.cars[ci].springs.len() {
+                let s = self.cars[ci].springs[si];
+                if s.kind & 0x80 != 0 {
+                    continue;
+                }
+                let car = &self.cars[ci];
+                let (a, b) = (car.atoms[s.a], car.atoms[s.b]);
+                // 16.16 relative to the trunk's axis
+                let rel = |p: [i32; 3]| [0, 1].map(|k| p[k].wrapping_sub(c[k]) as i64);
+                let (pa, pb) = (rel(a.pos), rel(b.pos));
+                let ab = [pb[0] - pa[0], pb[1] - pa[1]];
+                let l2 = ab[0] as i128 * ab[0] as i128 + ab[1] as i128 * ab[1] as i128;
+                let along = -(pa[0] as i128 * ab[0] as i128 + pa[1] as i128 * ab[1] as i128);
+                // the closest point, f (0–0x10000) of the way from a to b
+                let f = if l2 == 0 {
+                    0
+                } else {
+                    ((along << 16) / l2).clamp(0, 0x10000) as i64
+                };
+                let lerp = |u: i64, v: i64| u + (((v - u) * f) >> 16);
+                let q = [lerp(pa[0], pb[0]), lerp(pa[1], pb[1])];
+                let radius = lerp(a.radius as i64, b.radius as i64);
+                let reach = (t.r as i64 + radius) << 16;
+                let d2 = q[0] * q[0] + q[1] * q[1];
+                let z = lerp(a.pos[2] as i64, b.pos[2] as i64) >> 16;
+                if q.iter().any(|v| v.abs() >= reach) || d2 >= reach * reach || z - radius > top {
+                    continue;
+                }
+                // dead centre: out along +x
+                let (dist, q) = match d2.isqrt() {
+                    0 => (1, [1, 0]),
+                    n => (n, q),
+                };
+                let n = q.map(|v| v * 0x10000 / dist); // unit normal, 16.16
+                let pen = reach - dist;
+                for (i, w) in [(s.a, 0x10000 - f), (s.b, f)] {
+                    let at = &mut self.cars[ci].atoms[i];
+                    let vn = (at.vel[0] as i64 * n[0] + at.vel[1] as i64 * n[1]) >> 16;
+                    if (vn * w) >> 16 <= -0x6_0000 {
+                        self.impacts += 1;
+                    }
+                    let e = ((vn.min(0) + (vn.min(0) >> 2)) * w) >> 16;
+                    let push = (pen * w) >> 16;
+                    for k in 0..2 {
+                        at.pos[k] = at.pos[k].wrapping_add(((n[k] * push) >> 16) as i32);
+                        at.vel[k] = at.vel[k].wrapping_sub(((n[k] * e) >> 16) as i32);
+                    }
+                }
+            }
         }
     }
 
@@ -1280,6 +1368,46 @@ mod tests {
         assert_eq!(
             SimCar::spawn(&car, &s.terrain, 0x8000, 0x9000).damage(),
             0.0
+        );
+    }
+
+    /// A car driven at a tree stops at it, dented; one driven past runs as if it weren't there.
+    #[test]
+    fn trees_stop_cars() {
+        crate::need_assets!();
+        let car = crate::car::parse(&crate::assets::read("CAR1.DAT").unwrap()).unwrap();
+        let drive = |trunks: Vec<Trunk>| {
+            let mut s = Sim::new(flat());
+            s.set_trunks(trunks);
+            s.cars.push(SimCar::spawn(&car, &s.terrain, 0x8000, 0x8000)); // facing −y
+            let gas = Keys {
+                throttle: true,
+                ..Keys::default()
+            };
+            for _ in 0..TICK_HZ * 10 {
+                s.tick(&[gas]);
+            }
+            (s.cars[0].atom_positions(), s.cars[0].damage())
+        };
+        let tree = |x| Trunk {
+            x,
+            y: 0x7600,
+            r: 20,
+            h: 600,
+        };
+        let open = drive(vec![]);
+        assert!(
+            open.0.iter().all(|p| p[1] < 0x7400 as f32),
+            "unhindered, the car gets well past the tree's row"
+        );
+        let (hit, damage) = drive(vec![tree(0x7fb0)]); // where it crosses the tree's row
+        let y = hit.iter().map(|p| p[1]).sum::<f32>() / hit.len() as f32;
+        assert!(y > 0x7600 as f32, "stopped at the tree: centre y {y}");
+        assert!(damage > 0.0, "and dented");
+        assert_eq!(
+            drive(vec![tree(0x8400)]),
+            open,
+            "four cells aside: untouched"
         );
     }
 
