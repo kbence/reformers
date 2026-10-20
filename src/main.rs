@@ -360,6 +360,35 @@ fn poll_pad(_: &mut Option<()>, _: &mut Option<()>) -> (Vec<KeyCode>, Vec<KeyCod
 
 /// Camera for following car `i`: (position, look-at, up). Updates that player's spring-arm
 /// chase position `cam` and arm share `arm` (see the chase case).
+/// One car in the race (#54): `players[i]` drives `sim.cars[i]`. Player 1 is this machine's
+/// (offline) or the host's; split screen adds player 2 on WASD; online, one per machine.
+struct Player {
+    car: usize,
+    race: Race,
+    /// Wheel spin, for drawing the wheels.
+    roll: [f32; 4],
+    /// The chase camera, and the share of its arm that's clear of the ground.
+    cam: Vec3,
+    arm: f32,
+    /// R / F pressed, acting on the next tick (so a replay reproduces them exactly).
+    reset: bool,
+    repair: bool,
+}
+
+impl Player {
+    fn new(car: usize, race: Race, cam: Vec3) -> Player {
+        Player {
+            car,
+            race,
+            roll: [0.0; 4],
+            cam,
+            arm: 1.0,
+            reset: false,
+            repair: false,
+        }
+    }
+}
+
 fn follow_camera(
     sim: &Sim,
     i: usize,
@@ -1909,7 +1938,7 @@ fn draw_minimap(
     track: Option<&Track>,
     next: usize,
     car: &SimCar,
-    others: &[SimCar],
+    others: &[&SimCar],
     ghost: Option<[f32; 2]>,
     top: f32,
 ) {
@@ -2243,7 +2272,6 @@ async fn main() {
         .unwrap_or(1)
         .clamp(1, CARS)
         - 1;
-    let mut roll = [0.0f32; 4];
     let mut wireframe = false;
     let mut speed = 0.0f32;
     sim.dig_everywhere = args.iter().any(|a| a == "--soft");
@@ -2273,8 +2301,12 @@ async fn main() {
         spawn.1,
         spawn_heading,
     ));
-    let mut race = Race::new(best_key(&level, current).and_then(|k| load_best(&k)));
-    let mut ghost = load_ghost(&level, current);
+    let mut players = vec![Player::new(
+        current,
+        Race::new(best_key(&level, current).and_then(|k| load_best(&k))),
+        v(sim.cars[0].centre()) + vec3(0.0, 2.0, 4.0),
+    )];
+    let mut ghost = load_ghost(&level, players[0].car);
     let mut recording = Ghost::default(); // this lap so far
     let mut ticks = 0u64;
     // this run's inputs since the car was placed (a replay), and the replay being played back
@@ -2289,11 +2321,16 @@ async fn main() {
             inputs: vec![],
         }
     };
-    let mut recording_run = new_run(&map, &level, current, sim.dig_everywhere, &sim.cars[0]);
+    let mut recording_run = new_run(
+        &map,
+        &level,
+        players[0].car,
+        sim.dig_everywhere,
+        &sim.cars[0],
+    );
     recording_run.start = [spawn.0, spawn.1, spawn_heading]; // exactly where it was placed
     let mut playing = replay.map(|r| (r, 0usize));
     let mut pristine = sim.terrain.clone(); // the map as loaded, for starting new runs on it
-    let (mut pending_r, mut pending_f) = (false, false);
     let mut banner: Option<(String, f64)> = None; // message, shown until
     let mut last_centre = sim.cars[0].centre();
 
@@ -2349,7 +2386,7 @@ async fn main() {
     };
     gfx.apply_text(&saved);
     gfx.map = map.clone(); // pick_map already weighed --map and the saved one
-    gfx.car = current; // so did --car (and a replay picks its own)
+    gfx.car = players[0].car; // so did --car (and a replay picks its own)
     // launch flags win over the saved settings
     gfx.nearest &= !flag("--smooth");
     gfx.textured &= !flag("--untextured");
@@ -2431,7 +2468,7 @@ async fn main() {
             format!("{addr}:{}", net::PORT)
         };
         match addr.to_socket_addrs().ok().and_then(|mut a| a.next()) {
-            Some(a) => match net::Joiner::new(a, current as u8, &gfx.skin) {
+            Some(a) => match net::Joiner::new(a, players[0].car as u8, &gfx.skin) {
                 Ok(j) => lobby = Lobby::Joining(j),
                 Err(e) => banner = Some((format!("can't join: {e}"), get_time() + 5.0)),
             },
@@ -2451,14 +2488,6 @@ async fn main() {
     );
     let mut shown = sim.terrain.height.clone();
     let mut original = shown.clone();
-    let mut cam_pos = v(sim.cars[0].centre()) + vec3(0.0, 2.0, 4.0);
-    let mut arm = 1.0f32; // share of the full chase-camera arm that's clear of the ground
-    // player 2 (split screen): car, time trial, wheel roll, camera, R / F
-    let mut car2 = gfx.car2;
-    let mut race2 = Race::new(None);
-    let mut roll2 = [0.0f32; 4];
-    let (mut cam2, mut arm2) = (cam_pos, 1.0f32);
-    let (mut pending_r2, mut pending_f2) = (false, false);
     let mut acc = 0.0;
     let shot = args
         .iter()
@@ -2499,7 +2528,7 @@ async fn main() {
                 map: map.clone(),
                 map_hash: level.hash,
                 soft: sim.dig_everywhere,
-                cars: [current as u8, car.min(CARS as u8 - 1)],
+                cars: [players[0].car as u8, car.min(CARS as u8 - 1)],
                 skins: [gfx.skin.clone(), skin],
                 spawns: [[sx, sy, sh], [bx, by, sh]],
             };
@@ -2561,36 +2590,52 @@ async fn main() {
                                 .as_ref()
                                 .and_then(|t| t.spawn.as_ref())
                                 .map_or((SPAWN, 0), |s| ((s.x, s.y), s.heading));
-                            sim.cars[0] =
-                                SimCar::spawn_facing(&cars[current].0, &sim.terrain, sx, sy, h);
-                            roll = [0.0; 4];
+                            sim.cars[0] = SimCar::spawn_facing(
+                                &cars[players[0].car].0,
+                                &sim.terrain,
+                                sx,
+                                sy,
+                                h,
+                            );
+                            players[0].roll = [0.0; 4];
                             if sim.cars.len() > 1 {
                                 let (bx, by) = beside((sx, sy), h);
-                                sim.cars[1] =
-                                    SimCar::spawn_facing(&cars[car2].0, &sim.terrain, bx, by, h);
-                                roll2 = [0.0; 4];
+                                sim.cars[1] = SimCar::spawn_facing(
+                                    &cars[players[1].car].0,
+                                    &sim.terrain,
+                                    bx,
+                                    by,
+                                    h,
+                                );
+                                players[1].roll = [0.0; 4];
                             }
                         } else if z < sim.terrain.height_at(x, y) {
                             let h = sim.cars[0].heading();
                             sim.cars[0] = SimCar::spawn_facing(
-                                &cars[current].0,
+                                &cars[players[0].car].0,
                                 &sim.terrain,
                                 x as u16,
                                 y as u16,
                                 h,
                             );
-                            roll = [0.0; 4];
+                            players[0].roll = [0.0; 4];
                         }
-                        // a changed map is a different track: new time trial, its own best lap
-                        race = Race::new(best_key(&level, current).and_then(|k| load_best(&k)));
-                        race2 = Race::new(best_key(&level, car2).and_then(|k| load_best(&k)));
-                        ghost = load_ghost(&level, current);
+                        // a changed map is a different track: new time trials, their own best laps
+                        for p in players.iter_mut() {
+                            p.race = Race::new(best_key(&level, p.car).and_then(|k| load_best(&k)));
+                        }
+                        ghost = load_ghost(&level, players[0].car);
                         recording = Ghost::default();
                         // a changed map starts a new run (a replay only re-drives the map it came from)
                         pristine = sim.terrain.clone();
                         playing = None;
-                        recording_run =
-                            new_run(&map, &level, current, sim.dig_everywhere, &sim.cars[0]);
+                        recording_run = new_run(
+                            &map,
+                            &level,
+                            players[0].car,
+                            sim.dig_everywhere,
+                            &sim.cars[0],
+                        );
                         let msg = if switched {
                             format!("map: {map}")
                         } else {
@@ -2614,16 +2659,19 @@ async fn main() {
             } else {
                 // the same start on both machines: cars, places, time trials, tick 0
                 sim.dig_everywhere = start.soft;
-                (current, car2) = (start.cars[0] as usize, start.cars[1] as usize);
-                sim.cars = (0..2)
-                    .map(|i| {
-                        let [x, y, h] = start.spawns[i];
-                        SimCar::spawn_facing(&cars[[current, car2][i]].0, &sim.terrain, x, y, h)
+                let cam = players[0].cam;
+                players = start
+                    .cars
+                    .iter()
+                    .map(|&c| Player::new(c as usize, Race::new(None), cam))
+                    .collect();
+                sim.cars = players
+                    .iter()
+                    .zip(start.spawns)
+                    .map(|(p, [x, y, h])| {
+                        SimCar::spawn_facing(&cars[p.car].0, &sim.terrain, x, y, h)
                     })
                     .collect();
-                (race, race2) = (Race::new(None), Race::new(None));
-                (roll, roll2) = ([0.0; 4], [0.0; 4]);
-                (pending_r, pending_f, pending_r2, pending_f2) = (false, false, false, false);
                 (ticks, acc) = (0, 0.0);
                 playing = None;
                 recording = Ghost::default();
@@ -2647,16 +2695,20 @@ async fn main() {
             // back to driving alone, in our own car where it stands
             if let Some((link, _)) = online.take() {
                 link.bye();
-                if link.me == 1 {
-                    sim.cars.swap(0, 1);
-                    std::mem::swap(&mut race, &mut race2);
-                    std::mem::swap(&mut roll, &mut roll2);
-                    std::mem::swap(&mut current, &mut car2);
-                }
+                // ours becomes player 1
+                sim.cars.swap(0, link.me);
+                players.swap(0, link.me);
                 sim.cars.truncate(1);
+                players.truncate(1);
                 gfx.players = 1;
-                (gfx.car, car2) = (current, gfx.car2);
-                recording_run = new_run(&map, &level, current, sim.dig_everywhere, &sim.cars[0]);
+                gfx.car = players[0].car;
+                recording_run = new_run(
+                    &map,
+                    &level,
+                    players[0].car,
+                    sim.dig_everywhere,
+                    &sim.cars[0],
+                );
             }
             banner = Some((why, get_time() + 5.0));
         }
@@ -2748,7 +2800,7 @@ async fn main() {
                             .and_then(|mut a| a.next())
                             .ok_or(format!("no such address: {addr}"))
                             .and_then(|a| {
-                                net::Joiner::new(a, current as u8, &gfx.skin)
+                                net::Joiner::new(a, players[0].car as u8, &gfx.skin)
                                     .map_err(|e| e.to_string())
                             });
                         match joiner {
@@ -2803,8 +2855,8 @@ async fn main() {
         colour_tex.set_filter(filter);
         // each car's skin: the players' choices, or online the ones the race started with
         let skin_files = match &online {
-            Some((_, s)) => s.skins.clone(),
-            None => [gfx.skin.clone(), gfx.skin2.clone()],
+            Some((_, s)) => s.skins.to_vec(),
+            None => vec![gfx.skin.clone(), gfx.skin2.clone()],
         };
         skin_files
             .iter()
@@ -2837,11 +2889,11 @@ async fn main() {
             ]
             .iter()
             .position(|&k| pressed(k))
-            .or((gfx.car != current).then_some(gfx.car))
+            .or((gfx.car != players[0].car).then_some(gfx.car))
         };
         if let Some(n) = pick {
             // a new car is a new run: on the map as loaded, its own time trial and best lap
-            current = n;
+            players[0].car = n;
             if gfx.car != n {
                 gfx.car = n;
                 save_settings(&gfx);
@@ -2856,51 +2908,72 @@ async fn main() {
                 }
             }
             sim.cars[0] =
-                SimCar::spawn_facing(&cars[current].0, &sim.terrain, x as u16, y as u16, h);
-            recording_run = new_run(&map, &level, current, sim.dig_everywhere, &sim.cars[0]);
-            race = Race::new(best_key(&level, current).and_then(|k| load_best(&k)));
-            ghost = load_ghost(&level, current);
+                SimCar::spawn_facing(&cars[players[0].car].0, &sim.terrain, x as u16, y as u16, h);
+            recording_run = new_run(
+                &map,
+                &level,
+                players[0].car,
+                sim.dig_everywhere,
+                &sim.cars[0],
+            );
+            players[0].race =
+                Race::new(best_key(&level, players[0].car).and_then(|k| load_best(&k)));
+            ghost = load_ghost(&level, players[0].car);
             recording = Ghost::default();
-            roll = [0.0; 4];
+            players[0].roll = [0.0; 4];
         }
+        // the car this machine drives: online the joiner's is car 1
+        let me = online.as_ref().map_or(0, |(l, _)| l.me);
         // R and F act on the next tick, so a replay reproduces them exactly
         if !menu_open && playing.is_none() {
-            pending_r |= pressed(KeyCode::R);
-            pending_f |= pressed(KeyCode::F);
+            players[me].reset |= pressed(KeyCode::R);
+            players[me].repair |= pressed(KeyCode::F);
         }
         if gfx.players != sim.cars.len() && online.is_none() {
             // player 2 joins beside player 1 (or leaves); either way a new run starts
             if gfx.players == 2 {
-                car2 = gfx.car2;
                 let [x, y, _] = sim.cars[0].centre();
                 let h = sim.cars[0].heading();
                 let (bx, by) = beside((x as u16, y as u16), h);
-                sim.cars
-                    .push(SimCar::spawn_facing(&cars[car2].0, &sim.terrain, bx, by, h));
-                race2 = Race::new(best_key(&level, car2).and_then(|k| load_best(&k)));
-                (roll2, cam2, arm2) = ([0.0; 4], cam_pos, 1.0);
+                sim.cars.push(SimCar::spawn_facing(
+                    &cars[gfx.car2].0,
+                    &sim.terrain,
+                    bx,
+                    by,
+                    h,
+                ));
+                let best = best_key(&level, gfx.car2).and_then(|k| load_best(&k));
+                players.push(Player::new(gfx.car2, Race::new(best), players[0].cam));
                 banner = Some((
                     "player 2: WASD, Shift brake, Tab back on wheels, G repair".into(),
                     get_time() + 4.0,
                 ));
             } else {
                 sim.cars.truncate(1);
+                players.truncate(1);
             }
             playing = None;
-            recording_run = new_run(&map, &level, current, sim.dig_everywhere, &sim.cars[0]);
+            recording_run = new_run(
+                &map,
+                &level,
+                players[0].car,
+                sim.dig_everywhere,
+                &sim.cars[0],
+            );
         }
-        if gfx.players == 2 && !menu_open && gfx.car2 != car2 && online.is_none() {
+        if players.len() == 2 && !menu_open && gfx.car2 != players[1].car && online.is_none() {
             // player 2's new car, where the old one stands
-            car2 = gfx.car2;
             let [x, y, _] = sim.cars[1].centre();
             let h = sim.cars[1].heading();
-            sim.cars[1] = SimCar::spawn_facing(&cars[car2].0, &sim.terrain, x as u16, y as u16, h);
-            race2 = Race::new(best_key(&level, car2).and_then(|k| load_best(&k)));
-            roll2 = [0.0; 4];
+            sim.cars[1] =
+                SimCar::spawn_facing(&cars[gfx.car2].0, &sim.terrain, x as u16, y as u16, h);
+            let best = best_key(&level, gfx.car2).and_then(|k| load_best(&k));
+            let cam = players[1].cam;
+            players[1] = Player::new(gfx.car2, Race::new(best), cam);
         }
-        if gfx.players == 2 && !menu_open && online.is_none() {
-            pending_r2 |= pressed(KeyCode::Tab);
-            pending_f2 |= pressed(KeyCode::G);
+        if players.len() == 2 && !menu_open && online.is_none() {
+            players[1].reset |= pressed(KeyCode::Tab);
+            players[1].repair |= pressed(KeyCode::G);
         }
         // replays are single-player: player 2's inputs aren't in the run
         if !menu_open && pressed(KeyCode::P) && sim.cars.len() == 1 && online.is_none() {
@@ -2913,8 +2986,8 @@ async fn main() {
             ));
         }
         let (model, skin) = (
-            &cars[current].0,
-            skin_of(&skins, &cars, current, &skin_files[0]),
+            &cars[players[0].car].0,
+            skin_of(&skins, &cars, players[0].car, &skin_files[0]),
         );
         let keys = Keys {
             throttle: down(KeyCode::Up) || shot.is_some(),
@@ -2940,8 +3013,9 @@ async fn main() {
                 Some((link, _)) => {
                     if link.local_ticks() <= ticks as usize + net::DELAY {
                         let k = if menu_open { Keys::default() } else { keys };
-                        link.push_local(run::input(k, pending_r, pending_f));
-                        (pending_r, pending_f) = (false, false);
+                        let p = &mut players[link.me];
+                        link.push_local(run::input(k, p.reset, p.repair));
+                        (p.reset, p.repair) = (false, false);
                     }
                     match link.inputs(ticks as usize) {
                         Some(i) => Some(i),
@@ -2961,139 +3035,126 @@ async fn main() {
                     *i += 1;
                     r.inputs[*i - 1]
                 }
-                (None, None) => run::input(keys, pending_r, pending_f),
+                (None, None) => run::input(keys, players[0].reset, players[0].repair),
             };
             if playing.as_ref().is_some_and(|(r, i)| *i >= r.inputs.len()) {
                 playing = None;
                 banner = Some(("replay over: you're driving".into(), get_time() + 3.0));
             }
+            // every car's input: player 1's above; the others' from the link online, else player 2
+            // on WASD (online, R / F wait for the next input sent, which may be a tick or two away)
+            let mut inputs = vec![byte];
+            for (i, p) in players.iter_mut().enumerate().skip(1) {
+                inputs.push(match net_inputs {
+                    Some(n) => n[i],
+                    None => run::input(keys2, p.reset, p.repair),
+                });
+            }
             if online.is_none() {
-                // online they wait for the next input sent, which may be a tick or two away
-                (pending_r, pending_f) = (false, false);
+                for p in players.iter_mut() {
+                    (p.reset, p.repair) = (false, false);
+                }
                 recording_run.inputs.push(byte);
             }
-            let mut inputs = vec![byte];
-            let mut races = vec![std::mem::replace(&mut race, Race::new(None))];
-            if sim.cars.len() > 1 {
-                inputs.push(match net_inputs {
-                    Some(i) => i[1],
-                    None => run::input(keys2, pending_r2, pending_f2),
-                });
-                races.push(std::mem::replace(&mut race2, Race::new(None)));
-            }
-            (pending_r2, pending_f2) = (false, false);
-            let models = [&cars[current].0, &cars[car2].0];
-            let mut outs = run::tick_all(
+            let mut races: Vec<Race> = players
+                .iter_mut()
+                .map(|p| std::mem::replace(&mut p.race, Race::new(None)))
+                .collect();
+            let models: Vec<&Car> = players.iter().map(|p| &cars[p.car].0).collect();
+            let outs = run::tick_all(
                 &mut sim,
-                &models[..inputs.len()],
+                &models,
                 level.track.as_ref(),
                 &mut races,
                 &inputs,
                 ticks,
             );
-            if races.len() > 1 {
-                race2 = races.pop().unwrap();
-            }
-            race = races.pop().unwrap();
-            let out2 = (outs.len() > 1).then(|| outs.pop().unwrap());
-            let out = outs.pop().unwrap();
-            if let Some(o) = out2 {
-                if o.respawned {
-                    roll2 = [0.0; 4];
-                }
-                if let (Some(t), Some(ev)) = (&level.track, &o.event) {
-                    if let Some(a) = &audio {
-                        a.chime(&o.event, gfx.volume as f32 / 10.0);
-                    }
-                    let msg = match ev {
-                        Event::Start => "P2: GO!".to_string(),
-                        Event::Gate(g) => format!("P2: checkpoint {g}/{}", t.gates.len() - 1),
-                        Event::Lap { time, best } => {
-                            if *best
-                                && online.is_none()
-                                && let (Some(k), Some(b)) = (best_key(&level, car2), &race2.best)
-                            {
-                                save_best(&k, b);
-                            }
-                            format!(
-                                "P2: lap {}{}",
-                                format_time(*time),
-                                if *best { "   best!" } else { "" }
-                            )
-                        }
-                    };
-                    banner = Some((msg, get_time() + 2.5));
-                }
-                let spin = sim.cars[1].spin();
-                for i in 0..4 {
-                    roll2[i] += spin[i] as f32 / 65536.0 / cars[car2].0.atoms[i].radius;
-                }
-            }
-            if out.respawned {
-                roll = [0.0; 4];
+            for (p, r) in players.iter_mut().zip(races) {
+                p.race = r;
             }
             if byte & run::REPAIR != 0 {
                 banner = Some(("repaired".into(), get_time() + 1.0));
             }
-            if let Some(t) = &level.track {
-                let n = t.gates.len();
-                let ev = out.event;
-                if let Some(a) = &audio {
-                    a.chime(&ev, gfx.volume as f32 / 10.0);
+            // each car's wheels and time trial; player 1 also keeps the ghost and best-lap replay.
+            // Banners for this machine's player go plain, the others' with "P2: " etc; the
+            // others first, so ours wins a tie
+            let solo = players.len() == 1;
+            for (i, o) in outs.iter().enumerate().rev() {
+                let p = &mut players[i];
+                if o.respawned {
+                    p.roll = [0.0; 4];
                 }
-                let msg = match ev {
-                    Some(Event::Start) => {
-                        recording = Ghost::default();
-                        Some("GO!".to_string())
+                let spin = sim.cars[i].spin();
+                for w in 0..4 {
+                    // spin is rim travel per tick (16.16 world units)
+                    p.roll[w] += spin[w] as f32 / 65536.0 / cars[p.car].0.atoms[w].radius;
+                }
+                let (Some(t), Some(ev)) = (&level.track, &o.event) else {
+                    continue;
+                };
+                if let Some(a) = &audio {
+                    a.chime(&o.event, gfx.volume as f32 / 10.0);
+                }
+                let who = if i == me {
+                    String::new()
+                } else {
+                    format!("P{}: ", i + 1)
+                };
+                let n = t.gates.len();
+                let msg = match *ev {
+                    Event::Start => {
+                        if i == 0 {
+                            recording = Ghost::default();
+                        }
+                        format!("{who}GO!")
                     }
-                    Some(Event::Gate(g)) => Some(match race.split_delta() {
+                    Event::Gate(g) => match p.race.split_delta() {
                         Some(d) => format!(
-                            "checkpoint {g}/{}   {}{}",
+                            "{who}checkpoint {g}/{}   {}{}",
                             n - 1,
                             if d < 0 { "-" } else { "+" },
                             format_time(d.unsigned_abs())
                         ),
-                        None => format!("checkpoint {g}/{}", n - 1),
-                    }),
-                    Some(Event::Lap { time, best }) => {
-                        let lap = std::mem::take(&mut recording);
+                        None => format!("{who}checkpoint {g}/{}", n - 1),
+                    },
+                    Event::Lap { time, best } => {
+                        let lap = if i == 0 {
+                            std::mem::take(&mut recording)
+                        } else {
+                            Ghost::default()
+                        };
                         if best
                             && online.is_none()
-                            && let (Some(k), Some(b)) = (best_key(&level, current), &race.best)
+                            && let (Some(k), Some(b)) = (best_key(&level, p.car), &p.race.best)
                         {
                             save_best(&k, b);
-                            save_ghost(&k, &lap);
-                            if sim.cars.len() == 1 {
-                                save_replay(&format!("replay-{k}.rfr"), &recording_run);
+                            if i == 0 {
+                                save_ghost(&k, &lap);
+                                if solo {
+                                    save_replay(&format!("replay-{k}.rfr"), &recording_run);
+                                }
+                                ghost = lap;
                             }
-                            ghost = lap;
                         }
-                        Some(format!(
-                            "lap {}{}",
+                        format!(
+                            "{who}lap {}{}",
                             format_time(time),
                             if best { "   best!" } else { "" }
-                        ))
+                        )
                     }
-                    None => None,
                 };
-                if let Some(m) = msg {
-                    banner = Some((m, get_time() + 2.5));
-                }
-            }
-            let spin = sim.cars[0].spin();
-            for i in 0..4 {
-                // spin is rim travel per tick (16.16 world units)
-                roll[i] += spin[i] as f32 / 65536.0 / model.atoms[i].radius;
+                banner = Some((msg, get_time() + 2.5));
             }
             if let Some((link, _)) = &mut online {
                 link.ran(ticks, || sim.state_hash());
             }
+            let race = &players[0].race;
             if race.started && race.lap_time(ticks).is_multiple_of(ghost::STEP) && online.is_none()
             {
                 recording.frames.push(Frame {
                     atoms: sim.cars[0].atom_positions(),
                     steer: sim.cars[0].steer_angle(),
-                    roll,
+                    roll: players[0].roll,
                 });
             }
         }
@@ -3247,13 +3308,10 @@ async fn main() {
         };
         let split = views.len() > 1;
         for (slot, &view) in views.iter().enumerate() {
-            let (cam, arm_v) = if slot == 0 {
-                (&mut cam_pos, &mut arm)
-            } else {
-                (&mut cam2, &mut arm2)
+            let (position, look_at, up) = {
+                let p = &mut players[view];
+                follow_camera(&sim, view, gfx.camera, orbit, &mut p.cam, &mut p.arm, dt)
             };
-            let (position, look_at, up) =
-                follow_camera(&sim, view, gfx.camera, orbit, cam, arm_v, dt);
             let w = if split { fw / 2.0 } else { fw };
             set_camera(&Camera3D {
                 position,
@@ -3282,11 +3340,9 @@ async fn main() {
             for (ci, c) in sim.cars.iter().enumerate() {
                 // bumper camera sits inside the viewer's body: don't draw it
                 let own = if gfx.camera == 1 && ci == view { 0 } else { 3 };
-                let (m, sk) = if ci == 0 {
-                    (model, skin)
-                } else {
-                    (&cars[car2].0, skin_of(&skins, &cars, car2, &skin_files[1]))
-                };
+                let car = players[ci].car;
+                let file = &skin_files[ci.min(skin_files.len() - 1)];
+                let (m, sk) = (&cars[car].0, skin_of(&skins, &cars, car, file));
                 for mesh in car_meshes(
                     m,
                     &c.atom_positions(),
@@ -3307,8 +3363,8 @@ async fn main() {
             // the best lap's ghost, in step with the lap timer
             if gfx.ghost
                 && view == 0
-                && race.started
-                && let Some(f) = ghost.at(race.lap_time(ticks))
+                && players[0].race.started
+                && let Some(f) = ghost.at(players[0].race.lap_time(ticks))
             {
                 for mut m in car_meshes(
                     model,
@@ -3352,7 +3408,7 @@ async fn main() {
             // next (a CHECK.PCX may have only a spawn, or zones: no gates, nothing to point at)
             if let Some(t) = level.track.as_ref().filter(|t| !t.gates.is_empty()) {
                 // the bright next gate first: translucent ones after it, so they don't hide it
-                let next = if view == 0 { race.next } else { race2.next };
+                let next = players[view].race.next;
                 let order = std::iter::once(next).chain((0..t.gates.len()).filter(|&g| g != next));
                 for g in order {
                     for piece in &t.gates[g] {
@@ -3412,13 +3468,13 @@ async fn main() {
             .filter(|(a, b)| a != b)
             .count();
         let help = match (&online, sim.cars.len()) {
-            (Some(_), _) => ["online  P1", "online  P2"][me],
-            (None, 1) => "esc: menu (controls are listed there)   |  ",
-            _ => "P1",
+            (Some(_), _) => format!("online  P{}", me + 1),
+            (None, 1) => "esc: menu (controls are listed there)   |  ".into(),
+            _ => "P1".into(),
         };
         let hud = format!(
             "{help} car {}  {:3.0} km/h   damage {:2.0}%   ruts {dents}{}",
-            [current, car2][me] + 1,
+            players[me].car + 1,
             speed * 0.019 * 3.6, // ~210 world units per 4 m car
             sim.cars[me].damage() * 100.0,
             if sim.dig_everywhere {
@@ -3459,28 +3515,30 @@ async fn main() {
                     )
                 }
             };
-            if sim.cars.len() > 1 {
-                let at = |i: usize| {
-                    let [x, y, _] = sim.cars[i].centre();
-                    [x, y]
-                };
-                let p1_ahead = race.progress(t, at(0)) >= race2.progress(t, at(1));
-                let place = |first: bool| if first { "1st  " } else { "2nd  " };
+            if players.len() > 1 {
+                // placings: further round the track first, the lower number on a tie
+                let progress: Vec<f32> = (0..players.len())
+                    .map(|i| {
+                        let [x, y, _] = sim.cars[i].centre();
+                        players[i].race.progress(t, [x, y])
+                    })
+                    .collect();
                 let size = if screen_width() < 1400.0 { 20.0 } else { 26.0 };
-                text_px(
-                    line(&race, &format!("P1 {}", place(p1_ahead))),
-                    12.0,
-                    52.0,
-                    size,
-                    YELLOW,
-                );
-                text_px(
-                    line(&race2, &format!("P2 {}", place(!p1_ahead))),
-                    screen_width() / 2.0 + 12.0,
-                    52.0,
-                    size,
-                    SKYBLUE,
-                );
+                let column = screen_width() / players.len() as f32;
+                for (i, p) in players.iter().enumerate() {
+                    let ahead = (0..players.len())
+                        .filter(|&j| {
+                            progress[j] > progress[i] || (progress[j] == progress[i] && j < i)
+                        })
+                        .count();
+                    let place = ["1st", "2nd", "3rd", "4th"]
+                        .get(ahead)
+                        .copied()
+                        .unwrap_or("");
+                    let colour = [YELLOW, SKYBLUE, PINK, LIME][i % 4];
+                    let text = line(&p.race, &format!("P{} {place}  ", i + 1));
+                    text_px(text, i as f32 * column + 12.0, 52.0, size, colour);
+                }
                 if split {
                     draw_line(
                         screen_width() / 2.0,
@@ -3492,7 +3550,7 @@ async fn main() {
                     );
                 }
             } else {
-                text_px(line(&race, ""), 12.0, 52.0, 30.0, YELLOW);
+                text_px(line(&players[0].race, ""), 12.0, 52.0, 30.0, YELLOW);
             }
         }
         if let Some((r, i)) = &playing {
@@ -3512,6 +3570,7 @@ async fn main() {
         }
         if gfx.minimap && !menu_open {
             // ghost dot: midpoint of the axle atoms 4 and 6, like `SimCar::centre`
+            let race = &players[0].race;
             let ghost_at = (gfx.ghost && race.started)
                 .then(|| ghost.at(race.lap_time(ticks)))
                 .flatten()
@@ -3521,18 +3580,17 @@ async fn main() {
                         (f.atoms[4][1] + f.atoms[6][1]) / 2.0,
                     ]
                 });
-            let others = if me == 0 {
-                &sim.cars[1..]
-            } else {
-                &sim.cars[..1]
-            };
+            let others: Vec<&SimCar> = (sim.cars.iter().enumerate())
+                .filter(|&(i, _)| i != me)
+                .map(|(_, c)| c)
+                .collect();
             draw_minimap(
                 &colour_tex,
                 &level.zone_cells,
                 level.track.as_ref(),
-                [race.next, race2.next][me],
+                players[me].race.next,
                 &sim.cars[me],
-                others,
+                &others,
                 ghost_at,
                 band,
             );
