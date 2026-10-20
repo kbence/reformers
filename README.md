@@ -136,7 +136,8 @@ are MIT-licensed, see `LICENSE`.
 ## Map editor
 
 `cargo run --release --bin editor -- MAP` (or `editor MAP` from a release) edits a whole map:
-heights, colours, checkpoints and textures, one tab each (F1–F4). The layer's tools are on the left (1–8),
+heights, colours, checkpoints, textures, objects and their sprites, one tab each (F1–F4,
+F6, F7; Tab cycles). The layer's tools are on the left (1–8),
 the tool's settings on the right, the cell under the mouse at the bottom.
 
 - **Heights:** brush (circle or square, size, hard / smooth / feathered edge; set to a target
@@ -154,6 +155,12 @@ the tool's settings on the right, the cell under the mouse at the bottom.
   fill, pick; strokes wrap at the tile's edges so patterns line up from cell to cell. Noise
   makes a tile from a colour's neighbouring shades; tiles copy and paste; a tiled preview shows
   it as the game lays it. Saved into the map's folder; the shared sheet is never changed.
+- **Objects:** trees and the like (`OBJECTS.PCX`). The forest brush fills cells at a density
+  with kinds picked at random from the selected sprites (Shift-click mixes kinds) and sizes from
+  a range; place one, eraser, pick. Dots on the map; zoomed in, the sprites themselves.
+- **Sprites:** the `OBJTEX.PCX` sheet, edited like Textures (pencil, brush, fill, eraser for
+  colour 0 = transparent, pick, copy and paste), with RGB sliders for its own palette. Saved
+  into the map's folder; the shared sheet is never changed.
 
 Wheel zooms, right-drag pans, `[` `]` resize, Alt-click picks, Z / Shift+Z undo and redo, S
 saves each changed layer back into its own file and format (TEREP1's BMPs as PCX), keeping the

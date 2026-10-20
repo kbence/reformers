@@ -183,10 +183,121 @@ pub fn paint(grid: &mut [u8], cells: &[(usize, f32)], v: u8) {
     }
 }
 
-/// MAPTEX.PCX's sheet: 16×16 tiles of 16×16 pixels; tile `t` is the texture of COL colour `t`
-/// (row = material, column = shade). Pixel (x, y) of tile `t` in the 256×256 sheet.
-pub fn tile_px(t: u8, x: usize, y: usize) -> usize {
-    ((t >> 4) as usize * 16 + y % 16) * SIZE + (t & 15) as usize * 16 + x % 16
+/// A rectangle of a 256×256 sheet painted as one picture: a MAPTEX tile (16×16; strokes wrap
+/// at its edges so a pattern lines up from cell to cell, as the game repeats a tile once per
+/// cell) or an OBJTEX sprite slot (32×64, no wrap).
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub struct Cel {
+    pub x: usize,
+    pub y: usize,
+    pub w: usize,
+    pub h: usize,
+    pub wrap: bool,
+}
+
+impl Cel {
+    /// MAPTEX tile `t`: the texture of COL colour `t` (row = material, column = shade).
+    pub fn tile(t: u8) -> Cel {
+        let (x, y) = ((t & 15) as usize * 16, (t >> 4) as usize * 16);
+        Cel {
+            x,
+            y,
+            w: 16,
+            h: 16,
+            wrap: true,
+        }
+    }
+
+    /// OBJTEX slot of object kind `kind` (1–15; see `reformers::objects`).
+    pub fn sprite(kind: u8) -> Cel {
+        let s = kind.max(1) as usize - 1;
+        let [w, h] = reformers::objects::SLOT;
+        Cel {
+            x: s % 8 * w,
+            y: s / 8 * h,
+            w,
+            h,
+            wrap: false,
+        }
+    }
+
+    /// The sheet index of pixel (x, y) in the cel (wrapping).
+    pub fn px(&self, x: usize, y: usize) -> usize {
+        (self.y + y % self.h) * SIZE + self.x + x % self.w
+    }
+
+    fn inside(&self, x: i32, y: i32) -> Option<(usize, usize)> {
+        if self.wrap {
+            Some((
+                x.rem_euclid(self.w as i32) as usize,
+                y.rem_euclid(self.h as i32) as usize,
+            ))
+        } else {
+            ((0..self.w as i32).contains(&x) && (0..self.h as i32).contains(&y))
+                .then_some((x as usize, y as usize))
+        }
+    }
+
+    /// A round dab of `size` pixels at (x, y).
+    pub fn dab(&self, sheet: &mut [u8], x: i32, y: i32, size: i32, v: u8) {
+        let r = size as f32 / 2.0;
+        let (lo, hi) = (-(size / 2), (size - 1) / 2);
+        let off = if size % 2 == 0 { 0.5 } else { 0.0 };
+        for dy in lo..=hi {
+            for dx in lo..=hi {
+                let round =
+                    ((dx as f32 + off).powi(2) + (dy as f32 + off).powi(2)).sqrt() < r + 0.01;
+                if (round || size <= 2)
+                    && let Some((px, py)) = self.inside(x + dx, y + dy)
+                {
+                    sheet[self.px(px, py)] = v;
+                }
+            }
+        }
+    }
+
+    /// Flood fill from (x, y): the 4-connected pixels of that colour become `v`.
+    pub fn fill(&self, sheet: &mut [u8], x: usize, y: usize, v: u8) {
+        let old = sheet[self.px(x, y)];
+        if old == v {
+            return;
+        }
+        let mut todo = vec![(x, y)];
+        while let Some((x, y)) = todo.pop() {
+            let i = self.px(x, y);
+            if sheet[i] != old {
+                continue;
+            }
+            sheet[i] = v;
+            if x > 0 {
+                todo.push((x - 1, y));
+            }
+            if x + 1 < self.w {
+                todo.push((x + 1, y));
+            }
+            if y > 0 {
+                todo.push((x, y - 1));
+            }
+            if y + 1 < self.h {
+                todo.push((x, y + 1));
+            }
+        }
+    }
+
+    pub fn copy(&self, sheet: &[u8]) -> Vec<u8> {
+        (0..self.w * self.h)
+            .map(|i| sheet[self.px(i % self.w, i / self.w)])
+            .collect()
+    }
+
+    /// `pixels` from `copy` of a cel the same size (else nothing happens).
+    pub fn paste(&self, sheet: &mut [u8], pixels: &[u8]) {
+        if pixels.len() == self.w * self.h {
+            for (i, &v) in pixels.iter().enumerate() {
+                sheet[self.px(i % self.w, i / self.w)] = v;
+            }
+        }
+    }
 }
 
 /// A sheet of flat tiles, each its own colour: what the game draws for maps without a MAPTEX.
@@ -196,77 +307,55 @@ pub fn flat_sheet() -> Vec<u8> {
         .collect()
 }
 
-/// A round dab of `size` pixels on tile `t` at (x, y), wrapping at the tile's edges so a
-/// pattern lines up from cell to cell (the game repeats a tile once per cell).
-pub fn tile_dab(sheet: &mut [u8], t: u8, x: i32, y: i32, size: i32, v: u8) {
-    let r = size as f32 / 2.0;
-    let (lo, hi) = (-(size / 2), (size - 1) / 2);
-    for dy in lo..=hi {
-        for dx in lo..=hi {
-            let off = if size % 2 == 0 { 0.5 } else { 0.0 };
-            if ((dx as f32 + off).powi(2) + (dy as f32 + off).powi(2)).sqrt() < r + 0.01
-                || size <= 2
-            {
-                let (px, py) = ((x + dx).rem_euclid(16), (y + dy).rem_euclid(16));
-                sheet[tile_px(t, px as usize, py as usize)] = v;
-            }
-        }
-    }
-}
-
-/// Flood fill on tile `t` from (x, y): the 4-connected pixels of that colour become `v`.
-pub fn tile_fill(sheet: &mut [u8], t: u8, x: usize, y: usize, v: u8) {
-    let old = sheet[tile_px(t, x, y)];
-    if old == v {
-        return;
-    }
-    let mut todo = vec![(x, y)];
-    while let Some((x, y)) = todo.pop() {
-        let i = tile_px(t, x, y);
-        if sheet[i] != old {
-            continue;
-        }
-        sheet[i] = v;
-        if x > 0 {
-            todo.push((x - 1, y));
-        }
-        if x < 15 {
-            todo.push((x + 1, y));
-        }
-        if y > 0 {
-            todo.push((x, y - 1));
-        }
-        if y < 15 {
-            todo.push((x, y + 1));
-        }
-    }
+/// xorshift32: the editor's random numbers (noise, scattering). Never 0 in, never 0 out.
+pub fn rng(r: &mut u32) -> u32 {
+    *r ^= *r << 13;
+    *r ^= *r >> 17;
+    *r ^= *r << 5;
+    *r
 }
 
 /// Tile `t` as noise around colour `base`: each pixel a shade of `base`'s material row up to
 /// `amount` shades either side, like the original sheet's swatches. `seed` varies the pattern.
 pub fn tile_noise(sheet: &mut [u8], t: u8, base: u8, amount: u8, seed: u32) {
     let mut r = seed.wrapping_mul(2654435761) | 1;
+    let cel = Cel::tile(t);
     for y in 0..16 {
         for x in 0..16 {
-            // xorshift32
-            r ^= r << 13;
-            r ^= r >> 17;
-            r ^= r << 5;
             let spread = 2 * amount as i32 + 1;
-            let shade =
-                ((base & 15) as i32 + (r % spread as u32) as i32 - amount as i32).clamp(0, 15);
-            sheet[tile_px(t, x, y)] = (base & 0xF0) | shade as u8;
+            let shade = ((base & 15) as i32 + (rng(&mut r) % spread as u32) as i32 - amount as i32)
+                .clamp(0, 15);
+            sheet[cel.px(x, y)] = (base & 0xF0) | shade as u8;
         }
     }
 }
 
-pub fn tile_copy(sheet: &[u8], t: u8) -> [u8; 256] {
-    std::array::from_fn(|i| sheet[tile_px(t, i % 16, i / 16)])
-}
-
-pub fn tile_paste(sheet: &mut [u8], t: u8, tile: &[u8; 256]) {
-    for (i, &v) in tile.iter().enumerate() {
-        sheet[tile_px(t, i % 16, i / 16)] = v;
+/// One stamp of the forest brush on OBJECTS: each cell under it not `seen` yet this stroke gets,
+/// with chance `density` (0–1), an object of a random kind from `kinds` and size in `sizes`.
+/// Cells already holding one keep it.
+pub fn scatter(
+    grid: &mut [u8],
+    cells: &[(usize, f32)],
+    seen: &mut [bool],
+    kinds: &[u8],
+    sizes: (u8, u8),
+    density: f32,
+    r: &mut u32,
+) {
+    if kinds.is_empty() {
+        return;
+    }
+    let (lo, hi) = (sizes.0.min(sizes.1), sizes.0.max(sizes.1));
+    for &(i, w) in cells {
+        if w < 0.5 || std::mem::replace(&mut seen[i], true) || grid[i] != 0 {
+            continue;
+        }
+        if (rng(r) % 1000) as f32 >= density * 1000.0 {
+            continue;
+        }
+        let kind = kinds[rng(r) as usize % kinds.len()];
+        let size = lo + (rng(r) % (hi - lo + 1) as u32) as u8;
+        grid[i] = kind << 4 | size;
     }
 }
 
@@ -476,45 +565,85 @@ mod tests {
     }
 
     #[test]
-    fn tiles() {
+    fn cels() {
         let mut sheet = flat_sheet();
-        assert_eq!(
-            sheet[tile_px(0x35, 3, 7)],
-            0x35,
-            "flat tiles are their own colour"
-        );
-        assert_eq!(tile_px(0x35, 0, 0), 48 * SIZE + 80);
-        // a dab at the tile's corner wraps to the opposite edges, and stays in the tile
-        tile_dab(&mut sheet, 0x35, 0, 0, 3, 9);
+        let t = Cel::tile(0x35);
+        assert_eq!(sheet[t.px(3, 7)], 0x35, "flat tiles are their own colour");
+        assert_eq!(t.px(0, 0), 48 * SIZE + 80);
+        // a tile dab at the corner wraps to the opposite edges and stays in the tile
+        t.dab(&mut sheet, 0, 0, 3, 9);
         for (x, y) in [(0, 0), (15, 0), (0, 15), (15, 15), (1, 0), (0, 1)] {
-            assert_eq!(sheet[tile_px(0x35, x, y)], 9, "({x}, {y})");
+            assert_eq!(sheet[t.px(x, y)], 9, "({x}, {y})");
         }
         assert_eq!(
-            sheet[tile_px(0x34, 15, 0)],
+            sheet[Cel::tile(0x34).px(15, 0)],
             0x34,
-            "the neighbour tile is untouched"
+            "the neighbour is untouched"
         );
-        assert_eq!(
-            tile_copy(&sheet, 0x35).iter().filter(|&&v| v == 9).count(),
-            9
-        );
-        // fill: the dab's pixels are a separate region from the rest
-        tile_fill(&mut sheet, 0x35, 8, 8, 7);
-        assert_eq!(
-            tile_copy(&sheet, 0x35).iter().filter(|&&v| v == 7).count(),
-            256 - 9
-        );
-        assert_eq!(sheet[tile_px(0x36, 8, 8)], 0x36);
+        assert_eq!(t.copy(&sheet).iter().filter(|&&v| v == 9).count(), 9);
+        t.fill(&mut sheet, 8, 8, 7);
+        assert_eq!(t.copy(&sheet).iter().filter(|&&v| v == 7).count(), 256 - 9);
         // noise stays in the base colour's material row, within the amount
         tile_noise(&mut sheet, 0x35, 0x48, 2, 1);
-        let tile = tile_copy(&sheet, 0x35);
+        let tile = t.copy(&sheet);
         assert!(
             tile.iter()
                 .all(|&v| v >> 4 == 4 && (6..=10).contains(&(v & 15)))
         );
         assert!(tile.iter().any(|&v| v != tile[0]), "it varies");
-        tile_paste(&mut sheet, 0x00, &tile);
-        assert_eq!(tile_copy(&sheet, 0x00), tile);
+        Cel::tile(0).paste(&mut sheet, &tile);
+        assert_eq!(Cel::tile(0).copy(&sheet), tile);
+        // a sprite slot doesn't wrap: a dab at its corner stays in the corner
+        let mut sheet = vec![0u8; SIZE * SIZE];
+        let s = Cel::sprite(10); // slot 9: (32, 64)
+        assert_eq!(s.px(0, 0), 64 * SIZE + 32);
+        s.dab(&mut sheet, 0, 0, 3, 5);
+        assert_eq!(
+            sheet.iter().filter(|&&v| v == 5).count(),
+            4,
+            "the quarter inside"
+        );
+        s.fill(&mut sheet, 10, 10, 6);
+        assert_eq!(sheet.iter().filter(|&&v| v == 6).count(), 32 * 64 - 4);
+        let tile = Cel::tile(0).copy(&sheet);
+        Cel::sprite(1).paste(&mut sheet, &tile); // wrong size: ignored
+        assert_eq!(sheet[0], 0);
+    }
+
+    #[test]
+    fn scatters_forests() {
+        let mut grid = vec![0u8; SIZE * SIZE];
+        grid[at(10, 10)] = 0x61; // a rock already there
+        let b = Brush {
+            shape: Shape::Rect,
+            size: 9,
+            edge: Edge::Hard,
+            feather: 0.0,
+        };
+        let cells = b.cells(b.centre([10.5, 10.5]));
+        let (mut seen, mut r) = (vec![false; SIZE * SIZE], 7u32);
+        scatter(&mut grid, &cells, &mut seen, &[1, 2], (3, 5), 1.0, &mut r);
+        assert_eq!(grid[at(10, 10)], 0x61, "kept");
+        let placed: Vec<u8> = cells
+            .iter()
+            .map(|c| grid[c.0])
+            .filter(|&v| v != 0x61)
+            .collect();
+        assert_eq!(placed.len(), 80, "density 1: every free cell");
+        assert!(
+            placed
+                .iter()
+                .all(|&v| matches!(v >> 4, 1 | 2) && (3..=5).contains(&(v & 15)))
+        );
+        assert!(placed.iter().any(|&v| v >> 4 == 1) && placed.iter().any(|&v| v >> 4 == 2));
+        // half density over fresh ground: about half; the same stroke again adds nothing
+        let mut grid = vec![0u8; SIZE * SIZE];
+        let mut seen = vec![false; SIZE * SIZE];
+        scatter(&mut grid, &cells, &mut seen, &[3], (0, 0), 0.5, &mut r);
+        let n = grid.iter().filter(|&&v| v != 0).count();
+        assert!((25..=56).contains(&n), "{n}");
+        scatter(&mut grid, &cells, &mut seen, &[3], (0, 0), 0.5, &mut r);
+        assert_eq!(grid.iter().filter(|&&v| v != 0).count(), n);
     }
 
     #[test]
