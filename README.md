@@ -106,7 +106,7 @@ with `--map NAME`; the last one is remembered. Shipped: `terep2` (the original, 
 time-trial track), `terep2-hills` (its unused `MAPHILL.PCX`) and `terep1` (TEREP1's map, same
 landscape, own palette; heights use TEREP2's scale, so it comes out gentler). Heights can also be a greyscale `MAP.PNG` or `MAP.PGM` (grey level = height; it wins over
 `MAP.PCX`), so any heightmap tool can paint them: save, and the running game reloads the map.
-`tool MAP.PNG MAP.PCX` turns one back into a PCX for the DOS game, `tool MAP.PCX MAP.PGM --map`
+`reform MAP.PNG MAP.PCX` turns one back into a PCX for the DOS game, `reform MAP.PCX MAP.PGM --map`
 the other way. A map folder may
 carry its own `MAPTEX.PCX`; otherwise the shared one is used when the palettes match, and the
 terrain is drawn in flat colours when they don't. Plus 105 community maps from Terep – 30th
@@ -192,10 +192,12 @@ height, current colour), Save as copies this one to a new folder.
 
 ## Tools
 
+`reform` is the command-line toolbox (in the release archives next to the game and the editor):
+
 ```bash
-cargo run --release --bin tool -- drive "t:3 tl:2 b:1" out/run   # headless drive → out/run.pgm, out/run_dents.pgm
-cargo run --release --bin tool -- assets/maps/terep2/MAP.PCX out/map.pgm --map  # PCX → PGM/PPM/raw f32/raw RGB
-cargo run --release --bin tool -- sounds out/sounds                 # the synthesised sounds as WAVs
+cargo run --release --bin reform -- drive "t:3 tl:2 b:1" out/run   # headless drive → out/run.pgm, out/run_dents.pgm
+cargo run --release --bin reform -- assets/maps/terep2/MAP.PCX out/map.pgm --map  # PCX → PGM/PPM/raw f32/raw RGB
+cargo run --release --bin reform -- sounds out/sounds                 # the synthesised sounds as WAVs
 cargo test
 ```
 

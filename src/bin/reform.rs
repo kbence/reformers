@@ -2,7 +2,7 @@ use reformers::sim::{Keys, Sim, SimCar, TICK_HZ};
 use reformers::{assets, car, pcx, terrain::Terrain};
 use std::process::exit;
 
-/// `tool <in.pcx|in.bmp|in.png|in.pgm> <out.pgm|out.ppm|out.f32|out.rgb|out.pcx> [--map]`
+/// `reform <in.pcx|in.bmp|in.png|in.pgm> <out.pgm|out.ppm|out.f32|out.rgb|out.pcx> [--map]`
 /// .pgm = palette indices (for a MAP: the heights, as greyscale), .ppm = RGB image, .f32 = raw
 /// LE floats (index / 255), .rgb = raw RGB, .pcx = 8-bit PCX (a greyscale height map becomes a
 /// MAP.PCX for the DOS game: 256 wide gets the 320-wide layout, a blank legend strip on the right).
@@ -18,7 +18,7 @@ fn main() {
     let (input, output) = match &args[..] {
         [i, o] | [i, o, _] => (i, o),
         _ => {
-            eprintln!("usage: tool <in.pcx|png|pgm|bmp> <out.pgm|ppm|f32|rgb|pcx> [--map]");
+            eprintln!("usage: reform <in.pcx|png|pgm|bmp> <out.pgm|ppm|f32|rgb|pcx> [--map]");
             exit(2);
         }
     };
@@ -60,7 +60,7 @@ fn main() {
     std::fs::write(output, out).unwrap_or_else(|e| fail(&format!("{output}: {e}")));
 }
 
-/// `tool drive [--soft] [--car N] <script> <out-prefix>`
+/// `reform drive [--soft] [--car N] <script> <out-prefix>`
 /// Script: space-separated `KEYS:SECONDS` steps; keys t(hrottle) r(everse) l(eft) (r)i(ght) b(rake), `-` = none.
 /// Example: `t:3 tl:2 t:2 b:1`. Writes <prefix>.pgm (height map) and <prefix>_dents.pgm (changed cells).
 /// --soft makes all ground diggable (the shipped COL.PCX has no diggable colour).
@@ -78,7 +78,7 @@ fn drive(args: &[String]) {
         .map(|(_, a)| a)
         .collect();
     let [script, prefix] = pos[..] else {
-        fail("usage: tool drive [--soft] [--car N] <script> <out-prefix>")
+        fail("usage: reform drive [--soft] [--car N] <script> <out-prefix>")
     };
     let read = |f: &str| assets::read(f).unwrap_or_else(|e| fail(&e));
     let terrain = Terrain::load(&read("maps/terep2/MAP.PCX"), &read("maps/terep2/COL.PCX"))
@@ -158,7 +158,7 @@ fn fail(msg: &str) -> ! {
     exit(1);
 }
 
-/// `tool sounds [dir]`: writes the game's synthesised sounds as WAVs, to listen to them on their own.
+/// `reform sounds [dir]`: writes the game's synthesised sounds as WAVs, to listen to them on their own.
 fn sounds(dir: &str) {
     use reformers::sound;
     let all = [
