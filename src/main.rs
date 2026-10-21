@@ -1140,7 +1140,23 @@ fn car_meshes(
         }
         m.vertices.extend(verts);
     };
-    for prim in &model.prims {
+    // where the eye is in the car's world (render space is y-up)
+    let eye_world = [eye.x * S, eye.z * S, eye.y * S];
+    for (i, prim) in model.prims.iter().enumerate() {
+        // one side of a two-sided panel: only from the front, as the original's back-face tests
+        // drew it (both under a depth buffer would flicker)
+        if model.one_sided[i]
+            && let Some(face) = car::face_atoms(prim, n)
+        {
+            let pts: Vec<[f32; 3]> = face.iter().map(|&a| atoms[a]).collect();
+            let nrm = car::normal(&pts);
+            let c = pts.iter().fold([0.0; 3], |s, p| {
+                [0, 1, 2].map(|k| s[k] + p[k] / pts.len() as f32)
+            });
+            if (0..3).map(|k| nrm[k] * (eye_world[k] - c[k])).sum::<f32>() <= 0.0 {
+                continue;
+            }
+        }
         match prim {
             Prim::Flat { verts, colour } => {
                 let shadow = verts.iter().all(|e| e % 2 == 1);
