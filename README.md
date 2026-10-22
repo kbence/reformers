@@ -198,6 +198,7 @@ height, current colour), Save as copies this one to a new folder.
 cargo run --release --bin reform -- drive "t:3 tl:2 b:1" out/run   # headless drive → out/run.pgm, out/run_dents.pgm
 cargo run --release --bin reform -- assets/maps/terep2/MAP.PCX out/map.pgm --map  # PCX → PGM/PPM/raw f32/raw RGB
 cargo run --release --bin reform -- sounds out/sounds                 # the synthesised sounds as WAVs
+cargo run --release --bin reform -- car-export CAR1.DAT out/car1.obj  # a car as OBJ + MTL + skin PNG, for Blender
 cargo test
 ```
 

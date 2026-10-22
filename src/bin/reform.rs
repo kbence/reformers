@@ -12,6 +12,9 @@ fn main() {
     if args.first().is_some_and(|a| a == "drive") {
         return drive(&args[1..]);
     }
+    if args.first().is_some_and(|a| a == "car-export") {
+        return car_export(&args[1..]);
+    }
     if args.first().is_some_and(|a| a == "sounds") {
         return sounds(args.get(1).map_or("out", |s| s.as_str()));
     }
@@ -212,4 +215,219 @@ fn sounds(dir: &str) {
             .unwrap_or_else(|e| fail(&format!("{path}: {e}")));
         println!("{path}");
     }
+}
+
+/// World units per Blender unit (metre): a car is ~210 units, ~4 m.
+const UNITS_PER_M: f32 = 52.0;
+
+/// `reform car-export <CAR.DAT> <out.obj>` (#55): the car as Wavefront OBJ for Blender, plus
+/// `out.mtl` and its skin as `out.png`. A name like `CAR1.DAT` is looked up in the assets.
+///
+/// Axes: OBJ is Y-up and right-handed, the car left-handed (x = right, y = back to front −y,
+/// z = up), so x is mirrored; Blender's default OBJ import then shows the car upright, its
+/// front towards Blender's −Y, 1 unit = 1 m. Atoms are the vertices; body polygons are faces
+/// (flat ones get a palette-colour material, textured ones UVs on the skin; shadows are left
+/// out); wheels and the driver are small cubes named `wheel_FL`… `driver`, sized by radius;
+/// springs are line objects by type: `springs_frame` (rigid), `springs_suspension` (damped),
+/// `springs_rope` (slack).
+fn car_export(args: &[String]) {
+    let [input, output] = args else {
+        fail("usage: reform car-export <CAR.DAT> <out.obj>")
+    };
+    let read = |f: &str| {
+        std::fs::read(f)
+            .or_else(|_| assets::read(f))
+            .unwrap_or_else(|e| fail(&format!("{f}: {e}")))
+    };
+    let model = car::parse(&read(input)).unwrap_or_else(|e| fail(&format!("{input}: {e}")));
+    let stem = output.strip_suffix(".obj").unwrap_or(output);
+    let name = std::path::Path::new(stem)
+        .file_name()
+        .map_or("car".into(), |n| n.to_string_lossy().into_owned());
+    let palette = pcx::decode(&assets::read("MAPTEX.PCX").unwrap_or_else(|e| fail(&e)))
+        .unwrap_or_else(|e| fail(&e))
+        .palette;
+    // the skin next to the .DAT (CARn.PCX), else the shared TEXTURES.PCX, as the game does
+    let skin_name = input
+        .rsplit_once('.')
+        .map_or(format!("{input}.PCX"), |(s, _)| format!("{s}.PCX"));
+    let skin = pcx::decode(
+        &std::fs::read(&skin_name)
+            .or_else(|_| assets::read(&skin_name))
+            .unwrap_or_else(|_| read("TEXTURES.PCX")),
+    )
+    .unwrap_or_else(|e| fail(&e));
+
+    let at = |p: [f32; 3]| [-p[0] / UNITS_PER_M, p[2] / UNITS_PER_M, -p[1] / UNITS_PER_M];
+    let n = model.atoms.len();
+    let mut obj = format!(
+        "# Reformers car {input}, from `reform car-export` (#55)\n\
+         # drive: {:?}; {} atoms, {} springs; 1 unit = 1 m ({UNITS_PER_M} world units)\n\
+         mtllib {name}.mtl\n",
+        model.drive,
+        n,
+        model.springs.len()
+    );
+    // the atoms, 1-based: vertex i + 1
+    for a in &model.atoms {
+        let [x, y, z] = at(a.pos);
+        obj += &format!("v {x:.5} {y:.5} {z:.5}\n");
+    }
+    // the body
+    obj += "o body\n";
+    let (w, h) = (skin.width as f32, skin.height as f32);
+    let mut vt = 0;
+    let mut material = String::new();
+    for prim in &model.prims {
+        let Some(mut face) = car::face_atoms(prim, n) else {
+            continue; // shadows, wheels
+        };
+        // mirroring x reverses the winding: write the corners the other way round, so each
+        // face's front (the side it's seen from) stays its front in Blender
+        face.reverse();
+        let use_mtl = match prim {
+            car::Prim::Flat { colour, .. } => format!("c{colour}"),
+            _ => "skin".into(),
+        };
+        if use_mtl != material {
+            obj += &format!("usemtl {use_mtl}\n");
+            material = use_mtl;
+        }
+        match prim {
+            car::Prim::Textured { verts } => {
+                // UVs per corner, in the order face_atoms kept them (closing vertex dropped)
+                let mut uvs: Vec<[f32; 2]> = verts.iter().take(face.len()).map(|v| v.1).collect();
+                uvs.reverse();
+                let mut f = String::from("f");
+                for (k, &a) in face.iter().enumerate() {
+                    let [u, v] = uvs[k];
+                    obj += &format!("vt {:.5} {:.5}\n", u / w, 1.0 - v / h);
+                    vt += 1;
+                    f += &format!(" {}/{vt}", a + 1);
+                }
+                obj += &(f + "\n");
+            }
+            _ => {
+                let f: Vec<String> = face.iter().map(|a| (a + 1).to_string()).collect();
+                obj += &format!("f {}\n", f.join(" "));
+            }
+        }
+    }
+    // wheels and the driver: cubes around the atom, half a side = its radius
+    let mut base = n;
+    let mut cube = |obj: &mut String, label: &str, a: &car::Atom| {
+        let c = at(a.pos);
+        let r = a.radius / UNITS_PER_M;
+        *obj += &format!("o {label}\n");
+        for k in 0..8 {
+            let s = |bit: usize| if k >> bit & 1 == 1 { r } else { -r };
+            *obj += &format!(
+                "v {:.5} {:.5} {:.5}\n",
+                c[0] + s(0),
+                c[1] + s(1),
+                c[2] + s(2)
+            );
+        }
+        // outward-facing quads (corner bits: 0 = x, 1 = y, 2 = z)
+        for q in [
+            [0, 2, 3, 1],
+            [4, 5, 7, 6],
+            [0, 1, 5, 4],
+            [2, 6, 7, 3],
+            [0, 4, 6, 2],
+            [1, 3, 7, 5],
+        ] {
+            let f: Vec<String> = q.iter().map(|i| (base + i + 1).to_string()).collect();
+            *obj += &format!("f {}\n", f.join(" "));
+        }
+        base += 8;
+    };
+    for a in &model.atoms {
+        let label = match a.kind {
+            car::AtomKind::FrontWheel | car::AtomKind::RearWheel => {
+                let side = if a.pos[0] < 0.0 { "L" } else { "R" };
+                let end = if a.kind == car::AtomKind::FrontWheel {
+                    "F"
+                } else {
+                    "R"
+                };
+                format!("wheel_{end}{side}")
+            }
+            car::AtomKind::Driver => "driver".into(),
+            car::AtomKind::Body => continue,
+        };
+        cube(&mut obj, &label, a);
+    }
+    // springs, as lines between the atoms
+    for (group, kind) in [
+        ("springs_frame", 0),
+        ("springs_suspension", 1),
+        ("springs_rope", 2),
+    ] {
+        let lines: Vec<&car::Spring> = model
+            .springs
+            .iter()
+            .filter(|s| {
+                kind == match s.kind {
+                    car::SpringKind::Rigid => 0,
+                    car::SpringKind::Damped(_) => 1,
+                    car::SpringKind::Slack => 2,
+                }
+            })
+            .collect();
+        if lines.is_empty() {
+            continue;
+        }
+        obj += &format!("o {group}\n");
+        for s in lines {
+            obj += &format!("l {} {}\n", s.a + 1, s.b + 1);
+        }
+    }
+
+    // materials: the palette colours used, and the skin
+    let mut mtl = String::from("# Reformers car materials: cN = car palette colour N\n");
+    let mut used: Vec<u8> = model
+        .prims
+        .iter()
+        .filter_map(|p| match p {
+            car::Prim::Flat { colour, verts } if !verts.iter().all(|e| e % 2 == 1) => Some(*colour),
+            _ => None,
+        })
+        .collect();
+    used.sort();
+    used.dedup();
+    for c in used {
+        let [r, g, b] = palette[c as usize].map(|v| v as f32 / 255.0);
+        // colours f0–f3 are the original's see-through windows
+        let glass = if c >= 0xf0 { "d 0.4\n" } else { "" };
+        mtl += &format!("newmtl c{c}\nKd {r:.3} {g:.3} {b:.3}\n{glass}");
+    }
+    mtl += &format!("newmtl skin\nKd 1 1 1\nmap_Kd {name}.png\n");
+
+    // the skin, its background (the most common colour) see-through as in the game
+    let mut count = [0usize; 256];
+    skin.pixels.iter().for_each(|&i| count[i as usize] += 1);
+    let bg = (0..256).max_by_key(|&i| count[i]).unwrap() as u8;
+    let bytes = skin
+        .pixels
+        .chunks_exact(skin.width)
+        .rev() // export_png flips rows
+        .flatten()
+        .flat_map(|&i| {
+            let [r, g, b] = palette[i as usize];
+            [r, g, b, if i == bg { 0 } else { 255 }]
+        })
+        .collect();
+    let write = |path: String, data: &[u8]| {
+        std::fs::write(&path, data).unwrap_or_else(|e| fail(&format!("{path}: {e}")))
+    };
+    write(format!("{stem}.obj"), obj.as_bytes());
+    write(format!("{stem}.mtl"), mtl.as_bytes());
+    macroquad::texture::Image {
+        bytes,
+        width: skin.width as u16,
+        height: skin.height as u16,
+    }
+    .export_png(&format!("{stem}.png"));
+    println!("wrote {stem}.obj, {stem}.mtl, {stem}.png");
 }
