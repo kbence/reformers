@@ -1,4 +1,5 @@
-//! `editor [MAP] [--shot FILE] [--tab 1-6]`: the Reformers map editor (#36, v2 #44). Edits a whole map:
+//! `editor [MAP] [--shot FILE] [--tab 1-6]`: the Reformers map editor (#36, v2 #44); without MAP,
+//! the map it last had open. Edits a whole map:
 //! the heights (MAP), the colours / surface materials (COL), the checkpoint layer (CHECK.PCX,
 //! format in `track.rs`), the texture tile sheet (MAPTEX.PCX, #45), and the scenery objects
 //! (OBJECTS.PCX) with their sprites (OBJTEX.PCX, #50). It saves into the map's folder in each file's own format, keeping the
@@ -605,6 +606,24 @@ fn window_conf() -> Conf {
     }
 }
 
+/// The map the editor last had open, so it opens on it again (`editor.txt` in the data folder).
+fn last_map_file() -> Option<std::path::PathBuf> {
+    Some(assets::data_dir()?.join("editor.txt"))
+}
+
+fn last_map() -> Option<String> {
+    let s = std::fs::read_to_string(last_map_file()?).ok()?;
+    Some(s.trim().to_string())
+}
+
+fn remember_map(name: &str) {
+    let Some(path) = last_map_file() else { return };
+    let _ = std::fs::create_dir_all(path.parent().unwrap());
+    if let Err(e) = std::fs::write(&path, name) {
+        eprintln!("can't save {}: {e}", path.display());
+    }
+}
+
 #[macroquad::main(window_conf)]
 async fn main() {
     let maps = assets::maps();
@@ -621,10 +640,12 @@ async fn main() {
         .find(|&(i, a)| !a.starts_with("--") && (i == 0 || !args[i - 1].starts_with("--")))
         .map(|(_, a)| a)
         .cloned()
+        .or_else(|| last_map().filter(|m| maps.contains(m)))
         .or_else(|| maps.first().cloned())
         .unwrap_or_else(|| fail("no maps found in assets/maps"));
     let mut doc =
         Doc::load(&name).unwrap_or_else(|e| fail(&format!("{e} (maps: {})", maps.join(", "))));
+    remember_map(&name);
     prevent_quit();
 
     let mut ui = Ui::new();
@@ -2291,6 +2312,7 @@ async fn main() {
             match Doc::load(&name) {
                 Ok(d) => {
                     doc = d;
+                    remember_map(&name);
                     (undo, redo, selected) = (vec![], vec![], None);
                     (
                         ground_dirty,

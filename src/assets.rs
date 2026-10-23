@@ -97,6 +97,16 @@ pub async fn preload() {
     }
 }
 
+/// Where the player's own files go (settings, best laps, screenshots): `$XDG_DATA_HOME/reformers`,
+/// `~/.local/share/reformers`, or `%APPDATA%\reformers`.
+pub fn data_dir() -> Option<PathBuf> {
+    let env = |k: &str| std::env::var_os(k).map(PathBuf::from);
+    let base = env("XDG_DATA_HOME")
+        .or_else(|| env("HOME").map(|h| h.join(".local/share")))
+        .or_else(|| env("APPDATA"))?;
+    Some(base.join("reformers"))
+}
+
 /// Map folders (`maps/<name>/` with MAP + COL) in the first asset dir that has any, sorted.
 /// On the web: the names in `maps/index.txt`.
 pub fn maps() -> Vec<String> {

@@ -160,7 +160,7 @@ are MIT-licensed, see `LICENSE`.
 
 `cargo run --release --bin editor -- MAP` (or `editor MAP` from a release) edits a whole map:
 heights, colours, checkpoints, textures, objects and their sprites, one tab each (F1–F4,
-F6, F7; Tab cycles). The layer's tools are on the left (1–8),
+F6, F7; Tab cycles). Without MAP it opens the map you last had open. The layer's tools are on the left (1–8),
 the tool's settings on the right, the cell under the mouse at the bottom.
 
 - **Heights:** brush (circle or square, size, hard / smooth / feathered edge; set to a target

@@ -12,6 +12,7 @@ use macroquad::audio::{
 };
 use macroquad::miniquad::{BlendFactor, BlendState, BlendValue, Equation};
 use macroquad::prelude::*;
+use reformers::assets::data_dir;
 use reformers::car::{self, Car, Prim};
 use reformers::ghost::{self, Frame, Ghost};
 use reformers::run::{self, Replay};
@@ -25,14 +26,6 @@ const S: f32 = 256.0; // world units per render unit (one terrain cell)
 const CHUNK: usize = 32;
 const CAM_CLEARANCE: f32 = 0.3; // render units the camera keeps above the ground // rows per mesh: macroquad meshes index with u16
 const SPAWN: (u16, u16) = (0x8000, 0x7a00); // without CHECK.PCX
-
-fn data_dir() -> Option<PathBuf> {
-    let env = |k: &str| std::env::var_os(k).map(PathBuf::from);
-    let base = env("XDG_DATA_HOME")
-        .or_else(|| env("HOME").map(|h| h.join(".local/share")))
-        .or_else(|| env("APPDATA"))?;
-    Some(base.join("reformers"))
-}
 
 /// Firing frequency of the recorded engine idle loop (`assets/sounds/engine/loop_0.wav`), measured.
 const RECORDED_HZ: f32 = 43.5;
