@@ -2262,6 +2262,7 @@ fn window_conf() -> macroquad::conf::Conf {
             window_width: 1280,
             window_height: 800,
             high_dpi: true,
+            icon: Some(reformers::icon::icon()),
             ..Default::default()
         },
         update_on: None, // redraw every frame, not only on input events

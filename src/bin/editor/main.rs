@@ -600,6 +600,7 @@ fn window_conf() -> Conf {
         window_width: 1400,
         window_height: 900,
         high_dpi: true,
+        icon: Some(reformers::icon::icon()),
         ..Default::default()
     }
 }

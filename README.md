@@ -148,6 +148,8 @@ They and the map images are the original author's copyrighted work; see `assets/
 - **Engine sound loops** in `assets/sounds/engine/`: "racing car engine sound loops" by
   **domasx2** (OpenGameArt), CC0; see `SOURCES.md` there.
 
+The icon (`icon/`) is the original CAR1 on a hill, rendered by Reformers.
+
 Reformers' own code, the `terep2` time-trial track (`CHECK.PCX`), the object sprites
 (`assets/OBJTEX.PCX`) and `terep2-forest`'s `OBJECTS.PCX`, the synthesised sounds and the web page
 are MIT-licensed, see `LICENSE`.

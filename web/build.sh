@@ -13,6 +13,6 @@ fi
 "$CARGO" build --release --target wasm32-unknown-unknown --bin reformers
 rm -rf out/web
 mkdir -p out/web
-cp web/index.html web/mq_js_bundle.js target/wasm32-unknown-unknown/release/reformers.wasm out/web/
+cp web/index.html web/favicon.png web/mq_js_bundle.js target/wasm32-unknown-unknown/release/reformers.wasm out/web/
 cp -R assets out/web/
 echo "out/web ready"
