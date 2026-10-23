@@ -33,7 +33,9 @@ cargo run --release
 | Esc | Start | options (pauses the game); d-pad and A in the menu |
 
 A controller joins once you press one of its buttons, so devices Windows lists as gamepads but
-nobody is holding (wheels, pedals, virtual joysticks) can't hold a key down.
+nobody is holding (wheels, pedals, virtual joysticks) can't hold a key down. Its stick and
+triggers count once they've been seen at rest, so a HOTAS throttle resting at full doesn't hold
+throttle and reverse at once.
 
 Options (saved to `settings.txt` next to the best laps; flags override them): sound volume, camera, fog (the original's distance fog), texture filter (nearest/smooth), textures on (MAPTEX.PCX material tiles, car
 skins) or off (flat COL.PCX colours), lighting (the original's flat shading, or baked: soft sun

@@ -282,15 +282,27 @@ impl Audio {
     }
 }
 
+/// How far the left stick (either way) and the triggers must move to count.
+#[cfg(not(target_arch = "wasm32"))]
+const STICK_DEAD: f32 = 0.35;
+#[cfg(not(target_arch = "wasm32"))]
+const TRIGGER_DEAD: f32 = 0.3;
+
 #[cfg(not(target_arch = "wasm32"))]
 /// Keys the first gamepad holds this frame, as the keyboard keys they stand for: left stick or
 /// d-pad steers, right trigger or A throttles, left trigger or X reverses, B brakes.
 fn pad_down(stick_x: f32, rt: f32, lt: f32, held: impl Fn(Button) -> bool) -> Vec<KeyCode> {
     [
-        (stick_x < -0.35 || held(Button::DPadLeft), KeyCode::Left),
-        (stick_x > 0.35 || held(Button::DPadRight), KeyCode::Right),
-        (rt > 0.3 || held(Button::South), KeyCode::Up),
-        (lt > 0.3 || held(Button::West), KeyCode::Down),
+        (
+            stick_x < -STICK_DEAD || held(Button::DPadLeft),
+            KeyCode::Left,
+        ),
+        (
+            stick_x > STICK_DEAD || held(Button::DPadRight),
+            KeyCode::Right,
+        ),
+        (rt > TRIGGER_DEAD || held(Button::South), KeyCode::Up),
+        (lt > TRIGGER_DEAD || held(Button::West), KeyCode::Down),
         (held(Button::East), KeyCode::Space),
     ]
     .into_iter()
@@ -316,13 +328,32 @@ fn pad_pressed(b: Button) -> Option<KeyCode> {
 }
 
 #[cfg(not(target_arch = "wasm32"))]
+/// Which of a pad's analog inputs (left stick x, right trigger, left trigger) have been seen at
+/// rest since it joined; the others read as 0. HOTAS throttles and pedals can rest fully
+/// deflected and report it as both triggers pressed the moment they connect, which joins them
+/// and holds Up and Down for good (the arrows couldn't throttle or reverse).
+#[derive(Default)]
+struct Rested([bool; 3]);
+
+#[cfg(not(target_arch = "wasm32"))]
+impl Rested {
+    fn filter(&mut self, inputs: [f32; 3]) -> [f32; 3] {
+        let dead = [STICK_DEAD, TRIGGER_DEAD, TRIGGER_DEAD];
+        std::array::from_fn(|i| {
+            self.0[i] |= inputs[i].abs() <= dead[i];
+            if self.0[i] { inputs[i] } else { 0.0 }
+        })
+    }
+}
+
+#[cfg(not(target_arch = "wasm32"))]
 /// Polls the first connected gamepad: (keys held, keys pressed this frame). Empty without one.
 /// Only a controller whose button has been pressed takes part (`active`): Windows lists wheels,
 /// pedals, virtual joysticks and some headsets as gamepads, and one resting with an axis
 /// deflected would otherwise hold a key down for good (P1 couldn't steer with the arrows).
 fn poll_pad(
     gilrs: &mut Option<Gilrs>,
-    active: &mut Option<GamepadId>,
+    active: &mut Option<(GamepadId, Rested)>,
 ) -> (Vec<KeyCode>, Vec<KeyCode>) {
     let Some(g) = gilrs else {
         return (vec![], vec![]);
@@ -331,24 +362,31 @@ fn poll_pad(
     while let Some(ev) = g.next_event() {
         match ev.event {
             EventType::ButtonPressed(b, _) => {
-                *active = Some(ev.id);
+                if active.as_ref().is_none_or(|(id, _)| *id != ev.id) {
+                    *active = Some((ev.id, Rested::default()));
+                }
                 pressed.extend(pad_pressed(b));
             }
-            EventType::Disconnected if *active == Some(ev.id) => *active = None,
+            EventType::Disconnected if active.as_ref().is_some_and(|(id, _)| *id == ev.id) => {
+                *active = None
+            }
             _ => {}
         }
     }
-    let Some(pad) = active.and_then(|id| g.connected_gamepad(id)) else {
+    let Some((pad, rested)) = active
+        .as_mut()
+        .and_then(|(id, r)| Some((g.connected_gamepad(*id)?, r)))
+    else {
         return (vec![], pressed);
     };
     let axis = |a| pad.axis_data(a).map_or(0.0, |d| d.value());
     let trigger = |b| pad.button_data(b).map_or(0.0, |d| d.value());
-    let down = pad_down(
+    let [stick_x, rt, lt] = rested.filter([
         axis(Axis::LeftStickX),
         trigger(Button::RightTrigger2),
         trigger(Button::LeftTrigger2),
-        |b| pad.is_pressed(b),
-    );
+    ]);
+    let down = pad_down(stick_x, rt, lt, |b| pad.is_pressed(b));
     (down, pressed)
 }
 
@@ -2420,7 +2458,7 @@ async fn main() {
     #[cfg(not(target_arch = "wasm32"))]
     let mut gilrs = Gilrs::new().ok();
     #[cfg(not(target_arch = "wasm32"))]
-    let mut pad_id: Option<GamepadId> = None;
+    let mut pad_id: Option<(GamepadId, Rested)> = None;
     #[cfg(target_arch = "wasm32")]
     let mut pad_id: Option<()> = None;
     #[cfg(target_arch = "wasm32")]
@@ -3815,6 +3853,26 @@ mod tests {
         );
         assert_eq!(pad_pressed(Button::Start), Some(KeyCode::Escape));
         assert_eq!(pad_pressed(Button::Mode), None);
+    }
+
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn inputs_resting_deflected_wait_for_rest() {
+        // a Thrustmaster HOTAS: both triggers rest at 1.0 and the stick axis at 0
+        let mut r = Rested::default();
+        assert_eq!(
+            r.filter([0.0, 1.0, 1.0]),
+            [0.0, 0.0, 0.0],
+            "not seen at rest yet"
+        );
+        assert_eq!(
+            r.filter([-0.9, 1.0, 1.0]),
+            [-0.9, 0.0, 0.0],
+            "the stick rested"
+        );
+        // released once, the right trigger counts from then on
+        assert_eq!(r.filter([0.0, 0.1, 1.0]), [0.0, 0.1, 0.0]);
+        assert_eq!(r.filter([0.0, 0.8, 1.0]), [0.0, 0.8, 0.0]);
     }
 
     #[test]
