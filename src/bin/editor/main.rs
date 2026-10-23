@@ -504,13 +504,23 @@ enum Ask {
     Open,
 }
 
-/// The ground as seen from above: the colours shaded by slope (relief), or the heights as grey.
-fn ground_rgba(doc: &Doc, relief: bool) -> Vec<u8> {
+/// How the map shows the ground: shaded by slope in its colours or its MAPTEX tiles, or the
+/// heights as grey.
+#[derive(Clone, Copy, PartialEq)]
+enum View {
+    Colour,
+    Texture,
+    Heights,
+}
+
+/// The ground as seen from above (see `View`). For `Texture` it is the shader's input instead:
+/// the COL index in red and the shade / 2 in green, the tiles come from `TEXTURED`.
+fn ground_rgba(doc: &Doc, view: View) -> Vec<u8> {
     let h = |x: usize, y: usize| doc.height[y.min(SIZE - 1) * SIZE + x.min(SIZE - 1)];
     (0..SIZE * SIZE)
         .flat_map(|i| {
             let (x, y) = (i % SIZE, i / SIZE);
-            if !relief {
+            if view == View::Heights {
                 let v = doc.height[i].round().clamp(0.0, 255.0) as u8;
                 return [v, v, v, 255];
             }
@@ -518,6 +528,9 @@ fn ground_rgba(doc: &Doc, relief: bool) -> Vec<u8> {
             let slope = (h(x + 1, y) - h(x.saturating_sub(1), y)) * 0.4
                 + (h(x, y + 1) - h(x, y.saturating_sub(1))) * 0.3;
             let shade = (0.85 + slope / 40.0).clamp(0.45, 1.15);
+            if view == View::Texture {
+                return [doc.colour[i], (shade * 127.5) as u8, 0, 255];
+            }
             let [r, g, b] =
                 doc.palette[doc.colour[i] as usize].map(|c| (c as f32 * shade).min(255.0) as u8);
             [r, g, b, 255]
@@ -536,6 +549,62 @@ fn checker(r: Rect, n: usize) {
             draw_rectangle(px, py, c, c, Color::new(0.42, 0.43, 0.46, 1.0));
         }
     }
+}
+
+/// Textured relief: each cell's MAPTEX tile (from `MapTex`, the swatch sheet) times its shade,
+/// fading to the tile's average colour (`Means`, 16×16) as cells shrink below a few pixels, where
+/// the tiles would only shimmer. `Detail` is 0 (averages) to 1 (tiles).
+const TEXTURED_VERTEX: &str = "#version 100
+precision highp float;
+attribute vec3 position;
+attribute vec2 texcoord;
+attribute vec4 color0;
+varying vec2 uv;
+varying vec4 tint;
+uniform mat4 Model;
+uniform mat4 Projection;
+void main() {
+    gl_Position = Projection * Model * vec4(position, 1);
+    uv = texcoord;
+    tint = color0 / 255.0;
+}
+";
+// ponytail: highp so fract(uv * 256) holds up when zoomed in; the editor is desktop-only
+const TEXTURED: &str = "#version 100
+precision highp float;
+varying vec2 uv;
+varying vec4 tint;
+uniform sampler2D Texture;
+uniform sampler2D MapTex;
+uniform sampler2D Means;
+uniform float Detail;
+void main() {
+    vec2 cell = uv * 256.0;
+    vec4 g = texture2D(Texture, (floor(cell) + 0.5) / 256.0);
+    float idx = floor(g.r * 255.0 + 0.5);
+    vec2 tile = vec2(mod(idx, 16.0), floor(idx / 16.0));
+    vec3 near = texture2D(MapTex, (tile * 16.0 + 0.5 + fract(cell) * 15.0) / 256.0).rgb;
+    vec3 far = texture2D(Means, (tile + 0.5) / 16.0).rgb;
+    gl_FragColor = vec4(mix(far, near, Detail) * g.g * 2.0, 1.0) * tint;
+}
+";
+
+/// Each MAPTEX tile's average colour, a 16×16 image (tile `c` at column `c & 15`, row `c >> 4`).
+fn tile_means(doc: &Doc) -> Vec<u8> {
+    (0..256)
+        .flat_map(|t| {
+            let (tx, ty) = (t % 16 * 16, t / 16 * 16);
+            let mut sum = [0u32; 3];
+            for y in ty..ty + 16 {
+                for x in tx..tx + 16 {
+                    let c = doc.palette[doc.maptex[y * SIZE + x] as usize];
+                    (0..3).for_each(|k| sum[k] += c[k] as u32);
+                }
+            }
+            let [r, g, b] = sum.map(|v| (v / 256) as u8);
+            [r, g, b, 255]
+        })
+        .collect()
 }
 
 fn texture(rgba: &[u8]) -> Texture2D {
@@ -688,7 +757,7 @@ async fn main() {
     };
     let mut colour = doc.colour[SIZE * SIZE / 2 + SIZE / 2];
     let (mut zone_size, mut zone_strength, mut facing) = (5i32, 8i32, 0u8);
-    let mut relief = true;
+    let mut view = View::Colour;
     // the tile sheet: the tile being edited, the colour painted on it, the brush, noise
     let (mut tile, mut tsize, mut noise, mut seed) = (colour, 3i32, 2i32, 1u32);
     let mut tcolour = colour;
@@ -719,7 +788,21 @@ async fn main() {
     let mut note = (String::new(), 0.0);
     let mut quit_asked = false;
     // derived, redone when the doc changes
-    let ground = texture(&ground_rgba(&doc, relief));
+    let ground = texture(&ground_rgba(&doc, view));
+    let means = Texture2D::from_rgba8(16, 16, &tile_means(&doc));
+    means.set_filter(FilterMode::Nearest);
+    let textured = load_material(
+        ShaderSource::Glsl {
+            vertex: TEXTURED_VERTEX,
+            fragment: TEXTURED,
+        },
+        MaterialParams {
+            textures: vec!["MapTex".into(), "Means".into()],
+            uniforms: vec![UniformDesc::new("Detail", UniformType::Float1)],
+            ..Default::default()
+        },
+    )
+    .unwrap_or_else(|e| fail(&format!("the textured view's shader: {e}")));
     let overlay = texture(&[0; SIZE * SIZE * 4]);
     let swatches = texture(&[0; SIZE * SIZE * 4]);
     let (mut ground_dirty, mut check_dirty, mut swatch_dirty) = (true, true, true);
@@ -1163,7 +1246,7 @@ async fn main() {
         // derived views
         if ground_dirty {
             ground_dirty = false;
-            update(&ground, ground_rgba(&doc, relief));
+            update(&ground, ground_rgba(&doc, view));
         }
         if check_dirty {
             check_dirty = false;
@@ -1206,6 +1289,11 @@ async fn main() {
                 })
                 .collect();
             update(&swatches, rgba);
+            means.update(&Image {
+                bytes: tile_means(&doc),
+                width: 16,
+                height: 16,
+            });
         }
         if objects_dirty {
             objects_dirty = false;
@@ -1472,6 +1560,15 @@ async fn main() {
                 (&ground, WHITE),
                 (&overlay, Color::new(1.0, 1.0, 1.0, fade)),
             ] {
+                let tiles = view == View::Texture && std::ptr::eq(tex, &ground);
+                if tiles {
+                    // the tiles show from ~4 device pixels per cell, fully from 12
+                    let px = scale * screen_dpi_scale();
+                    textured.set_uniform("Detail", ((px - 4.0) / 8.0).clamp(0.0, 1.0));
+                    textured.set_texture("MapTex", swatches.clone());
+                    textured.set_texture("Means", means.clone());
+                    gl_use_material(&textured);
+                }
                 draw_texture_ex(
                     tex,
                     origin.x,
@@ -1482,6 +1579,9 @@ async fn main() {
                         ..Default::default()
                     },
                 );
+                if tiles {
+                    gl_use_default_material();
+                }
             }
             if tab == Tab::Objects {
                 draw_texture_ex(
@@ -1649,13 +1749,17 @@ async fn main() {
             x += 108.0;
         }
         x += 16.0;
-        let was = relief;
+        let was = view;
         ui.choice(
-            Rect::new(x, 6.0, 170.0, 28.0),
-            &[(true, "relief"), (false, "heights")],
-            &mut relief,
+            Rect::new(x, 6.0, 186.0, 28.0),
+            &[
+                (View::Colour, "colour"),
+                (View::Texture, "texture"),
+                (View::Heights, "heights"),
+            ],
+            &mut view,
         );
-        ground_dirty |= relief != was;
+        ground_dirty |= view != was;
         let unsaved = doc.changed().contains(&true);
         // the map's name heads the tool column (* = unsaved changes)
         text(

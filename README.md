@@ -165,8 +165,9 @@ the tool's settings on the right, the cell under the mouse at the bottom.
 
 - **Heights:** brush (circle or square, size, hard / smooth / feathered edge; set to a target
   height or raise, Shift lowers), pencil, smooth (also the whole map at once), ramp (drag: from
-  the height at the start to the target height, set width), pick. The view shows the colours
-  in relief, or the heights as grey.
+  the height at the start to the target height, set width), pick. The view shows the ground in
+  relief in flat colours or in its MAPTEX textures (zoomed in, the tiles themselves; out, their
+  average colours), or the heights as grey.
 - **Colours:** brush, pencil, pick. The picker shows the map's MAPTEX tiles: row = surface
   material, column = shade.
 - **Checkpoints:** spawn (arrow keys turn it), gate (drag a line; it goes after the selected
