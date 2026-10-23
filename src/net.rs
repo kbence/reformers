@@ -32,7 +32,7 @@ const HASH_EVERY: u64 = 120;
 const TIMEOUT: Duration = Duration::from_secs(5);
 const RESEND: Duration = Duration::from_millis(200);
 const MAGIC: &[u8; 4] = b"RFN1";
-const VERSION: u8 = 2;
+const VERSION: u8 = 3;
 /// Ticks of frames / inputs per packet at most (4 cars × 256 ticks fits the 2 KB buffer).
 const BATCH: usize = 256;
 
@@ -44,6 +44,8 @@ pub struct Start {
     pub map_hash: u64,
     /// All ground diggable (`--soft`).
     pub soft: bool,
+    /// Gradual repair from a budget (the host's Repair option), sent in the soft byte's bit 1.
+    pub gradual: bool,
     /// Per car (0 = host): model 0–4, skin file ("" = own), spawn x, y and heading.
     pub cars: Vec<u8>,
     pub skins: Vec<String>,
@@ -118,7 +120,11 @@ impl Msg {
                 o.extend([3, VERSION]);
                 put_str(&mut o, &s.map);
                 o.extend(s.map_hash.to_le_bytes());
-                o.extend([s.soft as u8, s.you, s.cars.len() as u8]);
+                o.extend([
+                    s.soft as u8 | (s.gradual as u8) << 1,
+                    s.you,
+                    s.cars.len() as u8,
+                ]);
                 for i in 0..s.cars.len() {
                     o.push(s.cars[i]);
                     put_str(&mut o, &s.skins[i]);
@@ -180,7 +186,8 @@ impl Msg {
                     return Some(Msg::Refused("the host runs a different version".into()));
                 }
                 let (map, map_hash) = (r.str()?, r.u64()?);
-                let (soft, you, n) = (r.u8()? != 0, r.u8()?, r.u8()? as usize);
+                let (flags, you, n) = (r.u8()?, r.u8()?, r.u8()? as usize);
+                let (soft, gradual) = (flags & 1 != 0, flags & 2 != 0);
                 if n > MAX_PLAYERS || you as usize >= n {
                     return None;
                 }
@@ -194,6 +201,7 @@ impl Msg {
                     map,
                     map_hash,
                     soft,
+                    gradual,
                     cars,
                     skins,
                     spawns,
@@ -741,6 +749,7 @@ mod tests {
             map: "terep2".into(),
             map_hash: 0x0123_4567_89ab_cdef,
             soft: n % 2 == 0,
+            gradual: n > 2,
             cars: (0..n as u8).collect(),
             skins: (0..n).map(|i| format!("S{i}.PCX")).collect(),
             spawns: (0..n as u16)
@@ -811,7 +820,8 @@ mod tests {
                 ..Keys::default()
             },
             t == 400 + me,
-            false,
+            (500..700).contains(&t),
+            t == 800 + me,
         )
     }
 
@@ -826,6 +836,7 @@ mod tests {
             Terrain::load(&read("maps/terep2/MAP.PCX"), &read("maps/terep2/COL.PCX")).unwrap();
         let new_sim = || {
             let mut s = Sim::new(terrain.clone());
+            s.gradual_repair = n % 2 == 1; // F mends while held on odd counts
             for i in 0..n as u16 {
                 s.cars.push(SimCar::spawn_facing(
                     &car,

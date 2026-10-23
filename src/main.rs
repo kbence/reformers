@@ -16,7 +16,7 @@ use reformers::assets::data_dir;
 use reformers::car::{self, Car, Prim};
 use reformers::ghost::{self, Frame, Ghost};
 use reformers::run::{self, Replay};
-use reformers::sim::{Keys, Sim, SimCar, TICK_HZ, Trunk};
+use reformers::sim::{Keys, REPAIR_FULL, Sim, SimCar, TICK_HZ, Trunk};
 use reformers::terrain::{SIZE, Terrain};
 use reformers::track::{Event, Lap, Race, Track, Zone, format_time};
 use reformers::{assets, lighting, net, objects, pcx, sound};
@@ -297,6 +297,7 @@ fn pad_down(stick_x: f32, rt: f32, lt: f32, held: impl Fn(Button) -> bool) -> Ve
         (rt > TRIGGER_DEAD || held(Button::South), KeyCode::Up),
         (lt > TRIGGER_DEAD || held(Button::West), KeyCode::Down),
         (held(Button::East), KeyCode::Space),
+        (held(Button::Select), KeyCode::F), // gradual repair is held
     ]
     .into_iter()
     .filter_map(|(on, k)| on.then_some(k))
@@ -315,6 +316,7 @@ fn pad_pressed(b: Button) -> Option<KeyCode> {
         Button::South => KeyCode::Enter,
         Button::North => KeyCode::R,
         Button::Select => KeyCode::F,
+        Button::LeftTrigger => KeyCode::T,
         Button::RightTrigger => KeyCode::C,
         _ => return None,
     })
@@ -401,9 +403,10 @@ struct Player {
     /// The chase camera, and the share of its arm that's clear of the ground.
     cam: Vec3,
     arm: f32,
-    /// R / F pressed, acting on the next tick (so a replay reproduces them exactly).
+    /// R / F / T pressed, acting on the next tick (so a replay reproduces them exactly).
     reset: bool,
     repair: bool,
+    turn: bool,
 }
 
 impl Player {
@@ -416,6 +419,7 @@ impl Player {
             arm: 1.0,
             reset: false,
             repair: false,
+            turn: false,
         }
     }
 }
@@ -1528,6 +1532,8 @@ struct Graphics {
     skin2: String,
     /// The arrow over the car towards the next checkpoint (#34).
     guide: bool,
+    /// Repair mends while held, from a recharging budget (#58), instead of a fresh car at once.
+    gradual: bool,
     /// The last address typed on the Join row (saved), and the online rows' status (not saved).
     join: String,
     host_label: String,
@@ -1567,6 +1573,7 @@ enum Row {
     Minimap,
     Ghost,
     Guide,
+    Repair,
     Host,
     Join,
     Fullscreen,
@@ -1590,18 +1597,19 @@ enum Item {
     Text(&'static str),
 }
 
-const CONTROLS: [&str; 12] = [
+const CONTROLS: [&str; 13] = [
     "Arrows / left stick: drive",
     "Space / B: brake",
     "R / Y: back on the wheels (last checkpoint)",
-    "F / Back: repair",
+    "F / Back: repair (gradual: hold)",
+    "T / left shoulder: turn over where it stands",
     "C / right shoulder: camera (Q / E orbit)",
     "1-5: switch car",
     "W: spring wireframe",
     "P: save replay",
     "F12: screenshot",
     "Esc / Start: this menu",
-    "Player 2: WASD, Shift brake, Tab R, G repair",
+    "Player 2: WASD, Shift brake, Tab R, G repair, H turn over",
     "Online: Race > Host / Join (--host, --join ADDRESS)",
 ];
 
@@ -1632,6 +1640,7 @@ fn items(page: Page, players: usize) -> Vec<Item> {
             Row::Ghost,
             Row::Minimap,
             Row::Guide,
+            Row::Repair,
             Row::Host,
             Row::Join,
         ])
@@ -1739,7 +1748,7 @@ impl Menu {
 impl Graphics {
     fn to_text(&self) -> String {
         format!(
-            "map={}\ncar={}\ncar2={}\nskin={}\nskin2={}\njoin={}\nguide={}\ncamera={}\nnearest={}\ntextured={}\nlighting={}\ncrt={}\nminimap={}\nghost={}\nfog={}\nvolume={}\nengine={}\nfullscreen={}\nresolution={}\n",
+            "map={}\ncar={}\ncar2={}\nskin={}\nskin2={}\njoin={}\nguide={}\ngradual={}\ncamera={}\nnearest={}\ntextured={}\nlighting={}\ncrt={}\nminimap={}\nghost={}\nfog={}\nvolume={}\nengine={}\nfullscreen={}\nresolution={}\n",
             self.map,
             self.car + 1,
             self.car2 + 1,
@@ -1747,6 +1756,7 @@ impl Graphics {
             self.skin2,
             self.join,
             self.guide,
+            self.gradual,
             self.camera,
             self.nearest,
             self.textured,
@@ -1772,6 +1782,7 @@ impl Graphics {
                 "skin2" => self.skin2 = v.trim().to_string(),
                 "join" => self.join = v.trim().to_string(),
                 "guide" => self.guide = b,
+                "gradual" => self.gradual = b,
                 "car" => {
                     self.car = n
                         .filter(|n| (1..=CARS).contains(n))
@@ -1822,7 +1833,7 @@ impl Graphics {
             Row::Join => self.join_label.clone(),
             Row::Players => match self.players {
                 1 => "Players: 1".into(),
-                _ => "Players: 2  (P2: WASD, Shift brake, Tab R, G repair)".into(),
+                _ => "Players: 2  (P2: WASD, Shift brake, Tab R, G repair, H turn over)".into(),
             },
             Row::EngineSound => format!("Engine sound: {}", ENGINE_SOUNDS[self.engine]),
             Row::Sound => match self.volume {
@@ -1846,6 +1857,14 @@ impl Graphics {
             Row::Crt => format!("CRT filter: {}", on(self.crt)),
             Row::Minimap => format!("Minimap: {}", on(self.minimap)),
             Row::Guide => format!("Checkpoint arrow: {}", on(self.guide)),
+            Row::Repair => format!(
+                "Repair: {}",
+                if self.gradual {
+                    "gradual, from a budget"
+                } else {
+                    "instant"
+                }
+            ),
             Row::Fog => format!("Fog: {}", on(self.fog)),
             Row::Ghost => format!("Ghost car: {}", on(self.ghost)),
             Row::Fullscreen => format!("Fullscreen: {}", on(self.fullscreen)),
@@ -1873,6 +1892,7 @@ impl Graphics {
             Row::Crt => self.crt = !self.crt,
             Row::Minimap => self.minimap = !self.minimap,
             Row::Guide => self.guide = !self.guide,
+            Row::Repair => self.gradual = !self.gradual,
             Row::Fog => self.fog = !self.fog,
             Row::Players => self.players = 3 - self.players,
             Row::Car => {
@@ -2340,6 +2360,7 @@ async fn main() {
             }
             current = (r.car.clamp(1, 5) - 1) as usize;
             sim.dig_everywhere = r.soft;
+            sim.gradual_repair = r.gradual;
             ((r.start[0], r.start[1]), r.start[2])
         }
         None => (spawn, spawn_heading),
@@ -2360,24 +2381,20 @@ async fn main() {
     let mut recording = Ghost::default(); // this lap so far
     let mut ticks = 0u64;
     // this run's inputs since the car was placed (a replay), and the replay being played back
-    let new_run = |map: &str, level: &Level, car: usize, soft: bool, c: &SimCar| {
+    let new_run = |map: &str, level: &Level, car: usize, sim: &Sim| {
+        let c = &sim.cars[0];
         let [x, y, _] = c.centre();
         Replay {
             map: map.to_string(),
             key: level.hash,
             car: car as u8 + 1,
-            soft,
+            soft: sim.dig_everywhere,
+            gradual: sim.gradual_repair,
             start: [x as u16, y as u16, c.heading()],
             inputs: vec![],
         }
     };
-    let mut recording_run = new_run(
-        &map,
-        &level,
-        players[0].car,
-        sim.dig_everywhere,
-        &sim.cars[0],
-    );
+    let mut recording_run = new_run(&map, &level, players[0].car, &sim);
     recording_run.start = [spawn.0, spawn.1, spawn_heading]; // exactly where it was placed
     let mut playing = replay.map(|r| (r, 0usize));
     let mut pristine = sim.terrain.clone(); // the map as loaded, for starting new runs on it
@@ -2414,6 +2431,7 @@ async fn main() {
         skin2: String::new(),
         join: String::new(),
         guide: true,
+        gradual: false,
         host_label: String::new(),
         join_label: String::new(),
         players: if args.windows(2).any(|w| w[0] == "--players" && w[1] == "2") {
@@ -2592,6 +2610,7 @@ async fn main() {
                 map: map.clone(),
                 map_hash: level.hash,
                 soft: sim.dig_everywhere,
+                gradual: sim.gradual_repair,
                 skins: std::iter::once(gfx.skin.clone())
                     .chain(h.guests.iter().map(|g| g.skin.clone()))
                     .collect(),
@@ -2701,13 +2720,7 @@ async fn main() {
                         // a changed map starts a new run (a replay only re-drives the map it came from)
                         pristine = sim.terrain.clone();
                         playing = None;
-                        recording_run = new_run(
-                            &map,
-                            &level,
-                            players[0].car,
-                            sim.dig_everywhere,
-                            &sim.cars[0],
-                        );
+                        recording_run = new_run(&map, &level, players[0].car, &sim);
                         let msg = if switched {
                             format!("map: {map}")
                         } else {
@@ -2731,6 +2744,7 @@ async fn main() {
             } else {
                 // the same start on both machines: cars, places, time trials, tick 0
                 sim.dig_everywhere = start.soft;
+                sim.gradual_repair = start.gradual;
                 let cam = players[0].cam;
                 players = start
                     .cars
@@ -2793,13 +2807,7 @@ async fn main() {
                 players.truncate(1);
                 gfx.players = 1;
                 gfx.car = players[0].car;
-                recording_run = new_run(
-                    &map,
-                    &level,
-                    players[0].car,
-                    sim.dig_everywhere,
-                    &sim.cars[0],
-                );
+                recording_run = new_run(&map, &level, players[0].car, &sim);
             }
             banner = Some((why, get_time() + 5.0));
         }
@@ -3014,18 +3022,17 @@ async fn main() {
             }
             sim.cars[0] =
                 SimCar::spawn_facing(&cars[players[0].car].0, &sim.terrain, x as u16, y as u16, h);
-            recording_run = new_run(
-                &map,
-                &level,
-                players[0].car,
-                sim.dig_everywhere,
-                &sim.cars[0],
-            );
+            recording_run = new_run(&map, &level, players[0].car, &sim);
             players[0].race =
                 Race::new(best_key(&level, players[0].car).and_then(|k| load_best(&k)));
             ghost = load_ghost(&level, players[0].car);
             recording = Ghost::default();
             players[0].roll = [0.0; 4];
+        }
+        // the repair option, offline (online the host's holds; a replay keeps its own)
+        if online.is_none() && playing.is_none() && sim.gradual_repair != gfx.gradual {
+            sim.gradual_repair = gfx.gradual;
+            recording_run = new_run(&map, &level, players[0].car, &sim);
         }
         // the car this machine drives: online the joiner's is car 1
         let me = online.as_ref().map_or(0, |(l, _)| l.me);
@@ -3033,6 +3040,7 @@ async fn main() {
         if !menu_open && playing.is_none() {
             players[me].reset |= pressed(KeyCode::R);
             players[me].repair |= pressed(KeyCode::F);
+            players[me].turn |= pressed(KeyCode::T);
         }
         if gfx.players != sim.cars.len() && online.is_none() {
             // player 2 joins beside player 1 (or leaves); either way a new run starts
@@ -3050,7 +3058,7 @@ async fn main() {
                 let best = best_key(&level, gfx.car2).and_then(|k| load_best(&k));
                 players.push(Player::new(gfx.car2, Race::new(best), players[0].cam));
                 banner = Some((
-                    "player 2: WASD, Shift brake, Tab back on wheels, G repair".into(),
+                    "player 2: WASD, Shift brake, Tab back on wheels, G repair, H turn over".into(),
                     get_time() + 4.0,
                 ));
             } else {
@@ -3058,13 +3066,7 @@ async fn main() {
                 players.truncate(1);
             }
             playing = None;
-            recording_run = new_run(
-                &map,
-                &level,
-                players[0].car,
-                sim.dig_everywhere,
-                &sim.cars[0],
-            );
+            recording_run = new_run(&map, &level, players[0].car, &sim);
         }
         if players.len() == 2 && !menu_open && gfx.car2 != players[1].car && online.is_none() {
             // player 2's new car, where the old one stands
@@ -3079,6 +3081,7 @@ async fn main() {
         if players.len() == 2 && !menu_open && online.is_none() {
             players[1].reset |= pressed(KeyCode::Tab);
             players[1].repair |= pressed(KeyCode::G);
+            players[1].turn |= pressed(KeyCode::H);
         }
         // replays are single-player: player 2's inputs aren't in the run
         if !menu_open && pressed(KeyCode::P) && sim.cars.len() == 1 && online.is_none() {
@@ -3119,8 +3122,9 @@ async fn main() {
                     if link.local_ticks() <= ticks as usize + net::DELAY {
                         let k = if menu_open { Keys::default() } else { keys };
                         let p = &mut players[link.me];
-                        link.push_local(run::input(k, p.reset, p.repair));
-                        (p.reset, p.repair) = (false, false);
+                        let mend = sim.gradual_repair && !menu_open && down(KeyCode::F);
+                        link.push_local(run::input(k, p.reset, p.repair || mend, p.turn));
+                        (p.reset, p.repair, p.turn) = (false, false, false);
                     }
                     match link.inputs(ticks as usize) {
                         Some(i) => Some(i),
@@ -3140,7 +3144,12 @@ async fn main() {
                     *i += 1;
                     r.inputs[*i - 1]
                 }
-                (None, None) => run::input(keys, players[0].reset, players[0].repair),
+                (None, None) => run::input(
+                    keys,
+                    players[0].reset,
+                    players[0].repair || (sim.gradual_repair && !menu_open && down(KeyCode::F)),
+                    players[0].turn,
+                ),
             };
             if playing.as_ref().is_some_and(|(r, i)| *i >= r.inputs.len()) {
                 playing = None;
@@ -3152,12 +3161,17 @@ async fn main() {
             for (i, p) in players.iter_mut().enumerate().skip(1) {
                 inputs.push(match &net_inputs {
                     Some(n) => n[i],
-                    None => run::input(keys2, p.reset, p.repair),
+                    None => run::input(
+                        keys2,
+                        p.reset,
+                        p.repair || (sim.gradual_repair && !menu_open && down(KeyCode::G)),
+                        p.turn,
+                    ),
                 });
             }
             if online.is_none() {
                 for p in players.iter_mut() {
-                    (p.reset, p.repair) = (false, false);
+                    (p.reset, p.repair, p.turn) = (false, false, false);
                 }
                 recording_run.inputs.push(byte);
             }
@@ -3177,7 +3191,7 @@ async fn main() {
             for (p, r) in players.iter_mut().zip(races) {
                 p.race = r;
             }
-            if byte & run::REPAIR != 0 {
+            if byte & run::REPAIR != 0 && !sim.gradual_repair {
                 banner = Some(("repaired".into(), get_time() + 1.0));
             }
             // each car's wheels and time trial; player 1 also keeps the ghost and best-lap replay.
@@ -3584,10 +3598,18 @@ async fn main() {
             _ => "P1".into(),
         };
         let hud = format!(
-            "{help} car {}  {:3.0} km/h   damage {:2.0}%   ruts {dents}{}",
+            "{help} car {}  {:3.0} km/h   damage {:2.0}%{}   ruts {dents}{}",
             players[me].car + 1,
             speed * 0.019 * 3.6, // ~210 world units per 4 m car
             sim.cars[me].damage() * 100.0,
+            if sim.gradual_repair {
+                format!(
+                    "   repair {:3.0}%",
+                    sim.cars[me].budget() as f32 / REPAIR_FULL as f32 * 100.0
+                )
+            } else {
+                String::new()
+            },
             if sim.dig_everywhere {
                 "   (soft ground)"
             } else {
@@ -3960,6 +3982,7 @@ mod tests {
             skin2: String::new(),
             join: "192.168.1.20".into(),
             guide: true,
+            gradual: true,
             host_label: String::new(),
             join_label: String::new(),
             players: 1,
@@ -3984,6 +4007,7 @@ mod tests {
             skin2: "Y.PCX".into(),
             join: "192.168.1.20".into(),
             guide: false,
+            gradual: false,
             host_label: String::new(),
             join_label: String::new(),
             players: 1,

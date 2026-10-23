@@ -24,7 +24,8 @@ cargo run --release
 | ← / → | left stick or d-pad | steer |
 | Space | B | brake |
 | R | Y | put the car back on its wheels (time trial: on the last checkpoint, facing the next); dents stay |
-| F | Back | repair the car (a fresh one where it stands) |
+| F | Back | repair the car: a fresh one where it stands, or with Esc menu → Race → Repair: gradual, hold it to mend the dents from a budget that refills in ~90 s (shown on the HUD) |
+| T | left shoulder | turn the car over where it stands; dents stay |
 | 1–5 | | switch car (also Esc menu → Race → Car, with a turning preview; remembered). Race → Skin repaints it with one of the 73 community skins in `assets/skins/` |
 | C | right shoulder | camera: chase / bumper / orbit (Q/E rotate) / top-down |
 | W | | spring wireframe |
@@ -49,7 +50,7 @@ what the game plays (engine, skid, thuds) to a WAV while you drive, for checking
 ## Two players
 
 Split screen on one keyboard: Esc menu → Players, or `--players 2` (player 2's car: Race → P2 car). Player 2 drives with WASD, Left
-Shift brakes, Tab puts the car back on its wheels, G repairs, and joins beside player 1. Both run
+Shift brakes, Tab puts the car back on its wheels, G repairs, H turns it over, and joins beside player 1. Both run
 their own time trial with placings (1st/2nd by laps, checkpoints and distance to the next). The
 cars collide: the original has collision code but never fills its hull table, so Reformers uses
 each car's bounding box (see docs/re-notes.md). Replays are single-player.

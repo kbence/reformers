@@ -13,11 +13,13 @@ const RIGHT: u8 = 8;
 const BRAKE: u8 = 16;
 /// R: back on the wheels (on the last checkpoint in a time trial), dents kept.
 pub const RESPAWN: u8 = 32;
-/// F: a fresh car where this one stands.
+/// F: a fresh car where this one stands, or with `Sim::gradual_repair` a tick of mending (held).
 pub const REPAIR: u8 = 64;
+/// T: back on the wheels where it stands, dents kept (#58).
+pub const TURN_OVER: u8 = 128;
 
 /// One tick's input byte.
-pub fn input(k: Keys, respawn: bool, repair: bool) -> u8 {
+pub fn input(k: Keys, respawn: bool, repair: bool, turn_over: bool) -> u8 {
     [
         (k.throttle, THROTTLE),
         (k.reverse, REVERSE),
@@ -26,6 +28,7 @@ pub fn input(k: Keys, respawn: bool, repair: bool) -> u8 {
         (k.brake, BRAKE),
         (respawn, RESPAWN),
         (repair, REPAIR),
+        (turn_over, TURN_OVER),
     ]
     .iter()
     .filter(|(on, _)| *on)
@@ -49,9 +52,19 @@ pub struct Tick {
 }
 
 /// R: on the last checkpoint facing the next (time trial), else upright where it is.
-fn respawn(sim: &mut Sim, i: usize, car: &Car, track: Option<&Track>, race: &mut Race) {
+/// Back on the wheels, dents kept: at the last checkpoint in a time trial (R), or where it
+/// stands (`in_place`, turn over).
+fn respawn(
+    sim: &mut Sim,
+    i: usize,
+    car: &Car,
+    track: Option<&Track>,
+    race: &mut Race,
+    in_place: bool,
+) {
     let [x, y, _] = sim.cars[i].centre();
     let ([x, y], h) = track
+        .filter(|_| !in_place)
         .and_then(|t| race.respawn(t))
         .unwrap_or(([x, y], sim.cars[i].heading()));
     sim.cars[i] = sim.cars[i].respawned(car, &sim.terrain, x as u16, y as u16, h);
@@ -86,14 +99,20 @@ pub fn tick_all(
 ) -> Vec<Tick> {
     let mut respawned = vec![false; inputs.len()];
     for (i, &input) in inputs.iter().enumerate() {
-        if input & REPAIR != 0 {
+        if input & REPAIR != 0 && sim.gradual_repair {
+            sim.cars[i].mend();
+        } else if input & REPAIR != 0 {
             let [x, y, _] = sim.cars[i].centre();
             let h = sim.cars[i].heading();
             sim.cars[i] = SimCar::spawn_facing(cars[i], &sim.terrain, x as u16, y as u16, h);
             respawned[i] = true;
         }
         if input & RESPAWN != 0 {
-            respawn(sim, i, cars[i], track, &mut races[i]);
+            respawn(sim, i, cars[i], track, &mut races[i], false);
+            respawned[i] = true;
+        }
+        if input & TURN_OVER != 0 {
+            respawn(sim, i, cars[i], track, &mut races[i], true);
             respawned[i] = true;
         }
     }
@@ -104,7 +123,7 @@ pub fn tick_all(
             if let Some(tr) = track
                 && tr.apply_zone(&mut sim.cars[i])
             {
-                respawn(sim, i, cars[i], track, &mut races[i]);
+                respawn(sim, i, cars[i], track, &mut races[i], false);
                 respawned[i] = true;
             }
             let event = track.and_then(|tr| {
@@ -129,6 +148,8 @@ pub struct Replay {
     pub car: u8,
     /// Started with `--soft` (all ground diggable).
     pub soft: bool,
+    /// Gradual repair (`Sim::gradual_repair`), stored in the soft byte's bit 1.
+    pub gradual: bool,
     /// Spawn x, y (world units) and heading (`SimCar::spawn_facing`).
     pub start: [u16; 3],
     pub inputs: Vec<u8>,
@@ -137,14 +158,14 @@ pub struct Replay {
 const MAGIC: &[u8; 4] = b"RFR1";
 
 impl Replay {
-    /// `RFR1`, map name (u8 length + bytes), key (u64), car, soft, start x/y/heading (u16 ×3),
+    /// `RFR1`, map name (u8 length + bytes), key (u64), car, flags (1 soft, 2 gradual repair), start x/y/heading (u16 ×3),
     /// tick count (u32), then (run length u16, input byte) pairs. All little-endian.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = MAGIC.to_vec();
         out.push(self.map.len() as u8);
         out.extend(self.map.as_bytes());
         out.extend(self.key.to_le_bytes());
-        out.extend([self.car, self.soft as u8]);
+        out.extend([self.car, self.soft as u8 | (self.gradual as u8) << 1]);
         self.start.iter().for_each(|v| out.extend(v.to_le_bytes()));
         out.extend((self.inputs.len() as u32).to_le_bytes());
         let mut i = 0;
@@ -188,7 +209,8 @@ impl Replay {
             map,
             key: u64::from_le_bytes(h[0..8].try_into().unwrap()),
             car: h[8],
-            soft: h[9] != 0,
+            soft: h[9] & 1 != 0,
+            gradual: h[9] & 2 != 0,
             start: [u16_at(10), u16_at(12), u16_at(14)],
             inputs,
         })
@@ -208,8 +230,8 @@ mod tests {
             right: true,
             ..Keys::default()
         };
-        let b = input(k, true, false);
-        assert_eq!(b, THROTTLE | RIGHT | RESPAWN);
+        let b = input(k, true, false, true);
+        assert_eq!(b, THROTTLE | RIGHT | RESPAWN | TURN_OVER);
         let back = keys(b);
         assert!(back.throttle && back.right && !back.left && !back.brake && !back.reverse);
     }
@@ -221,6 +243,7 @@ mod tests {
             key: 0x0123_4567_89ab_cdef,
             car: 3,
             soft: true,
+            gradual: true,
             start: [0x7a00, 0x8900, 0x4000],
             inputs: [vec![1u8; 70_000], vec![0, 5, 5, 96]].concat(),
         };
@@ -261,6 +284,7 @@ mod tests {
                 throttle: true,
                 ..Keys::default()
             },
+            false,
             false,
             false,
         );
@@ -325,6 +349,7 @@ mod tests {
                 },
                 t == 1500,
                 t == 2000,
+                t == 2500,
             );
             recorded.push(b);
             b

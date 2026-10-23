@@ -191,6 +191,9 @@ struct Spring {
     max: u16,
     /// Total yield so far (×64 units, like `rest`): how bent this spring is. Not in the original.
     bent: u16,
+    /// `rest` as built (measured on the first tick when the file leaves it to that), what
+    /// `mend` pulls a bent or broken spring back to. Not in the original.
+    built: i16,
 }
 
 #[derive(Clone, Copy, Default)]
@@ -202,6 +205,7 @@ pub struct Keys {
     pub brake: bool,
 }
 
+#[derive(Clone)]
 pub struct SimCar {
     atoms: Vec<Atom>,
     springs: Vec<Spring>,
@@ -212,7 +216,24 @@ pub struct SimCar {
     steer_now: i16,
     throttle_now: i16,
     spin: [i32; 4], // +0x42..
+    /// Gradual repair's budget (#58), in `REPAIR_FULL` units: spent by `mend`, refilled every tick.
+    budget: u32,
+    /// `mend` ran this tick: the springs hold firm instead of bending or breaking, so a car
+    /// mended on its roof or against a wall isn't crushed again by its own weight.
+    mending: bool,
 }
+
+/// The budget that repairs a car from damage 1.0 to as built.
+pub const REPAIR_FULL: u32 = 1 << 16;
+/// A full budget bar: one whole repair (ponytail: try `REPAIR_FULL / 2` for a harsher game).
+pub const REPAIR_CAP: u32 = REPAIR_FULL;
+/// Refill per tick: empty to full in ~90 s.
+const REPAIR_RECHARGE: u32 = REPAIR_CAP / (90 * TICK_HZ);
+/// How far `mend` moves a spring's rest length per tick (×64 units): an 8-unit dent in ~1 s, a
+/// wreck in 5–10 s of holding F.
+const MEND_STEP: i16 = 4;
+/// A rigid spring bent this far (×64) or broken counts fully towards `damage`.
+const FULL_HURT: i64 = 8 * 64;
 
 #[derive(Clone, Copy)]
 struct Particle {
@@ -258,6 +279,8 @@ pub struct Sim {
     trunks: Vec<Trunk>,
     /// Hard landings so far (vn < −6.0, where `0x4a71` calls the thud sound `0x5864`).
     pub impacts: u32,
+    /// Repair (`run::REPAIR`) mends while held, from a budget (#58), instead of a fresh car at once.
+    pub gradual_repair: bool,
 }
 
 /// How deep soft dirt ruts can get, in MAP height steps (16 world units each).
@@ -321,6 +344,7 @@ impl SimCar {
                 min: (s.min * 64.0) as u16,
                 max: (s.max * 64.0) as u16,
                 bent: 0,
+                built: s.rest.map_or(-1, |r| (r * 64.0) as i16),
             })
             .collect();
         let mode = match car.drive {
@@ -338,6 +362,8 @@ impl SimCar {
             steer_now: 0,
             throttle_now: 0,
             spin: [0; 4],
+            budget: REPAIR_CAP,
+            mending: false,
         }
     }
 
@@ -480,23 +506,79 @@ impl SimCar {
     pub fn respawned(&self, car: &Car, terrain: &Terrain, x: u16, y: u16, heading: u16) -> SimCar {
         let mut c = SimCar::spawn_facing(car, terrain, x, y, heading);
         c.springs.clone_from(&self.springs);
+        c.budget = self.budget;
         c
     }
 
     /// 0.0 (as built) to 1.0: rigid springs bent by 8 units or more, or broken, count fully.
     pub fn damage(&self) -> f32 {
-        let rigid: Vec<&Spring> = self.springs.iter().filter(|s| s.kind & 0x7f == 1).collect();
-        let hurt: f32 = rigid
-            .iter()
+        let (hurt, most) = self.hurt();
+        hurt as f32 / most as f32
+    }
+
+    /// (how hurt, the most it can be): `FULL_HURT` per broken rigid spring, its bend up to that
+    /// for the rest. Integers, so the repair budget spends the same on every machine.
+    fn hurt(&self) -> (i64, i64) {
+        let rigid = self.springs.iter().filter(|s| s.kind & 0x7f == 1);
+        let hurt = rigid
+            .clone()
             .map(|s| {
                 if s.kind & 0x80 != 0 {
-                    1.0
+                    FULL_HURT
                 } else {
-                    (s.bent as f32 / (8.0 * 64.0)).min(1.0)
+                    (s.bent as i64).min(FULL_HURT)
                 }
             })
             .sum();
-        hurt / rigid.len().max(1) as f32
+        (hurt, rigid.count().max(1) as i64 * FULL_HURT)
+    }
+
+    /// Gradual repair's budget, 0 to `REPAIR_CAP` (`REPAIR_FULL` = one whole repair).
+    pub fn budget(&self) -> u32 {
+        self.budget
+    }
+
+    /// One tick of gradual repair (#58), while the budget lasts: broken rigid springs rejoin at
+    /// the length they hang at, and every bent one moves `MEND_STEP` back towards its built
+    /// length, so the dents pull out over several seconds. Spends what it fixes.
+    pub fn mend(&mut self) {
+        if self.budget == 0 {
+            return;
+        }
+        self.mending = true;
+        let before = self.hurt();
+        let atoms = &self.atoms;
+        for s in self
+            .springs
+            .iter_mut()
+            .filter(|s| s.kind & 0x7f == 1 && s.built >= 0)
+        {
+            let d = [0, 1, 2].map(|k| atoms[s.a].pos[k].wrapping_sub(atoms[s.b].pos[k]) as f64);
+            let len = ((d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().round() as i64) >> 10;
+            // ponytail: a part flung > 512 units off stays off; instant repair (F) still mends it
+            let Ok(len) = i16::try_from(len) else {
+                continue;
+            };
+            if s.kind & 0x80 != 0 {
+                s.kind &= 0x7f;
+                (s.rest, s.aux) = (len, len as u16);
+                s.bent = (len as i32 - s.built as i32)
+                    .unsigned_abs()
+                    .min(u16::MAX as u32) as u16;
+            }
+            // towards the built length, but never so far from the present one that the spring
+            // breaks (stretched) or yields (squeezed) again: half of `cfg` either way
+            let (lo, hi) = (len.saturating_sub(0x800), len.saturating_add(0x400));
+            let to = s.rest + (s.built - s.rest).clamp(-MEND_STEP, MEND_STEP);
+            s.rest = to.clamp(lo.min(s.rest), hi.max(s.rest));
+            s.aux = s.rest as u16;
+            // what's left of the bend: `bent` sums every yield, back and forth
+            let left = (s.built as i32 - s.rest as i32).unsigned_abs() as u16;
+            s.bent = s.bent.saturating_sub(MEND_STEP as u16).min(left);
+        }
+        let ((was, most), (now, _)) = (before, self.hurt());
+        let cost = (was - now).max(0) * REPAIR_FULL as i64 / most;
+        self.budget = self.budget.saturating_sub(cost as u32);
     }
 
     pub fn broken_springs(&self) -> usize {
@@ -663,6 +745,7 @@ impl Sim {
             rut_floor: vec![0; SIZE * SIZE],
             trunks: Vec::new(),
             impacts: 0,
+            gradual_repair: false,
         }
     }
 
@@ -711,10 +794,12 @@ impl Sim {
         for i in 0..self.cars.len() {
             let car = &mut self.cars[i];
             car.input(keys.get(i).copied().unwrap_or_default());
+            car.budget = (car.budget + REPAIR_RECHARGE).min(REPAIR_CAP);
             car.drive();
             self.springs(i);
             self.atoms(i);
             self.hit_trunks(i);
+            self.cars[i].mending = false;
         }
         self.collide_cars();
         self.step_particles();
@@ -794,6 +879,7 @@ impl Sim {
             if s.rest < 0 {
                 s.rest = len as i16; // 0x5000
                 s.aux = len as u16;
+                s.built = s.rest;
                 continue;
             }
             let rest = s.rest as i32;
@@ -829,7 +915,9 @@ impl Sim {
                 if e == 0 {
                     continue;
                 }
-                if (e as i16) > cfg.0 {
+                if car.mending {
+                    (len, e.clamp(cfg.1 as i32, cfg.0 as i32)) // firm, at most the limits' push
+                } else if (e as i16) > cfg.0 {
                     let y = e >> 4; // 0x4fe3: yield
                     s.bent = s
                         .bent
@@ -1391,6 +1479,36 @@ mod tests {
             SimCar::spawn(&car, &s.terrain, 0x8000, 0x9000).damage(),
             0.0
         );
+
+        // gradual repair (#58): nothing without a budget; with one, held long enough, the dents
+        // pull out even with the car still driven into the wall, spending what it fixes
+        let mut broke = s.cars[0].clone();
+        broke.budget = 0;
+        broke.mend();
+        assert_eq!(broke.damage(), hit, "an empty budget mends nothing");
+        assert_eq!(
+            s.cars[0].budget(),
+            REPAIR_CAP,
+            "crashing takes nothing from it"
+        );
+        s.cars[0].budget = REPAIR_CAP / 2;
+        let ticks = TICK_HZ * 12;
+        for _ in 0..ticks {
+            s.cars[0].mend();
+            s.tick(&[gas]);
+        }
+        let mended = s.cars[0].damage();
+        assert!(mended < hit / 10.0, "mended {hit} → {mended}");
+        let spent = REPAIR_CAP / 2 + REPAIR_RECHARGE * ticks - s.cars[0].budget();
+        let fixed = (hit - mended) * REPAIR_FULL as f32;
+        assert!(
+            spent as f32 <= fixed && spent as f32 > fixed * 0.9,
+            "spent {spent} for {fixed}"
+        );
+        for _ in 0..TICK_HZ * 91 {
+            s.tick(&[Keys::default()]);
+        }
+        assert_eq!(s.cars[0].budget(), REPAIR_CAP, "refills in ~90 s");
     }
 
     /// A car driven at a tree stops at it, dented; one driven past runs as if it weren't there.
