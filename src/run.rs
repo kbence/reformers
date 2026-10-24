@@ -3,7 +3,7 @@
 //! it bit-exactly because the sim is deterministic (see `sim::tests::scripted_drive_is_bit_exact`).
 
 use crate::car::Car;
-use crate::sim::{Keys, REPAIR_CAP, Sim, SimCar};
+use crate::sim::{Keys, Sim, SimCar};
 use crate::track::{Event, Race, Track};
 
 const THROTTLE: u8 = 1;
@@ -107,7 +107,7 @@ pub fn tick_all(
         let full = REPAIR | TURN_OVER;
         if input & full == full && sim.gradual_repair {
             // double-tapped repair: a fresh car where it stands, for a full bar
-            if sim.cars[i].budget() == REPAIR_CAP {
+            if sim.cars[i].was_full() {
                 let [x, y, _] = sim.cars[i].centre();
                 let h = sim.cars[i].heading();
                 sim.cars[i] = SimCar::spawn_facing(cars[i], &sim.terrain, x as u16, y as u16, h);
@@ -240,7 +240,7 @@ impl Replay {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sim::{SimCar, TICK_HZ};
+    use crate::sim::{REPAIR_CAP, SimCar, TICK_HZ};
     use crate::terrain::{SIZE, Terrain};
 
     /// Gradual repair held long enough after a wreck leaves the car as built: springs mended,
@@ -313,6 +313,19 @@ mod tests {
             tick(&mut sim, &car, None, &mut race, 0, t);
         }
         assert_eq!(sim.cars[0].budget(), REPAIR_CAP);
+        // dented again, then tapped twice: the first press mends a little, the second still counts
+        sim.cars[0].lift(12000);
+        for t in 0..TICK_HZ as u64 * 10 {
+            tick(&mut sim, &car, None, &mut race, 0, t);
+        }
+        let fix = input(Keys::default(), false, true, false);
+        for t in 0..20 {
+            tick(&mut sim, &car, None, &mut race, fix, t);
+        }
+        for t in 0..10 {
+            tick(&mut sim, &car, None, &mut race, 0, t);
+        }
+        assert!(sim.cars[0].budget() < REPAIR_CAP, "the first press mended");
         assert!(tick(&mut sim, &car, None, &mut race, full, 0).respawned);
         assert!(
             sim.cars[0].budget() < REPAIR_CAP / 100,

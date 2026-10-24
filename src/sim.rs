@@ -223,6 +223,9 @@ pub struct SimCar {
     /// `mend` ran this tick: the springs hold firm instead of bending or breaking, so a car
     /// mended on its roof or against a wall isn't crushed again by its own weight.
     mending: bool,
+    /// Ticks since the budget was last full: a double tap's first press already mends a little,
+    /// so the full repair asks only that the bar was full a moment ago (`was_full`).
+    full_ago: u16,
 }
 
 /// The budget that repairs a car from damage 1.0 to as built.
@@ -231,6 +234,8 @@ pub const REPAIR_FULL: u32 = 1 << 16;
 pub const REPAIR_CAP: u32 = REPAIR_FULL;
 /// Refill per tick: empty to full in ~90 s.
 const REPAIR_RECHARGE: u32 = REPAIR_CAP / (90 * TICK_HZ);
+/// How long the bar still counts as full for `was_full`: longer than a double tap.
+const FULL_GRACE: u16 = TICK_HZ as u16 / 2;
 /// How far `mend` moves a spring's rest length per tick (×64 units): an 8-unit dent in ~1 s, a
 /// wreck in 5–10 s of holding F.
 const MEND_STEP: i16 = 4;
@@ -370,6 +375,7 @@ impl SimCar {
             budget: REPAIR_CAP,
             shape: vec![],
             mending: false,
+            full_ago: 0,
         };
         c.shape = c.spans();
         c
@@ -546,6 +552,7 @@ impl SimCar {
         let mut c = SimCar::spawn_facing(car, terrain, x, y, heading);
         c.springs.clone_from(&self.springs);
         c.budget = self.budget;
+        c.full_ago = self.full_ago;
         c
     }
 
@@ -581,6 +588,12 @@ impl SimCar {
     /// Empties the repair budget (a full repair at once took it all).
     pub fn spend_all(&mut self) {
         self.budget = 0;
+        self.full_ago = u16::MAX;
+    }
+
+    /// Whether the budget was full within the last `FULL_GRACE` ticks (a double tap's full repair).
+    pub fn was_full(&self) -> bool {
+        self.full_ago <= FULL_GRACE
     }
 
     /// Whether every spring is as built (gradual repair has nothing left to mend).
@@ -850,6 +863,10 @@ impl Sim {
             let car = &mut self.cars[i];
             car.input(keys.get(i).copied().unwrap_or_default());
             car.budget = (car.budget + REPAIR_RECHARGE).min(REPAIR_CAP);
+            car.full_ago = match car.budget {
+                REPAIR_CAP => 0,
+                _ => car.full_ago.saturating_add(1),
+            };
             car.drive();
             self.springs(i);
             self.atoms(i);
