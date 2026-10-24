@@ -2450,7 +2450,7 @@ async fn main() {
         skin2: String::new(),
         join: String::new(),
         guide: true,
-        gradual: false,
+        gradual: true,
         host_label: String::new(),
         join_label: String::new(),
         players: if args.windows(2).any(|w| w[0] == "--players" && w[1] == "2") {
