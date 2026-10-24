@@ -3,7 +3,7 @@
 //! it bit-exactly because the sim is deterministic (see `sim::tests::scripted_drive_is_bit_exact`).
 
 use crate::car::Car;
-use crate::sim::{Keys, Sim, SimCar};
+use crate::sim::{Keys, REPAIR_CAP, Sim, SimCar};
 use crate::track::{Event, Race, Track};
 
 const THROTTLE: u8 = 1;
@@ -15,8 +15,13 @@ const BRAKE: u8 = 16;
 pub const RESPAWN: u8 = 32;
 /// F: a fresh car where this one stands, or with `Sim::gradual_repair` a tick of mending (held).
 pub const REPAIR: u8 = 64;
-/// T: back on the wheels where it stands, dents kept (#58).
+/// T: back on the wheels where it stands, dents kept (#58). With `REPAIR` under gradual repair
+/// (F double-tapped): a fresh car where it stands, if the budget is full, which it then spends.
 pub const TURN_OVER: u8 = 128;
+
+/// World units the body may be out of shape (`SimCar::misshapen`) with its springs whole before
+/// gradual repair snaps it back; a sound car reads under 5, even mid-jump.
+const FOLDED: f64 = 12.0;
 
 /// One tick's input byte.
 pub fn input(k: Keys, respawn: bool, repair: bool, turn_over: bool) -> u8 {
@@ -99,8 +104,23 @@ pub fn tick_all(
 ) -> Vec<Tick> {
     let mut respawned = vec![false; inputs.len()];
     for (i, &input) in inputs.iter().enumerate() {
-        if input & REPAIR != 0 && sim.gradual_repair {
+        let full = REPAIR | TURN_OVER;
+        if input & full == full && sim.gradual_repair {
+            // double-tapped repair: a fresh car where it stands, for a full bar
+            if sim.cars[i].budget() == REPAIR_CAP {
+                let [x, y, _] = sim.cars[i].centre();
+                let h = sim.cars[i].heading();
+                sim.cars[i] = SimCar::spawn_facing(cars[i], &sim.terrain, x as u16, y as u16, h);
+                sim.cars[i].spend_all();
+                respawned[i] = true;
+            }
+        } else if input & REPAIR != 0 && sim.gradual_repair {
             sim.cars[i].mend();
+            // springs whole but the body still folded (a big wreck): back in shape where it stands
+            if sim.cars[i].whole() && sim.cars[i].misshapen() > FOLDED {
+                respawn(sim, i, cars[i], track, &mut races[i], true);
+                respawned[i] = true;
+            }
         } else if input & REPAIR != 0 {
             let [x, y, _] = sim.cars[i].centre();
             let h = sim.cars[i].heading();
@@ -111,7 +131,7 @@ pub fn tick_all(
             respawn(sim, i, cars[i], track, &mut races[i], false);
             respawned[i] = true;
         }
-        if input & TURN_OVER != 0 {
+        if input & TURN_OVER != 0 && !(sim.gradual_repair && input & REPAIR != 0) {
             respawn(sim, i, cars[i], track, &mut races[i], true);
             respawned[i] = true;
         }
@@ -220,8 +240,85 @@ impl Replay {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::sim::TICK_HZ;
-    use crate::terrain::Terrain;
+    use crate::sim::{SimCar, TICK_HZ};
+    use crate::terrain::{SIZE, Terrain};
+
+    /// Gradual repair held long enough after a wreck leaves the car as built: springs mended,
+    /// broken ones rejoined, and the body back in shape even where the right lengths had
+    /// settled folded, without the repair throwing the car about (a crash into a wall, then a
+    /// long drop).
+    #[test]
+    fn gradual_repair_ends_as_built() {
+        crate::need_assets!();
+        let car = crate::car::parse(&crate::assets::read("CAR1.DAT").unwrap()).unwrap();
+        let mut t = Terrain {
+            height: vec![40; SIZE * SIZE],
+            colour: vec![0x60; SIZE * SIZE],
+            palette: [[0; 3]; 256],
+        };
+        for x in 0..SIZE {
+            t.height[100 * SIZE + x] = 200; // a wall across the road
+        }
+        let mut sim = Sim::new(t);
+        sim.gradual_repair = true;
+        sim.cars
+            .push(SimCar::spawn(&car, &sim.terrain, 0x8000, 0x8000));
+        let mut race = Race::new(None);
+        let gas = input(
+            Keys {
+                throttle: true,
+                ..Keys::default()
+            },
+            false,
+            false,
+            false,
+        );
+        for t in 0..TICK_HZ as u64 * 12 {
+            tick(&mut sim, &car, None, &mut race, gas, t);
+        }
+        sim.cars[0] = sim.cars[0].respawned(&car, &sim.terrain, 0x8000, 0x9000, 0x2000);
+        sim.cars[0].lift(12000);
+        for t in 0..TICK_HZ as u64 * 10 {
+            tick(&mut sim, &car, None, &mut race, 0, t);
+        }
+        assert!(sim.cars[0].broken_springs() > 0, "the drop broke it");
+        assert!(sim.cars[0].misshapen() > FOLDED, "and bent it");
+        let ground = sim.cars[0].centre()[2];
+        let fix = input(Keys::default(), false, true, false);
+        let mut top = 0f32;
+        for t in 0..TICK_HZ as u64 * 30 {
+            tick(&mut sim, &car, None, &mut race, fix, t);
+            top = top.max(sim.cars[0].centre()[2]);
+        }
+        assert!(
+            top < ground + 200.0,
+            "repairing threw it from {ground} to {top}"
+        );
+        let c = &sim.cars[0];
+        assert!(c.whole(), "damage left: {}", c.damage());
+        assert!(
+            c.misshapen() < FOLDED,
+            "still out of shape: {}",
+            c.misshapen()
+        );
+
+        // double-tapped (repair + turn over): only with a full bar, which it then spends
+        let full = input(Keys::default(), false, true, true);
+        sim.cars[0].spend_all();
+        assert!(
+            !tick(&mut sim, &car, None, &mut race, full, 0).respawned,
+            "no full repair on a part-empty bar"
+        );
+        for t in 0..TICK_HZ as u64 * 92 {
+            tick(&mut sim, &car, None, &mut race, 0, t);
+        }
+        assert_eq!(sim.cars[0].budget(), REPAIR_CAP);
+        assert!(tick(&mut sim, &car, None, &mut race, full, 0).respawned);
+        assert!(
+            sim.cars[0].budget() < REPAIR_CAP / 100,
+            "a full repair takes the bar"
+        );
+    }
 
     #[test]
     fn input_bits_round_trip() {

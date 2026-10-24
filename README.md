@@ -24,7 +24,7 @@ cargo run --release
 | ← / → | left stick or d-pad | steer |
 | Space | B | brake |
 | R | Y | put the car back on its wheels (time trial: on the last checkpoint, facing the next); dents stay |
-| F | Back | repair the car: a fresh one where it stands, or with Esc menu → Race → Repair: gradual, hold it to mend the dents from a budget that refills in ~90 s (shown on the HUD) |
+| F | Back | repair the car: a fresh one where it stands, or with Esc menu → Race → Repair: gradual, hold it to mend the dents from a budget that refills in ~90 s (shown on the HUD); double-tap it for a fresh car at once, which takes a full bar |
 | T | left shoulder | turn the car over where it stands; dents stay |
 | 1–5 | | switch car (also Esc menu → Race → Car, with a turning preview; remembered). Race → Skin repaints it with one of the 73 community skins in `assets/skins/` |
 | C | right shoulder | camera: chase / bumper / orbit (Q/E rotate) / top-down |

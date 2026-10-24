@@ -407,9 +407,26 @@ struct Player {
     reset: bool,
     repair: bool,
     turn: bool,
+    /// Repair double-tapped (gradual repair): a full repair, sent as repair + turn over.
+    full: bool,
+    /// When repair was last pressed, to spot a double tap.
+    tapped: f64,
 }
 
+/// Two presses of repair within this many seconds are a double tap (a full repair).
+const DOUBLE_TAP: f64 = 0.35;
+
 impl Player {
+    /// Repair pressed this frame (`hit`): under gradual repair, the second of two quick ones
+    /// asks for a full repair.
+    fn tap(&mut self, hit: bool, gradual: bool) {
+        if hit {
+            let now = get_time();
+            self.full |= gradual && now - self.tapped < DOUBLE_TAP;
+            self.tapped = now;
+        }
+    }
+
     fn new(car: usize, race: Race, cam: Vec3) -> Player {
         Player {
             car,
@@ -420,6 +437,8 @@ impl Player {
             reset: false,
             repair: false,
             turn: false,
+            full: false,
+            tapped: f64::MIN,
         }
     }
 }
@@ -1601,7 +1620,7 @@ const CONTROLS: [&str; 13] = [
     "Arrows / left stick: drive",
     "Space / B: brake",
     "R / Y: back on the wheels (last checkpoint)",
-    "F / Back: repair (gradual: hold)",
+    "F / Back: repair (gradual: hold; double-tap for all)",
     "T / left shoulder: turn over where it stands",
     "C / right shoulder: camera (Q / E orbit)",
     "1-5: switch car",
@@ -3040,6 +3059,7 @@ async fn main() {
         if !menu_open && playing.is_none() {
             players[me].reset |= pressed(KeyCode::R);
             players[me].repair |= pressed(KeyCode::F);
+            players[me].tap(pressed(KeyCode::F), sim.gradual_repair);
             players[me].turn |= pressed(KeyCode::T);
         }
         if gfx.players != sim.cars.len() && online.is_none() {
@@ -3081,6 +3101,7 @@ async fn main() {
         if players.len() == 2 && !menu_open && online.is_none() {
             players[1].reset |= pressed(KeyCode::Tab);
             players[1].repair |= pressed(KeyCode::G);
+            players[1].tap(pressed(KeyCode::G), sim.gradual_repair);
             players[1].turn |= pressed(KeyCode::H);
         }
         // replays are single-player: player 2's inputs aren't in the run
@@ -3123,8 +3144,13 @@ async fn main() {
                         let k = if menu_open { Keys::default() } else { keys };
                         let p = &mut players[link.me];
                         let mend = sim.gradual_repair && !menu_open && down(KeyCode::F);
-                        link.push_local(run::input(k, p.reset, p.repair || mend, p.turn));
-                        (p.reset, p.repair, p.turn) = (false, false, false);
+                        link.push_local(run::input(
+                            k,
+                            p.reset,
+                            p.repair || mend || p.full,
+                            p.turn || p.full,
+                        ));
+                        (p.reset, p.repair, p.turn, p.full) = (false, false, false, false);
                     }
                     match link.inputs(ticks as usize) {
                         Some(i) => Some(i),
@@ -3147,8 +3173,10 @@ async fn main() {
                 (None, None) => run::input(
                     keys,
                     players[0].reset,
-                    players[0].repair || (sim.gradual_repair && !menu_open && down(KeyCode::F)),
-                    players[0].turn,
+                    players[0].repair
+                        || players[0].full
+                        || (sim.gradual_repair && !menu_open && down(KeyCode::F)),
+                    players[0].turn || players[0].full,
                 ),
             };
             if playing.as_ref().is_some_and(|(r, i)| *i >= r.inputs.len()) {
@@ -3164,14 +3192,16 @@ async fn main() {
                     None => run::input(
                         keys2,
                         p.reset,
-                        p.repair || (sim.gradual_repair && !menu_open && down(KeyCode::G)),
-                        p.turn,
+                        p.repair
+                            || p.full
+                            || (sim.gradual_repair && !menu_open && down(KeyCode::G)),
+                        p.turn || p.full,
                     ),
                 });
             }
             if online.is_none() {
                 for p in players.iter_mut() {
-                    (p.reset, p.repair, p.turn) = (false, false, false);
+                    (p.reset, p.repair, p.turn, p.full) = (false, false, false, false);
                 }
                 recording_run.inputs.push(byte);
             }

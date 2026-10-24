@@ -218,6 +218,8 @@ pub struct SimCar {
     spin: [i32; 4], // +0x42..
     /// Gradual repair's budget (#58), in `REPAIR_FULL` units: spent by `mend`, refilled every tick.
     budget: u32,
+    /// `spans` as built, for `misshapen`.
+    shape: Vec<f64>,
     /// `mend` ran this tick: the springs hold firm instead of bending or breaking, so a car
     /// mended on its roof or against a wall isn't crushed again by its own weight.
     mending: bool,
@@ -232,6 +234,9 @@ const REPAIR_RECHARGE: u32 = REPAIR_CAP / (90 * TICK_HZ);
 /// How far `mend` moves a spring's rest length per tick (×64 units): an 8-unit dent in ~1 s, a
 /// wreck in 5–10 s of holding F.
 const MEND_STEP: i16 = 4;
+/// While mending, a rigid spring corrects at most this much of its error (×64) per tick: what a
+/// yielding spring gives (`cfg.0 >> 4`).
+const MEND_PUSH: i32 = 0x80;
 /// A rigid spring bent this far (×64) or broken counts fully towards `damage`.
 const FULL_HURT: i64 = 8 * 64;
 
@@ -352,7 +357,7 @@ impl SimCar {
             Drive::Front => 1,
             Drive::All => 2,
         };
-        SimCar {
+        let mut c = SimCar {
             atoms,
             springs,
             mode,
@@ -363,8 +368,42 @@ impl SimCar {
             throttle_now: 0,
             spin: [0; 4],
             budget: REPAIR_CAP,
+            shape: vec![],
             mending: false,
+        };
+        c.shape = c.spans();
+        c
+    }
+
+    /// How far (world units) the body is from its built shape: the largest change in distance
+    /// between any two body atoms. Right spring lengths can still leave it folded inside out
+    /// after a big wreck; then gradual repair finishes by putting it back in shape (`run`).
+    pub fn misshapen(&self) -> f64 {
+        let now = self.spans();
+        self.shape
+            .iter()
+            .zip(&now)
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0, f64::max)
+            / 65536.0
+    }
+
+    /// The distance (16.16) between each pair of body atoms, wheels left out (the suspension
+    /// moves them): unlike positions, the same however the car lies, so a fold shows in it.
+    fn spans(&self) -> Vec<f64> {
+        let body: Vec<&Atom> = self
+            .atoms
+            .iter()
+            .filter(|a| !matches!(a.kind, 1 | 2))
+            .collect();
+        let mut out = vec![];
+        for (i, a) in body.iter().enumerate() {
+            for b in &body[i + 1..] {
+                let d = [0, 1, 2].map(|k| a.pos[k].wrapping_sub(b.pos[k]) as f64);
+                out.push((d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt());
+            }
         }
+        out
     }
 
     /// The car's oriented bounding box for car–car contact: centre (an offset from atom 0), unit
@@ -531,6 +570,22 @@ impl SimCar {
             })
             .sum();
         (hurt, rigid.count().max(1) as i64 * FULL_HURT)
+    }
+
+    /// Raise the whole car by `dz` world units, for tests that drop it.
+    #[cfg(test)]
+    pub(crate) fn lift(&mut self, dz: i32) {
+        self.atoms.iter_mut().for_each(|a| a.pos[2] += dz << 16);
+    }
+
+    /// Empties the repair budget (a full repair at once took it all).
+    pub fn spend_all(&mut self) {
+        self.budget = 0;
+    }
+
+    /// Whether every spring is as built (gradual repair has nothing left to mend).
+    pub fn whole(&self) -> bool {
+        self.hurt().0 == 0
     }
 
     /// Gradual repair's budget, 0 to `REPAIR_CAP` (`REPAIR_FULL` = one whole repair).
@@ -916,7 +971,9 @@ impl Sim {
                     continue;
                 }
                 if car.mending {
-                    (len, e.clamp(cfg.1 as i32, cfg.0 as i32)) // firm, at most the limits' push
+                    // firm, but pushing no harder than a spring that yields: dozens of crushed
+                    // springs each pushing their full error would scramble the car and launch it
+                    (len, e.clamp(-MEND_PUSH, MEND_PUSH))
                 } else if (e as i16) > cfg.0 {
                     let y = e >> 4; // 0x4fe3: yield
                     s.bent = s
