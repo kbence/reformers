@@ -7,15 +7,15 @@ use crate::terrain::{SIZE, Terrain};
 
 pub const TICK_HZ: u32 = 120;
 const GRAVITY: i32 = 0x1800; // [0x6a], set at 0x00e2
-const DIG_COLOUR: u8 = 0x0f; // only particles from this ground colour dig (0x0be6)
+pub const DIG_COLOUR: u8 = 0x0f; // only particles from this ground colour dig (0x0be6)
 const MAX_PARTICLES: usize = 0x15e0 / 0x1c;
 
 // Per material (COL >> 4): DS 0xea29 / 0xea49 / 0xea59.
-const GRIP: [i32; 16] = [
+pub const GRIP: [i32; 16] = [
     16, 25, 20, 40, 30, 25, 16, 20, 40, 25, 25, 25, 16, 25, 16, 16,
 ];
-const DAMP: [u8; 16] = [12, 9, 10, 10, 10, 10, 8, 10, 10, 10, 10, 10, 8, 6, 10, 10];
-const MAX_LOAD: [i32; 16] = [
+pub const DAMP: [u8; 16] = [12, 9, 10, 10, 10, 10, 8, 10, 10, 10, 10, 10, 8, 6, 10, 10];
+pub const MAX_LOAD: [i32; 16] = [
     0x30000, 0x18000, 0x20000, 0xc000, 0x20000, 0x20000, 0x20000, 0x20000, 0x20000, 0x20000,
     0x20000, 0x20000, 0x10000, 0x10000, 0x10000, 0x10000,
 ];

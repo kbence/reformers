@@ -170,7 +170,9 @@ the tool's settings on the right, the cell under the mouse at the bottom.
   relief in flat colours or in its MAPTEX textures (zoomed in, the tiles themselves; out, their
   average colours), or the heights as grey.
 - **Colours:** brush, pencil, pick. The picker shows the map's MAPTEX tiles: row = surface
-  material, column = shade.
+  material, column = shade. Hovering a colour shows its material's grip, load and drag next to
+  the best material's, and makes its cells blink on the map (Shift: the whole material's). The
+  brown dot marks the colour whose dirt digs ruts.
 - **Checkpoints:** spawn (arrow keys turn it), gate (drag a line; it goes after the selected
   gate), renumber (click the gates in driving order; Shift-click gives a fork's other branch the
   same number), reset / boost / slow zones, soft dirt, eraser. The gate list on the right

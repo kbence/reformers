@@ -14,6 +14,7 @@ mod ui;
 
 use edit::{Brush, Edge, Layer, Shape};
 use macroquad::prelude::*;
+use reformers::sim::{DAMP, DIG_COLOUR, GRIP, MAX_LOAD};
 use reformers::terrain::SIZE;
 use reformers::track::{BOOST, RESET, SLOW, SOFT, Track};
 use reformers::{assets, objects, pcx};
@@ -804,6 +805,9 @@ async fn main() {
     )
     .unwrap_or_else(|e| fail(&format!("the textured view's shader: {e}")));
     let overlay = texture(&[0; SIZE * SIZE * 4]);
+    // the cells of the colour hovered in the picker (Shift: its whole material), blinking
+    let lit = texture(&[0; SIZE * SIZE * 4]);
+    let mut hovered: Option<u8> = None;
     let swatches = texture(&[0; SIZE * SIZE * 4]);
     let (mut ground_dirty, mut check_dirty, mut swatch_dirty) = (true, true, true);
     let objlayer = texture(&[0; SIZE * SIZE * 4]);
@@ -1583,6 +1587,26 @@ async fn main() {
                     gl_use_default_material();
                 }
             }
+            if let Some(v) = hovered {
+                let whole = is_key_down(KeyCode::LeftShift) || is_key_down(KeyCode::RightShift);
+                let on = |c: u8| c == v || whole && c >> 4 == v >> 4;
+                let rgba = doc
+                    .colour
+                    .iter()
+                    .flat_map(|&c| [255, 255, 255, 255 * on(c) as u8]);
+                update(&lit, rgba.collect());
+                let a = 0.45 + 0.35 * (get_time() as f32 * 8.0).sin();
+                draw_texture_ex(
+                    &lit,
+                    origin.x,
+                    origin.y,
+                    Color::new(1.0, 1.0, 1.0, a),
+                    DrawTextureParams {
+                        dest_size: Some(size),
+                        ..Default::default()
+                    },
+                );
+            }
             if tab == Tab::Objects {
                 draw_texture_ex(
                     &objlayer,
@@ -1792,6 +1816,7 @@ async fn main() {
         }
         // right: the tool's settings
         let (px, pw) = (w - right + 10.0, right - 20.0);
+        hovered = None;
         let mut col = Column {
             x: px,
             w: pw,
@@ -2135,6 +2160,7 @@ async fn main() {
                             | (((mouse.x - g.x) / tile) as u8).min(15);
                         mark(v, WHITE);
                         shown = v;
+                        hovered = Some(v);
                         if is_mouse_button_pressed(MouseButton::Left) {
                             colour = v;
                             if t == Tool::Pick {
@@ -2142,6 +2168,18 @@ async fn main() {
                             }
                         }
                     }
+                    // the colour whose dirt digs ruts: a brown dot in its corner
+                    let (dx, dy) = (
+                        g.x + (DIG_COLOUR & 15) as f32 * tile,
+                        g.y + (DIG_COLOUR >> 4) as f32 * tile,
+                    );
+                    draw_circle(
+                        dx + tile - 5.0,
+                        dy + 5.0,
+                        3.5,
+                        Color::new(0.45, 0.25, 0.1, 1.0),
+                    );
+                    draw_circle_lines(dx + tile - 5.0, dy + 5.0, 3.5, 1.0, BLACK);
                     mark(colour, YELLOW);
                     let [r, gg, b] = doc.palette[shown as usize];
                     draw_rectangle(px, col.y, 26.0, 26.0, Color::from_rgba(r, gg, b, 255));
@@ -2156,6 +2194,40 @@ async fn main() {
                         WHITE,
                     );
                     col.row(26.0);
+                    // what the material does to a car (the sim's tables), against the best of
+                    // each: grip (slip held before sliding), load (weight that counts towards
+                    // grip), drag (speed lost per tick on contact)
+                    let m = (shown >> 4) as usize;
+                    let bars = [
+                        (
+                            "grip",
+                            GRIP.iter().min().copied().unwrap() as f32 / GRIP[m] as f32,
+                        ),
+                        (
+                            "load",
+                            MAX_LOAD[m] as f32 / *MAX_LOAD.iter().max().unwrap() as f32,
+                        ),
+                        (
+                            "drag",
+                            0.5f32.powi((DAMP[m] - DAMP.iter().min().unwrap()) as i32),
+                        ),
+                    ];
+                    for (label, t) in bars {
+                        let r = col.row(16.0);
+                        draw_rectangle(r.x, r.y, r.w, r.h, Color::new(0.2, 0.21, 0.24, 1.0));
+                        draw_rectangle(r.x, r.y, r.w * t, r.h, Color::new(0.45, 0.36, 0.08, 1.0));
+                        let pct = (t * 100.0).round();
+                        text(&format!("{label}: {pct}%"), r.x + 6.0, r.y + 12.5, WHITE);
+                    }
+                    if shown == DIG_COLOUR {
+                        text("sliding here digs ruts", px, col.row(18.0).y + 13.0, GRAY);
+                    }
+                    text(
+                        "Shift: light up the whole material",
+                        px,
+                        col.row(18.0).y + 13.0,
+                        GRAY,
+                    );
                     if doc.tex_from == "no" {
                         text(
                             "(no MAPTEX for this palette: flat colours)",
