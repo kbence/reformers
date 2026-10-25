@@ -705,7 +705,8 @@ fn load_level(name: &str) -> Result<(Terrain, Level), String> {
         .ok()
         .or_else(|| {
             let shared = assets::read("MAPTEX.PCX").ok()?;
-            (pcx::decode(&shared).ok()?.palette == terrain.palette).then_some(shared)
+            // colour 255 is the sky (each map's own), not a tile colour
+            (pcx::decode(&shared).ok()?.palette[..255] == terrain.palette[..255]).then_some(shared)
         });
     let track = check.as_deref().map(Track::load).transpose()?;
     let objects_pcx = assets::read(&format!("maps/{name}/OBJECTS.PCX")).unwrap_or_default();
@@ -1011,9 +1012,10 @@ void main() {
 }
 ";
 
-/// FOG.DAT: past ~10 cells the original remaps colours toward this sky blue, fully by ~34
-/// (table index = average depth / 512 world units; levels 5–17 change colours).
-const FOG_COLOUR: [f32; 3] = [92.0 / 255.0, 188.0 / 255.0, 252.0 / 255.0];
+/// FOG.DAT: past ~10 cells the original remaps colours toward the palette's colour 255, fully
+/// by ~34 (table index = average depth / 512 world units; levels 5–17 change colours, and 17 is
+/// all colour 255). That colour is the sky too: sky blue in the stock palette, night, haze or
+/// dusk in maps that set their own.
 const FOG_RANGE: [f32; 2] = [10.0, 34.0];
 
 fn fog_material(vertex: &'static str, fragment: &'static str, textures: Vec<String>) -> Material {
@@ -3443,15 +3445,12 @@ async fn main() {
         });
         // fog off: push it past anything on screen
         let range = if gfx.fog { FOG_RANGE } else { [1e6, 1e6 + 1.0] };
+        let [r, g, b] = sim.terrain.palette[255];
         for m in [&fog, &terrain_material, &object_material] {
-            m.set_uniform("FogColor", FOG_COLOUR);
+            m.set_uniform("FogColor", [r, g, b].map(|c| c as f32 / 255.0));
             m.set_uniform("FogRange", range);
         }
-        clear_background(if gfx.fog {
-            Color::new(FOG_COLOUR[0], FOG_COLOUR[1], FOG_COLOUR[2], 1.0)
-        } else {
-            Color::from_rgba(120, 160, 210, 255)
-        });
+        clear_background(Color::from_rgba(r, g, b, 255));
         // one view per player: side by side in two-player mode
         let dpi = screen_dpi_scale();
         let (fw, fh) = (screen_width() * dpi, screen_height() * dpi);

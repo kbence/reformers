@@ -38,7 +38,7 @@ nobody is holding (wheels, pedals, virtual joysticks) can't hold a key down. Its
 triggers count once they've been seen at rest, so a HOTAS throttle resting at full doesn't hold
 throttle and reverse at once.
 
-Options (saved to `settings.txt` next to the best laps; flags override them): sound volume, camera, fog (the original's distance fog), texture filter (nearest/smooth), textures on (MAPTEX.PCX material tiles, car
+Options (saved to `settings.txt` next to the best laps; flags override them): sound volume, camera, fog (the original's distance fog, fading to the map's sky: its colour 255), texture filter (nearest/smooth), textures on (MAPTEX.PCX material tiles, car
 skins) or off (flat COL.PCX colours), lighting (the original's flat shading, or baked: soft sun
 shadows, sky occlusion and one bounce of coloured light, computed in ~25 ms when a map loads), CRT filter, minimap, ghost car, checkpoint arrow (a yellow arrow over the car pointing at the next checkpoint, on maps that have them), fullscreen, window resolution.
 
@@ -172,7 +172,8 @@ the tool's settings on the right, the cell under the mouse at the bottom.
 - **Colours:** brush, pencil, pick. The picker shows the map's MAPTEX tiles: row = surface
   material, column = shade. Hovering a colour shows its material's grip, load and drag next to
   the best material's, and makes its cells blink on the map (Shift: the whole material's). The
-  brown dot marks the colour whose dirt digs ruts.
+  brown dot marks the colour whose dirt digs ruts. Below the picker, colour 255 sets the map's
+  sky and fog.
 - **Checkpoints:** spawn (arrow keys turn it), gate (drag a line; it goes after the selected
   gate), renumber (click the gates in driving order; Shift-click gives a fork's other branch the
   same number), reset / boost / slow zones, soft dirt, eraser. The gate list on the right

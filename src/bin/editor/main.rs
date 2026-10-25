@@ -229,7 +229,7 @@ impl Doc {
             assets::read("MAPTEX.PCX")
                 .ok()
                 .and_then(sheet)
-                .filter(|i| i.palette == palette)
+                .filter(|i| i.palette[..255] == palette[..255])
         };
         let (image, tex_from) = match own {
             Some(i) => (i, "this map's own"),
@@ -315,7 +315,7 @@ impl Doc {
     fn layers(&self) -> [Vec<u8>; 7] {
         [
             self.heights(),
-            self.colour.clone(),
+            [self.colour.clone(), self.palette[255].to_vec()].concat(),
             self.check.0.clone(),
             self.maptex.clone(),
             self.objects.clone(),
@@ -350,6 +350,7 @@ impl Doc {
             wrote.push(self.map.write(&self.dir, &self.heights())?);
         }
         if c {
+            self.col.image.palette[255] = self.palette[255];
             wrote.push(self.col.write(&self.dir, &self.colour)?);
         }
         if k {
@@ -2246,6 +2247,18 @@ async fn main() {
                         col.row(18.0).y + 13.0,
                         GRAY,
                     );
+                    // colour 255 is the sky, and what the fog fades to (FOG.DAT's last level)
+                    let r = col.row(26.0);
+                    let [cr, cg, cb] = doc.palette[255];
+                    draw_rectangle(r.x, r.y, 26.0, 26.0, Color::from_rgba(cr, cg, cb, 255));
+                    text("sky and fog (colour 255)", r.x + 32.0, r.y + 18.0, WHITE);
+                    let was = doc.palette[255];
+                    for (k, label) in ["red", "green", "blue"].into_iter().enumerate() {
+                        let mut v = doc.palette[255][k] as i32;
+                        ui.slider(col.row(22.0), label, &mut v, 0, 255);
+                        doc.palette[255][k] = v as u8;
+                    }
+                    swatch_dirty |= doc.palette[255] != was;
                     if doc.tex_from == "no" {
                         text(
                             "(no MAPTEX for this palette: flat colours)",
