@@ -24,6 +24,8 @@ wrong, what changed and how it was checked.
   left it at 0.1.0.
 - The online protocol has its own number, `VERSION` in `src/net.rs`. Raise it whenever the
   messages or the sim change so that two builds would disagree, and mention it in the release
-  notes: players on different protocol versions can't race each other.
+  notes: players on different protocol versions can't race each other. A release whose
+  `VERSION` differs from the previous release's is incompatible, so it raises MINOR, never just
+  PATCH (0.7.0 → 0.8.0).
 - Release notes: features, then fixes, from `git log --oneline vPREVIOUS..main`; say what
   wasn't tested across real machines (online play especially).
