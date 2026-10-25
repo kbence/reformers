@@ -517,24 +517,14 @@ enum View {
 /// The ground as seen from above (see `View`). For `Texture` it is the shader's input instead:
 /// the COL index in red and the shade / 2 in green, the tiles come from `TEXTURED`.
 fn ground_rgba(doc: &Doc, view: View) -> Vec<u8> {
-    let h = |x: usize, y: usize| doc.height[y.min(SIZE - 1) * SIZE + x.min(SIZE - 1)];
     (0..SIZE * SIZE)
         .flat_map(|i| {
-            let (x, y) = (i % SIZE, i / SIZE);
-            if view == View::Heights {
-                let v = doc.height[i].round().clamp(0.0, 255.0) as u8;
-                return [v, v, v, 255];
+            let v = doc.height[i].round().clamp(0.0, 255.0) as u8;
+            match view {
+                View::Heights => [v, v, v, 255],
+                // the shader shades each cell from the heights at its corners
+                _ => [doc.colour[i], v, 0, 255],
             }
-            // lit from the top left: ground rising toward the bottom right faces the sun
-            let slope = (h(x + 1, y) - h(x.saturating_sub(1), y)) * 0.4
-                + (h(x, y + 1) - h(x, y.saturating_sub(1))) * 0.3;
-            let shade = (0.85 + slope / 40.0).clamp(0.45, 1.15);
-            if view == View::Texture {
-                return [doc.colour[i], (shade * 127.5) as u8, 0, 255];
-            }
-            let [r, g, b] =
-                doc.palette[doc.colour[i] as usize].map(|c| (c as f32 * shade).min(255.0) as u8);
-            [r, g, b, 255]
         })
         .collect()
 }
@@ -552,9 +542,10 @@ fn checker(r: Rect, n: usize) {
     }
 }
 
-/// Textured relief: each cell's MAPTEX tile (from `MapTex`, the swatch sheet) times its shade,
-/// fading to the tile's average colour (`Means`, 16×16) as cells shrink below a few pixels, where
-/// the tiles would only shimmer. `Detail` is 0 (averages) to 1 (tiles).
+/// The relief: each cell's MAPTEX tile (from `MapTex`, the swatch sheet), shaded by the slope of
+/// its two triangles (the heights are at the cell's corners, as in the game's mesh), fading to the tile's average colour (`Means`, 16×16) as cells
+/// shrink below a few pixels, where the tiles would only shimmer. `Detail` is 0 (averages) to 1
+/// (tiles). The flat-colour view is the same with the palette as `Means` and `Detail` 0.
 const TEXTURED_VERTEX: &str = "#version 100
 precision highp float;
 attribute vec3 position;
@@ -581,12 +572,21 @@ uniform sampler2D Means;
 uniform float Detail;
 void main() {
     vec2 cell = uv * 256.0;
-    vec4 g = texture2D(Texture, (floor(cell) + 0.5) / 256.0);
-    float idx = floor(g.r * 255.0 + 0.5);
+    vec2 at = floor(cell);
+    float idx = floor(texture2D(Texture, (at + 0.5) / 256.0).r * 255.0 + 0.5);
+    float h00 = texture2D(Texture, (at + 0.5) / 256.0).g * 255.0;
+    float h10 = texture2D(Texture, (at + vec2(1.5, 0.5)) / 256.0).g * 255.0;
+    float h01 = texture2D(Texture, (at + vec2(0.5, 1.5)) / 256.0).g * 255.0;
+    float h11 = texture2D(Texture, (at + 1.5) / 256.0).g * 255.0;
+    // the game's mesh splits a cell along the diagonal from its top right to its bottom left
+    vec2 f = fract(cell);
+    vec2 d = f.x + f.y < 1.0 ? vec2(h10 - h00, h01 - h00) : vec2(h11 - h01, h11 - h10);
+    // lit from the top left: ground rising toward the bottom right faces the sun
+    float shade = clamp(0.85 + (d.x * 0.8 + d.y * 0.6) / 40.0, 0.45, 1.15);
     vec2 tile = vec2(mod(idx, 16.0), floor(idx / 16.0));
     vec3 near = texture2D(MapTex, (tile * 16.0 + 0.5 + fract(cell) * 15.0) / 256.0).rgb;
     vec3 far = texture2D(Means, (tile + 0.5) / 16.0).rgb;
-    gl_FragColor = vec4(mix(far, near, Detail) * g.g * 2.0, 1.0) * tint;
+    gl_FragColor = vec4(mix(far, near, Detail) * shade, 1.0) * tint;
 }
 ";
 
@@ -792,6 +792,14 @@ async fn main() {
     let ground = texture(&ground_rgba(&doc, view));
     let means = Texture2D::from_rgba8(16, 16, &tile_means(&doc));
     means.set_filter(FilterMode::Nearest);
+    let palette = |doc: &Doc| -> Vec<u8> {
+        doc.palette
+            .iter()
+            .flat_map(|&[r, g, b]| [r, g, b, 255])
+            .collect()
+    };
+    let flat = Texture2D::from_rgba8(16, 16, &palette(&doc));
+    flat.set_filter(FilterMode::Nearest);
     let textured = load_material(
         ShaderSource::Glsl {
             vertex: TEXTURED_VERTEX,
@@ -1298,6 +1306,11 @@ async fn main() {
                 width: 16,
                 height: 16,
             });
+            flat.update(&Image {
+                bytes: palette(&doc),
+                width: 16,
+                height: 16,
+            });
         }
         if objects_dirty {
             objects_dirty = false;
@@ -1564,13 +1577,18 @@ async fn main() {
                 (&ground, WHITE),
                 (&overlay, Color::new(1.0, 1.0, 1.0, fade)),
             ] {
-                let tiles = view == View::Texture && std::ptr::eq(tex, &ground);
+                let tiles = view != View::Heights && std::ptr::eq(tex, &ground);
                 if tiles {
                     // the tiles show from ~4 device pixels per cell, fully from 12
                     let px = scale * screen_dpi_scale();
-                    textured.set_uniform("Detail", ((px - 4.0) / 8.0).clamp(0.0, 1.0));
+                    let detail = match view {
+                        View::Texture => ((px - 4.0) / 8.0).clamp(0.0, 1.0),
+                        _ => 0.0,
+                    };
+                    textured.set_uniform("Detail", detail);
                     textured.set_texture("MapTex", swatches.clone());
-                    textured.set_texture("Means", means.clone());
+                    let far = if view == View::Texture { &means } else { &flat };
+                    textured.set_texture("Means", far.clone());
                     gl_use_material(&textured);
                 }
                 draw_texture_ex(
