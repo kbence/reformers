@@ -16,7 +16,7 @@ use reformers::assets::data_dir;
 use reformers::car::{self, Car, Prim};
 use reformers::ghost::{self, Frame, Ghost};
 use reformers::run::{self, Replay};
-use reformers::sim::{Keys, REPAIR_FULL, Sim, SimCar, TICK_HZ, Trunk};
+use reformers::sim::{Keys, REPAIR_CAP, Sim, SimCar, TICK_HZ, Trunk};
 use reformers::terrain::{SIZE, Terrain};
 use reformers::track::{Event, Lap, Race, Track, Zone, format_time};
 use reformers::{assets, lighting, net, objects, pcx, sound};
@@ -3635,7 +3635,7 @@ async fn main() {
             if sim.gradual_repair {
                 format!(
                     "   repair {:3.0}%",
-                    sim.cars[me].budget() as f32 / REPAIR_FULL as f32 * 100.0
+                    sim.cars[me].budget() as f32 / REPAIR_CAP as f32 * 100.0
                 )
             } else {
                 String::new()

@@ -32,7 +32,7 @@ const HASH_EVERY: u64 = 120;
 const TIMEOUT: Duration = Duration::from_secs(5);
 const RESEND: Duration = Duration::from_millis(200);
 const MAGIC: &[u8; 4] = b"RFN1";
-const VERSION: u8 = 3;
+const VERSION: u8 = 4;
 /// Ticks of frames / inputs per packet at most (4 cars × 256 ticks fits the 2 KB buffer).
 const BATCH: usize = 256;
 

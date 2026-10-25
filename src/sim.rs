@@ -229,11 +229,11 @@ pub struct SimCar {
 }
 
 /// The budget that repairs a car from damage 1.0 to as built.
-pub const REPAIR_FULL: u32 = 1 << 16;
-/// A full budget bar: one whole repair (ponytail: try `REPAIR_FULL / 2` for a harsher game).
-pub const REPAIR_CAP: u32 = REPAIR_FULL;
-/// Refill per tick: empty to full in ~90 s.
-const REPAIR_RECHARGE: u32 = REPAIR_CAP / (90 * TICK_HZ);
+pub const REPAIR_FULL: u32 = 1 << 20;
+/// A full budget bar: a quarter of a whole repair, so a wreck needs several bars or a double tap.
+pub const REPAIR_CAP: u32 = REPAIR_FULL / 4;
+/// Refill per tick: empty to full in ~90 s (rounded up: 87 s).
+const REPAIR_RECHARGE: u32 = REPAIR_CAP.div_ceil(90 * TICK_HZ);
 /// How long the bar still counts as full for `was_full`: longer than a double tap.
 const FULL_GRACE: u16 = TICK_HZ as u16 / 2;
 /// How far `mend` moves a spring's rest length per tick (×64 units): an 8-unit dent in ~1 s, a
