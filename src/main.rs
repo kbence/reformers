@@ -978,7 +978,8 @@ void main() {
     vec2 cell = uv * 256.0;
     float idx = floor(texture2D(ColIdx, (floor(cell) + 0.5) / 256.0).r * 255.0 + 0.5);
     vec2 tile = vec2(mod(idx, 16.0), floor(idx / 16.0));
-    vec2 st = (tile * 16.0 + 0.5 + fract(cell) * 15.0) / 256.0;  // stay inside the tile
+    // 16 texels of equal width per cell (as the original), never sampling past the tile
+    vec2 st = (tile * 16.0 + clamp(fract(cell) * 16.0, 0.5, 15.5)) / 256.0;
     gl_FragColor = vec4(mix(texture2D(MapTex, st).rgb * shade.rgb, FogColor, fog), 1.0);
 }
 ";

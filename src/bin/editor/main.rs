@@ -585,7 +585,7 @@ void main() {
     // lit from the top left: ground rising toward the bottom right faces the sun
     float shade = clamp(0.85 + (d.x * 0.8 + d.y * 0.6) / 40.0, 0.45, 1.15);
     vec2 tile = vec2(mod(idx, 16.0), floor(idx / 16.0));
-    vec3 near = texture2D(MapTex, (tile * 16.0 + 0.5 + fract(cell) * 15.0) / 256.0).rgb;
+    vec3 near = texture2D(MapTex, (tile * 16.0 + clamp(f * 16.0, 0.5, 15.5)) / 256.0).rgb;
     vec3 far = texture2D(Means, (tile + 0.5) / 16.0).rgb;
     gl_FragColor = vec4(mix(far, near, Detail) * shade, 1.0) * tint;
 }
