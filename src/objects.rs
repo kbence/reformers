@@ -82,8 +82,6 @@ pub struct Object {
     /// × the sprite's size in `PIXEL`s, in 256ths: the variant (0 = half, 5 = 1, 15 = 2) with
     /// ±10% jitter.
     pub size: u16,
-    /// Mirrored, for variety.
-    pub flip: bool,
 }
 
 impl Object {
@@ -145,7 +143,7 @@ fn hash(x: usize, y: usize) -> u32 {
 }
 
 /// The objects an OBJECTS.PCX places, row by row. Each stands near its cell's centre: offset
-/// up to 0.3 cells, scale ±10%, maybe mirrored, all from the cell's hash. Integer maths: the
+/// up to 0.3 cells, scale ±10%, both from the cell's hash. Integer maths: the
 /// sim collides with these positions.
 pub fn load(objects_pcx: &[u8]) -> Result<Vec<Object>, String> {
     let img = pcx::decode_image(objects_pcx)?;
@@ -173,7 +171,6 @@ pub fn load(objects_pcx: &[u8]) -> Result<Vec<Object>, String> {
                 pos: [at(x, 0), at(y, 8)],
                 // (5 + variant) / 10 × (230–281) / 256: 0.5–2, ±10%
                 size: ((5 + (v & 15) as i32) * (230 + byte(16) / 5) / 10) as u16,
-                flip: h >> 31 == 1,
             }
         })
         .collect())

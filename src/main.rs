@@ -896,11 +896,7 @@ fn object_meshes(
         let at = |px: f32, py: f32| {
             base + right * (px - foot[0]) * k + Vec3::Y * (foot[1] - py - 1.0) * k
         };
-        let (u0, u1) = if o.flip {
-            ((x + sw) as f32 / w, x as f32 / w)
-        } else {
-            (x as f32 / w, (x + sw) as f32 / w)
-        };
+        let (u0, u1) = (x as f32 / w, (x + sw) as f32 / w);
         let (v0, v1) = (y as f32 / h, (y + sh) as f32 / h);
         let (sw, sh) = (sw as f32, sh as f32);
         let quad = [
