@@ -3831,12 +3831,12 @@ async fn main() {
             && get_time() < *until
             && !menu_open
         {
-            let size = measure_text(msg, None, 48, 1.0);
+            let size = measure_text(msg, None, 24, 1.0);
             text_px(
                 msg,
                 (screen_width() - size.width) / 2.0,
                 screen_height() * 0.2,
-                48.0,
+                24.0,
                 YELLOW,
             );
         }
