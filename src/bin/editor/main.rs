@@ -6,8 +6,8 @@
 //! first original as `*.bak`; a running game on the same map picks the files up within a second
 //! (hot reload), and F5 starts one.
 //!
-//! Layout: layer tabs and file buttons on top, the layer's tools on the left, the tool's settings
-//! on the right, the cursor's cell at the bottom. Edits are tested in `edit.rs`.
+//! Layout: file buttons and layer tabs on top, the layer's tools and the view on the left, the
+//! tool's settings on the right, the cursor's cell at the bottom. Edits are tested in `edit.rs`.
 
 mod edit;
 mod ui;
@@ -830,7 +830,7 @@ async fn main() {
         ui.begin();
         let (w, h) = (screen_width(), screen_height());
         let dt = get_frame_time().min(0.1);
-        let (top, left, right, bottom) = (40.0, 140.0, 280.0, 26.0);
+        let (top, left, right, bottom) = (74.0, 140.0, 280.0, 26.0);
         let area = Rect::new(left, top, w - left - right, h - top - bottom);
         let scale = area.w.min(area.h) / SIZE as f32 * zoom;
         let origin = area.center() - vec2(SIZE as f32, SIZE as f32) * scale / 2.0 + pan;
@@ -1776,7 +1776,7 @@ async fn main() {
         ui::panel(Rect::new(0.0, top, left, h - top - bottom));
         ui::panel(Rect::new(w - right, top, right, h - top - bottom));
         ui::panel(Rect::new(0.0, h - bottom, w, bottom));
-        // top: layers, view, file
+        // top: the file buttons, the layer tabs under them (two rows, so they never overlap: #59)
         let mut x = 8.0;
         for (tb, label) in [
             (Tab::Height, "Heights"),
@@ -1786,22 +1786,27 @@ async fn main() {
             (Tab::Objects, "Objects"),
             (Tab::Sprites, "Sprites"),
         ] {
-            if ui.button(Rect::new(x, 6.0, 104.0, 28.0), label, tab == tb) {
+            if ui.button(Rect::new(x, 40.0, 104.0, 28.0), label, tab == tb) {
                 tab = tb;
             }
             x += 108.0;
         }
-        x += 16.0;
+        // the view: the left column's foot
         let was = view;
-        ui.choice(
-            Rect::new(x, 6.0, 186.0, 28.0),
-            &[
-                (View::Colour, "colour"),
-                (View::Texture, "texture"),
-                (View::Heights, "heights"),
-            ],
-            &mut view,
-        );
+        text("View", 10.0, h - bottom - 110.0, WHITE);
+        for (i, (vw, label)) in [
+            (View::Colour, "colour"),
+            (View::Texture, "texture"),
+            (View::Heights, "heights"),
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            let r = Rect::new(8.0, h - bottom - 100.0 + i as f32 * 32.0, left - 16.0, 28.0);
+            if ui.button(r, label, view == vw) {
+                view = vw;
+            }
+        }
         ground_dirty |= view != was;
         let unsaved = doc.changed().contains(&true);
         // the map's name heads the tool column (* = unsaved changes)
@@ -1811,20 +1816,20 @@ async fn main() {
             top + 22.0,
             WHITE,
         );
-        let mut bx = w - 8.0;
+        let mut bx = 8.0;
         for (label, act, bw) in [
-            ("Test drive F5", "drive", 120.0),
             ("New", "new", 56.0),
             ("Open", "open", 60.0),
-            ("Save as", "save as", 76.0),
             ("Save", "save", 60.0),
-            ("Redo", "redo", 60.0),
+            ("Save as", "save as", 76.0),
             ("Undo", "undo", 60.0),
+            ("Redo", "redo", 60.0),
+            ("Test drive F5", "drive", 120.0),
         ] {
-            bx -= bw + 4.0;
             if ui.button(Rect::new(bx, 6.0, bw, 28.0), label, false) {
                 action = Some(act);
             }
+            bx += bw + 4.0;
         }
         // left: the layer's tools
         for (i, &(tl, label)) in tools(tab).iter().enumerate() {
