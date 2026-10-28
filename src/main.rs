@@ -3651,6 +3651,33 @@ async fn main() {
             Color::new(0.0, 0.0, 0.0, 0.45),
         );
         text_px(&hud, 12.0, 22.0, 18.0, WHITE);
+        // the driving keys, bottom left, for the first half minute, then fading out
+        let shown = 1.0 - (ticks as f32 / TICK_HZ as f32 - 25.0) / 5.0;
+        if online.is_none() && sim.cars.len() == 1 && shown > 0.0 {
+            let a = shown.min(1.0);
+            let lines = &CONTROLS[..5];
+            let (x, y) = (12.0, screen_height() - 16.0 - lines.len() as f32 * 24.0);
+            let width = lines
+                .iter()
+                .map(|l| measure_text(l, None, 18, 1.0).width)
+                .fold(0.0, f32::max);
+            draw_rectangle(
+                x - 8.0,
+                y - 8.0,
+                width + 16.0,
+                lines.len() as f32 * 24.0 + 16.0,
+                Color::new(0.0, 0.0, 0.0, 0.45 * a),
+            );
+            for (i, l) in lines.iter().enumerate() {
+                text_px(
+                    l,
+                    x,
+                    y + 16.0 + i as f32 * 24.0,
+                    18.0,
+                    Color::new(1.0, 1.0, 1.0, a),
+                );
+            }
+        }
         if let Some(t) = &level.track {
             let n = t.gates.len();
             let line = |race: &Race, place: &str| {
