@@ -3582,8 +3582,15 @@ async fn main() {
             // gates: an arch (two posts and a banner) over each painted line, and the arrow to the
             // next (a CHECK.PCX may have only a spawn, or zones: no gates, nothing to point at)
             if let Some(t) = level.track.as_ref().filter(|t| !t.gates.is_empty()) {
-                // the bright next gate first: translucent ones after it, so they don't hide it
                 let next = players[view].race.next;
+                if gfx.guide && gfx.camera != 1 {
+                    // (not from the bumper camera: it would hover above the screen's top edge)
+                    // first: a gate faded out round the camera still writes depth, and would
+                    // cut off the part behind it. forks: the nearest piece of the next gate
+                    let [cx, cy, _] = sim.cars[view].centre();
+                    draw_guide(&sim.cars[view], t.piece(next, [cx, cy]).centre, get_time());
+                }
+                // the bright next gate first: translucent ones after it, so they don't hide it
                 let order = std::iter::once(next).chain((0..t.gates.len()).filter(|&g| g != next));
                 for g in order {
                     for piece in &t.gates[g] {
@@ -3604,12 +3611,6 @@ async fn main() {
                             position,
                         );
                     }
-                }
-                if gfx.guide && gfx.camera != 1 {
-                    // (not from the bumper camera: it would hover above the screen's top edge)
-                    // forks: the nearest piece of the next gate
-                    let [cx, cy, _] = sim.cars[view].centre();
-                    draw_guide(&sim.cars[view], t.piece(next, [cx, cy]).centre, get_time());
                 }
             }
             for p in sim.particle_positions() {
