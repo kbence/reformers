@@ -1746,7 +1746,7 @@ impl Menu {
             Item::Row(row) if left || right || enter => {
                 return MenuAction::Change(row, right as i32 - left as i32);
             }
-            Item::Open(p) if enter || right => {
+            Item::Open(p) if enter => {
                 self.page = p;
                 self.selected = 0;
                 self.scroll = 0.0;
@@ -4025,7 +4025,10 @@ mod tests {
         // ← on a read-only line goes back too (Controls opens on its steering-keys row); Quit quits
         let mut m = Menu::new();
         m.selected = 4;
+        // → doesn't open a submenu, Enter does
         none(&mut m, false, false, false, true, false, false);
+        assert_eq!(m.page, Page::Top);
+        none(&mut m, false, false, false, false, true, false);
         assert_eq!(m.page, Page::Controls);
         assert_eq!(
             none(&mut m, false, false, true, false, false, false),
