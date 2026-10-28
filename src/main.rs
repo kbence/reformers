@@ -1552,6 +1552,8 @@ struct Graphics {
     guide: bool,
     /// Repair mends while held, from a recharging budget (#58), instead of a fresh car at once.
     gradual: bool,
+    /// Player 1 steers with WASD instead of the arrows (one player only: two share the keyboard).
+    wasd: bool,
     /// The last address typed on the Join row (saved), and the online rows' status (not saved).
     join: String,
     host_label: String,
@@ -1592,6 +1594,7 @@ enum Row {
     Ghost,
     Guide,
     Repair,
+    Keys,
     Host,
     Join,
     Fullscreen,
@@ -1616,14 +1619,14 @@ enum Item {
 }
 
 const CONTROLS: [&str; 13] = [
-    "Arrows / left stick: drive",
+    "Arrows (or WASD, above) / left stick: drive",
     "Space / B: brake",
     "R / Y: back on the wheels (last checkpoint)",
     "F / Back: repair (gradual: hold; double-tap for all)",
     "T / left shoulder: turn over where it stands",
     "C / right shoulder: camera (Q / E orbit)",
     "1-5: switch car",
-    "W: spring wireframe",
+    "W: spring wireframe (with the arrows)",
     "P: save replay",
     "F12: screenshot",
     "Esc / Start: this menu",
@@ -1676,7 +1679,9 @@ fn items(page: Page, players: usize) -> Vec<Item> {
         .map(R)
         .to_vec(),
         Page::Sound => vec![R(Row::Sound), R(Row::EngineSound)],
-        Page::Controls => CONTROLS.map(Item::Text).to_vec(),
+        Page::Controls => std::iter::once(R(Row::Keys))
+            .chain(CONTROLS.map(Item::Text))
+            .collect(),
     }
 }
 
@@ -1766,7 +1771,7 @@ impl Menu {
 impl Graphics {
     fn to_text(&self) -> String {
         format!(
-            "map={}\ncar={}\ncar2={}\nskin={}\nskin2={}\njoin={}\nguide={}\ngradual={}\ncamera={}\nnearest={}\ntextured={}\nlighting={}\ncrt={}\nminimap={}\nghost={}\nfog={}\nvolume={}\nengine={}\nfullscreen={}\nresolution={}\n",
+            "map={}\ncar={}\ncar2={}\nskin={}\nskin2={}\njoin={}\nguide={}\ngradual={}\nwasd={}\ncamera={}\nnearest={}\ntextured={}\nlighting={}\ncrt={}\nminimap={}\nghost={}\nfog={}\nvolume={}\nengine={}\nfullscreen={}\nresolution={}\n",
             self.map,
             self.car + 1,
             self.car2 + 1,
@@ -1775,6 +1780,7 @@ impl Graphics {
             self.join,
             self.guide,
             self.gradual,
+            self.wasd,
             self.camera,
             self.nearest,
             self.textured,
@@ -1801,6 +1807,7 @@ impl Graphics {
                 "join" => self.join = v.trim().to_string(),
                 "guide" => self.guide = b,
                 "gradual" => self.gradual = b,
+                "wasd" => self.wasd = b,
                 "car" => {
                     self.car = n
                         .filter(|n| (1..=CARS).contains(n))
@@ -1883,6 +1890,14 @@ impl Graphics {
                     "instant"
                 }
             ),
+            Row::Keys => format!(
+                "Steering keys: {}",
+                if self.wasd {
+                    "WASD  (one player)"
+                } else {
+                    "arrows"
+                }
+            ),
             Row::Fog => format!("Fog: {}", on(self.fog)),
             Row::Ghost => format!("Ghost car: {}", on(self.ghost)),
             Row::Fullscreen => format!("Fullscreen: {}", on(self.fullscreen)),
@@ -1911,6 +1926,7 @@ impl Graphics {
             Row::Minimap => self.minimap = !self.minimap,
             Row::Guide => self.guide = !self.guide,
             Row::Repair => self.gradual = !self.gradual,
+            Row::Keys => self.wasd = !self.wasd,
             Row::Fog => self.fog = !self.fog,
             Row::Players => self.players = 3 - self.players,
             Row::Car => {
@@ -2450,6 +2466,7 @@ async fn main() {
         join: String::new(),
         guide: true,
         gradual: true,
+        wasd: false,
         host_label: String::new(),
         join_label: String::new(),
         players: if args.windows(2).any(|w| w[0] == "--players" && w[1] == "2") {
@@ -3002,7 +3019,7 @@ async fn main() {
             if online.is_none() {
                 acc = 0.0;
             }
-        } else if pressed(KeyCode::W) && gfx.players == 1 {
+        } else if pressed(KeyCode::W) && gfx.players == 1 && !gfx.wasd {
             wireframe = !wireframe;
         } else if pressed(KeyCode::C) {
             gfx.camera = (gfx.camera + 1) % CAMERAS.len();
@@ -3117,11 +3134,18 @@ async fn main() {
             &cars[players[0].car].0,
             skin_of(&skins, &cars, players[0].car, &skin_files[0]),
         );
+        // player 1's steering keys: the arrows, or WASD alone (the pad still sends arrows)
+        let wasd = gfx.wasd && gfx.players == 1;
+        let steer = |arrow: KeyCode, letter: KeyCode| match wasd {
+            true => is_key_down(letter) || pad_held.contains(&arrow),
+            false => down(arrow),
+        };
         let keys = Keys {
-            throttle: down(KeyCode::Up) || shot.is_some(),
-            reverse: down(KeyCode::Down),
-            left: down(KeyCode::Left) || (shot.is_some() && get_time() - started > 2.0),
-            right: down(KeyCode::Right),
+            throttle: steer(KeyCode::Up, KeyCode::W) || shot.is_some(),
+            reverse: steer(KeyCode::Down, KeyCode::S),
+            left: steer(KeyCode::Left, KeyCode::A)
+                || (shot.is_some() && get_time() - started > 2.0),
+            right: steer(KeyCode::Right, KeyCode::D),
             brake: down(KeyCode::Space) || down(KeyCode::Kp5),
         };
         let keys2 = Keys {
@@ -3655,7 +3679,12 @@ async fn main() {
         let shown = 1.0 - (ticks as f32 / TICK_HZ as f32 - 25.0) / 5.0;
         if online.is_none() && sim.cars.len() == 1 && shown > 0.0 {
             let a = shown.min(1.0);
-            let lines = &CONTROLS[..5];
+            let first = if gfx.wasd {
+                "WASD / left stick: drive"
+            } else {
+                "Arrows / left stick: drive"
+            };
+            let lines = &[[first].as_slice(), &CONTROLS[1..5]].concat();
             let (x, y) = (12.0, screen_height() - 16.0 - lines.len() as f32 * 24.0);
             let width = lines
                 .iter()
@@ -3993,11 +4022,16 @@ mod tests {
             none(&mut m, false, false, false, false, false, true),
             MenuAction::Close
         );
-        // ← on a read-only page goes back too; Quit quits
+        // ← on a read-only line goes back too (Controls opens on its steering-keys row); Quit quits
         let mut m = Menu::new();
         m.selected = 4;
         none(&mut m, false, false, false, true, false, false);
         assert_eq!(m.page, Page::Controls);
+        assert_eq!(
+            none(&mut m, false, false, true, false, false, false),
+            MenuAction::Change(Row::Keys, -1)
+        );
+        none(&mut m, false, true, false, false, false, false);
         none(&mut m, false, false, true, false, false, false);
         assert_eq!(m.page, Page::Top);
         m.selected = 5;
@@ -4036,6 +4070,7 @@ mod tests {
             join: "192.168.1.20".into(),
             guide: true,
             gradual: true,
+            wasd: true,
             host_label: String::new(),
             join_label: String::new(),
             players: 1,
@@ -4061,6 +4096,7 @@ mod tests {
             join: "192.168.1.20".into(),
             guide: false,
             gradual: false,
+            wasd: false,
             host_label: String::new(),
             join_label: String::new(),
             players: 1,

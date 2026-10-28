@@ -20,15 +20,15 @@ cargo run --release
 
 | Key | Gamepad | Action |
 |---|---|---|
-| ↑ / ↓ | right trigger or A / left trigger or X | throttle / reverse |
-| ← / → | left stick or d-pad | steer |
+| ↑ / ↓ (or W / S) | right trigger or A / left trigger or X | throttle / reverse; Esc menu → Controls → Steering keys switches player 1 to WASD (one player only: in split screen WASD is player 2's) |
+| ← / → (or A / D) | left stick or d-pad | steer |
 | Space | B | brake |
 | R | Y | put the car back on its wheels (time trial: on the last checkpoint, facing the next); dents stay |
 | F | Back | repair the car: hold it to mend the dents from a repair bar that refills in ~90 s (shown on the HUD; a full bar mends about a quarter of a wreck); double-tap it for a fresh car at once, which takes a full bar. Esc menu → Race → Repair: instant gives a fresh car on every press instead |
 | T | left shoulder | turn the car over where it stands; dents stay |
 | 1–5 | | switch car (also Esc menu → Race → Car, with a turning preview; remembered). Race → Skin repaints it with one of the 73 community skins in `assets/skins/` |
 | C | right shoulder | camera: chase / bumper / orbit (Q/E rotate) / top-down |
-| W | | spring wireframe |
+| W | | spring wireframe (when steering with the arrows) |
 | P | | save this run as a replay |
 | F12 | | screenshot: a PNG in `screenshots/` in the data folder (`~/.local/share/reformers/`, `%APPDATA%\reformers\` on Windows), named by the time (UTC); on a Mac keyboard fn + F12. Not in the web build |
 | Esc | Start | options (pauses the game); d-pad and A in the menu |
@@ -38,7 +38,7 @@ nobody is holding (wheels, pedals, virtual joysticks) can't hold a key down. Its
 triggers count once they've been seen at rest, so a HOTAS throttle resting at full doesn't hold
 throttle and reverse at once.
 
-Options (saved to `settings.txt` next to the best laps; flags override them): sound volume, camera, fog (the original's distance fog, fading to the map's sky: its colour 255), texture filter (nearest/smooth), textures on (MAPTEX.PCX material tiles, car
+Options (saved to `settings.txt` next to the best laps; flags override them): steering keys (arrows or WASD), sound volume, camera, fog (the original's distance fog, fading to the map's sky: its colour 255), texture filter (nearest/smooth), textures on (MAPTEX.PCX material tiles, car
 skins) or off (flat COL.PCX colours), lighting (the original's flat shading, or baked: soft sun
 shadows, sky occlusion and one bounce of coloured light, computed in ~25 ms when a map loads), CRT filter, minimap, ghost car, checkpoint arrow (a yellow arrow over the car pointing at the next checkpoint, on maps that have them), fullscreen, window resolution.
 
