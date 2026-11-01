@@ -1,6 +1,4 @@
-//! 8-bit RLE PCX (ZSoft v5): single-plane with a 256-colour palette, the flavour TEREP2 ships,
-//! or 24-bit (3 planes), of which only the first (red) plane is kept: one community height map
-//! (the pack's TUNDRA) was saved that way, and height maps are grey, so red is the height.
+//! 8-bit RLE PCX (ZSoft v5): single-plane with a 256-colour palette, the only flavour TEREP2 reads.
 
 #[derive(Clone, Debug)]
 pub struct Image {
@@ -18,7 +16,7 @@ pub fn decode(data: &[u8]) -> Result<Image, String> {
     }
     let u16_at = |o: usize| u16::from_le_bytes([data[o], data[o + 1]]) as usize;
     let (manufacturer, encoding, bpp, planes) = (data[0], data[2], data[3], data[65]);
-    if manufacturer != 0x0A || encoding != 1 || bpp != 8 || !matches!(planes, 1 | 3) {
+    if manufacturer != 0x0A || encoding != 1 || bpp != 8 || planes != 1 {
         return Err(format!(
             "unsupported PCX: manufacturer={manufacturer:#x} encoding={encoding} bpp={bpp} planes={planes}"
         ));
@@ -30,22 +28,15 @@ pub fn decode(data: &[u8]) -> Result<Image, String> {
         return Err(format!("bytes_per_line {bytes_per_line} < width {width}"));
     }
 
-    let planes = planes as usize;
-    // 24-bit images have no palette: a grey ramp, so their first plane reads as itself
-    let mut palette = std::array::from_fn(|i| [i as u8; 3]);
-    let pal_start = if planes == 1 {
-        let start = data.len() - 769;
-        if data[start] != 0x0C {
-            return Err("missing 256-colour palette marker".into());
-        }
-        for (i, c) in palette.iter_mut().enumerate() {
-            c.copy_from_slice(&data[start + 1 + i * 3..][..3]);
-        }
-        start
-    } else {
-        data.len()
-    };
-    let line = bytes_per_line * planes; // a scanline holds each plane in turn
+    let pal_start = data.len() - 769;
+    if data[pal_start] != 0x0C {
+        return Err("missing 256-colour palette marker".into());
+    }
+    let palette = std::array::from_fn(|i| {
+        let c = &data[pal_start + 1 + i * 3..][..3];
+        [c[0], c[1], c[2]]
+    });
+    let line = bytes_per_line;
 
     // Decode the whole stream first: some encoders let runs cross scanlines.
     let mut raw = Vec::with_capacity(line * height);
@@ -238,22 +229,6 @@ mod tests {
         assert_eq!(c.pixels, [9, 9, 0xC5, 2]);
         assert_eq!(&c.to_rgb()[..3], &[9, 246, 7]);
         assert!(decode(&pcx(3, 2, 4, &[0xC3, 9])).is_err());
-    }
-
-    #[test]
-    fn keeps_the_first_plane_of_24_bit_images() {
-        // 2×2, 3 planes: per row R R G G B B; no palette (padded to the minimum file size)
-        let mut d = pcx(2, 2, 2, &[10, 11, 20, 21, 30, 31, 12, 0xC3, 40]);
-        d[65] = 3;
-        d.truncate(128 + 9);
-        d.resize(128 + 769, 0);
-        let img = decode(&d).unwrap();
-        assert_eq!(img.pixels, [10, 11, 12, 40]);
-        assert_eq!(
-            img.palette[40],
-            [40, 40, 40],
-            "a grey ramp stands in for the palette"
-        );
     }
 
     #[test]
