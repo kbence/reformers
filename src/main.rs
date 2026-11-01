@@ -4138,7 +4138,7 @@ mod tests {
         assert!(at(Row::Car2) < at(Row::Skin2));
     }
 
-    /// Every installed map (the community pack's 320-wide and 258-square images included) loads,
+    /// Every installed map loads,
     /// and a car spawned the way the game does it drives on it without the sim blowing up.
     #[test]
     fn every_map_loads_and_drives() {
@@ -4184,7 +4184,7 @@ mod tests {
         assert_eq!(next_skin(&last, 1), "");
         assert_eq!(next_skin("", 0), skin_list()[0].0, "Enter steps forward");
         assert_eq!(next_skin("GONE.PCX", 1), skin_list()[0].0);
-        assert_eq!(skin_name("HUFO.PCX"), "ufo (hover)");
+        assert_eq!(skin_name("HUFO.PCX"), "Hover UFO");
     }
 
     #[test]

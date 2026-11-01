@@ -1,2 +1,3 @@
-extended
+Extended
+By unknown (RAYtracer?), 1998-06-23.
 - Extended -

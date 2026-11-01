@@ -1,2 +1,3 @@
-vulkan
+Vulkán ("Volcano")
+By Petya, 1998-12-09 (official).
 - Vulkán - Készítette: Petya 1998. December 9.

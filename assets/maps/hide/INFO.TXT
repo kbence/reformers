@@ -1,2 +1,3 @@
-hide
+Hide
+By Hideoshi, 1998-11-29.
 Készítette: RAYtracer

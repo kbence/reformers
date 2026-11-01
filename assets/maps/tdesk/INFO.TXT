@@ -1,2 +1,3 @@
-tdesk
+TDesk
+By Dzsó, 1998-02-17.
 EGO - Fogócska!!! Készítette: Dzsó

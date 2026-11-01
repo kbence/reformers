@@ -1,2 +1,3 @@
-verseny
+Verseny ("Race")
+By Norbert Oszlányi, 1998-02-10.
 Jól lehet rajta versenyezni.

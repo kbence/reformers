@@ -1,2 +1,3 @@
-dimbdomb
+Dimbdomb ("Hilly-Willy") (later version)
+By TPE, 1998-05-26.
 - Dimbdomb - Egy Dimbes-Dombos pálya. A bukkanókra, csak lendülettel lehet felmenni és vigyázni kell a tuloldalra. Készítette: Tpe

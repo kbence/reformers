@@ -1,2 +1,3 @@
-babamud
+Babamud
+By Dinosaurus Diblodokus, 2001-01-02.
 - Babamud - Készítette: Dinosaurus Diblodokus

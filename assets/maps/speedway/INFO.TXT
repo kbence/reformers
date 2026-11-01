@@ -1,2 +1,3 @@
-speedway
+Speedway
+By RAYtracer, 1996-06-07.
 - Speedway - Tökállatul lehet rajta versenyezni! Készítette: RAYtracer
