@@ -10,7 +10,8 @@ ZIP, plus `INFO.TXT`: the name the pack's launcher shows (`PALYAK/LIST.DAT`, or 
 and the track's credits (`PALYA.INF`, converted to UTF-8, often empty). Tracks identical to a map
 already here were left out. None of them has a `CHECK.PCX`, so they're free-drive maps.
 
-`terep1`, `terep2` and `terep2-hills` come from the original game (see the README).
+`terep1` and `terep2` come from the original game, `terep2-hills` from a later copy of it (see
+the README). The pack's `ORIGINAL.ZIP` is the same map as `terep2`, so it isn't repeated here.
 
 | Folder | In the pack | Name | Credits | SHA-256 of the ZIP |
 |---|---|---|---|---|
@@ -49,7 +50,6 @@ already here were left out. None of them has a `CHECK.PCX`, so they're free-driv
 | `mudrally` | `TEREP/PALYAK/MUDRALLY.ZIP` | mudslide rally | - Rally - Készítette: Petya | `c395e78f2f7f30866ffa97dea2a9220999f2f47644de21f9c4774f5f33ea6639` |
 | `ndesert` | `TEREP/PALYAK/NDESERT.ZIP` | nite desert | Egy "kis" éjszakai kiruccanás! Készítette: RAYtracer | `69a43386200c7529a3d9dc8df15683fdf45906f2fbd9a3c5472304f88f48e3f4` |
 | `nemtom` | `TEREP/PALYAK/NEMTOM.ZIP` | nemtom | - Nem t'om - Készítette: Nemtom / Innerspace Research | `e6f919cf5f0719de15e51f019f3a2263d205dc2c3cd63b058776813e7d988275` |
-| `original` | `TEREP/PALYAK/ORIGINAL.ZIP` | original | The original track of Terep 2. | `6919266a7e469d2bc3cf97b2768e92d5f96e5af915b4ccb943e7bc204bdf35b7` |
 | `piramis` | `TEREP/PALYAK/PIRAMIS.ZIP` | piramis | Ez a pálya az Egyiptomi piramisokat próbálja utánozni több-kevesebb sikerrel. Megtalálhatod az El-Gízai piramisokat a szfinxel, a Királyok Völgyét Tutan- hamon sírbejáratával, a Nílust és sok más egyebet (még egy azték piramist is). Van lehetőség az ökörködésre is egy ugrató yoovoltából. Készítette Daddy(VZ) 3 nap alatt. Debrecen,1998.03.17. YOOOOOOO TEREPEZÉST ! U.i.: Néha egyél, igyál és mozgasd meg a szétült hátsódat! /\ / \ / \ / \ /_______________ \ A U U TTTTTT OOO A A U U TT O O AAAAA U U TT O O A A UUU TT OOO | `88423ebf47d41f612a484d85d2f9d90cd4cecfe61b2ed765d3c749be9e0100ab` |
 | `power` | `TEREP/PALYAK/POWER.ZIP` | power-ride | POWER-RIDE by DeeFuse Absolute globális marhaság baromkodni vágyó sületlen, 1/2eszű idiótáknak (Na azért nem kell annyira a szívedre venni!) Ehhez a kúl gáméhoz csináltuk ezt a yo kis pályát... System rekvájörmentsz: * Egy lityi kóla + szotyka (Nem szutyokka!) * Porszívó (a szotyihéljak eltakarításához) * Balaton (ahová a szülőket elpateroljuk) * Póver gomb 4 (pof)on-off * Timer (hogy tudd, hogy hány napja nem alukátál) ... mi is éppen éjjöl vagyunk * Párna a segged alá, me' úgyis elülöd * IQ < 16 Készítette: Klumpa + P&A /DeeFuse 1997-06-16. | `abcd0f72db15501d34e07cf7286017546ab63e8030e92c2e8f4aab70f4b65272` |
 | `queen` | `TEREP/PALYAK/QUEEN.ZIP` | queen's hill | - Queen's Hill - Készítette: Rain 2001. Feb. 1. | `132fffd40b59dd25e0c61ac2d0bfbb7d3093cd063970cbb57e45b13e00280549` |

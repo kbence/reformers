@@ -104,13 +104,14 @@ Each map is a folder in `assets/maps/`: `MAP` (heights) and `COL` (colours = sur
 PCX or TEREP1's BMP, plus an optional `CHECK.PCX` that makes it a time trial. Pick one in the Esc
 menu (Race → Map shows each map's minimap and checkpoints; it loads when the menu closes) or
 with `--map NAME`; the last one is remembered. Shipped: `terep2` (the original, with the
-time-trial track), `terep2-hills` (its unused `MAPHILL.PCX`) and `terep1` (TEREP1's map, same
+time-trial track), `terep2-hills` (the `MAPHILL.PCX` some later copies of the game carry, made by
+someone else) and `terep1` (TEREP1's map, same
 landscape, own palette; heights use TEREP2's scale, so it comes out gentler). Heights can also be a greyscale `MAP.PNG` or `MAP.PGM` (grey level = height; it wins over
 `MAP.PCX`), so any heightmap tool can paint them: save, and the running game reloads the map.
 `reform MAP.PNG MAP.PCX` turns one back into a PCX for the DOS game, `reform MAP.PCX MAP.PGM --map`
 the other way. A map folder may
 carry its own `MAPTEX.PCX`; otherwise the shared one is used when the palettes match, and the
-terrain is drawn in flat colours when they don't. Plus 105 community maps from Terep – 30th
+terrain is drawn in flat colours when they don't. Plus 104 community maps from Terep – 30th
 Anniversary Edition (free drive: none has checkpoints), each with an `INFO.TXT` holding its name
 and credits, shown under the map preview; their origin is in `assets/maps/SOURCES.md`.
 
@@ -139,10 +140,12 @@ They and the map images are the original author's copyrighted work; see `assets/
 
 - **-DEFORMERS- / TEREP2 and TEREP1** by **Nagymáthé Dénes** (1996–97): the game this remakes.
   The original files in `assets/` (`CAR1–5.DAT`, `CAR1.PCX`, `CAR2.PCX`, `MAPTEX.PCX`,
-  `TEXTURES.PCX`, `READ.ME`, `FILE_ID.DIZ`) and the `terep1`, `terep2` and `terep2-hills` maps
-  are his work. They stay his, they are not covered by Reformers' licence.
+  `TEXTURES.PCX`, `READ.ME`) and the `terep1` and `terep2` maps are his work: the untouched
+  versions the [TEREP2 wiki](https://terep2.wiki.gg/wiki/Terep2_original_files) lists, not the
+  later copies with "FiRG" painted on the map. They stay his, they are not covered by Reformers'
+  licence. `terep2-hills` is his map with someone else's heights, maker unknown.
 - **Terep – 30th Anniversary Edition**, compiled by **Rezzy** (2026,
-  <https://archive.org/details/terep-30th-anniversary-edition>): the 105 community maps in
+  <https://archive.org/details/terep-30th-anniversary-edition>): the 104 community maps in
   `assets/maps/` and the car skins in `assets/skins/`, made by TEREP2 players over the years.
   Every map's makers are credited in its `INFO.TXT` and in `assets/maps/SOURCES.md`; the skins
   are listed in `assets/skins/SOURCES.md`. They stay their makers'.

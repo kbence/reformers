@@ -63,7 +63,6 @@ nascar1
 ndesert
 nemtom
 offroad
-original
 piramis
 plateau
 power
