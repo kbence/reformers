@@ -15,8 +15,9 @@ use macroquad::prelude::*;
 use reformers::assets::data_dir;
 use reformers::car::{self, Car, Prim};
 use reformers::ghost::{self, Frame, Ghost};
+use reformers::level::{Level, SPAWN, grid, load_level};
 use reformers::run::{self, Replay};
-use reformers::sim::{Keys, REPAIR_CAP, Sim, SimCar, TICK_HZ, Trunk};
+use reformers::sim::{Keys, REPAIR_CAP, Sim, SimCar, TICK_HZ};
 use reformers::terrain::{SIZE, Terrain};
 use reformers::track::{Event, Lap, Race, Track, Zone, format_time};
 use reformers::{assets, lighting, net, objects, pcx, sound};
@@ -25,7 +26,6 @@ use std::path::PathBuf;
 const S: f32 = 256.0; // world units per render unit (one terrain cell)
 const CHUNK: usize = 32;
 const CAM_CLEARANCE: f32 = 0.3; // render units the camera keeps above the ground // rows per mesh: macroquad meshes index with u16
-const SPAWN: (u16, u16) = (0x8000, 0x7a00); // without CHECK.PCX
 
 /// Firing frequency of the recorded engine idle loop (`assets/sounds/engine/loop_0.wav`), measured.
 const RECORDED_HZ: f32 = 43.5;
@@ -493,17 +493,6 @@ fn follow_camera(
     }
 }
 
-/// Car `i`'s place on the starting grid, all facing `heading`: two side by side (the second 1.5
-/// cells to the right of `spawn`), each further row 2.5 cells back.
-fn grid(spawn: (u16, u16), heading: u16, i: usize) -> (u16, u16) {
-    let a = heading as f32 / 65536.0 * std::f32::consts::TAU;
-    let (right, back) = ((i % 2) as f32 * 384.0, (i / 2) as f32 * 640.0);
-    (
-        (spawn.0 as f32 + a.cos() * right - a.sin() * back) as u16,
-        (spawn.1 as f32 + a.sin() * right + a.cos() * back) as u16,
-    )
-}
-
 /// The screen as a PNG in the data folder's `screenshots/`, named by the time (UTC).
 #[cfg(not(target_arch = "wasm32"))]
 fn save_screenshot() -> Result<PathBuf, String> {
@@ -626,30 +615,6 @@ fn save_best(key: &str, lap: &Lap) {
     }
 }
 
-/// The map: what MAP.PCX + COL.PCX + the optional CHECK.PCX describe beyond the terrain itself.
-struct Level {
-    track: Option<Track>,
-    /// Identifies these exact files, so best laps belong to one track; None without a time trial.
-    key: Option<u64>,
-    /// Hash of MAP + COL (+ CHECK, OBJECTS): replays only replay on the files they were recorded on.
-    hash: u64,
-    /// (x, y, gate) for every painted gate cell.
-    /// (x, y, zone) for every painted zone cell.
-    zone_cells: Vec<(usize, usize, Zone)>,
-    /// MAPTEX tile sheet for this map's palette: the map folder's own, or the shared one when
-    /// the palettes match (TEREP1's BMP palette doesn't, so it draws flat colours).
-    maptex: Option<Vec<u8>>,
-    /// Trees and the like from the optional OBJECTS.PCX (#47), and the sprite sheet they're drawn
-    /// from: the folder's own OBJTEX.PCX, else the shared one.
-    objects: Vec<objects::Object>,
-    objtex: Option<pcx::Image>,
-    /// Each object kind's trunk (OBJTEX.TXT, else measured off the sprite).
-    colliders: objects::Colliders,
-    /// From the folder's optional INFO.TXT: the map's name (first line) and its credits (the rest).
-    title: Option<String>,
-    credits: String,
-}
-
 /// A map's files whose changes reload it while the game runs.
 fn watched(map: &str) -> Vec<Option<std::time::SystemTime>> {
     [
@@ -696,109 +661,8 @@ fn pick_map(args: &[String], saved: &str) -> String {
         .unwrap_or_else(|| panic!("no maps found: put map folders in assets/maps/"))
 }
 
-fn load_level(name: &str) -> Result<(Terrain, Level), String> {
-    let (map_file, map) = assets::read_map_image(name, "MAP")?;
-    let (col_file, col) = assets::read_map_image(name, "COL")?;
-    let terrain = Terrain::load(&map, &col).map_err(|e| format!("{map_file}/{col_file}: {e}"))?;
-    let check = assets::read(&format!("maps/{name}/CHECK.PCX")).ok();
-    let maptex = assets::read(&format!("maps/{name}/MAPTEX.PCX"))
-        .ok()
-        .or_else(|| {
-            let shared = assets::read("MAPTEX.PCX").ok()?;
-            // colour 255 is the sky (each map's own), not a tile colour
-            (pcx::decode(&shared).ok()?.palette[..255] == terrain.palette[..255]).then_some(shared)
-        });
-    let track = check.as_deref().map(Track::load).transpose()?;
-    let objects_pcx = assets::read(&format!("maps/{name}/OBJECTS.PCX")).unwrap_or_default();
-    let objects = if objects_pcx.is_empty() {
-        vec![]
-    } else {
-        objects::load(&objects_pcx).map_err(|e| format!("maps/{name}/OBJECTS.PCX: {e}"))?
-    };
-    // the sheet and its colliders: the map's own, else the shared ones (a map may carry its
-    // own OBJTEX.TXT for the shared sprites; its own sheet never takes the shared colliders)
-    let own_sheet = assets::read(&format!("maps/{name}/OBJTEX.PCX")).ok();
-    let txt = assets::read(&format!("maps/{name}/OBJTEX.TXT"))
-        .ok()
-        .or_else(|| {
-            own_sheet
-                .is_none()
-                .then(|| assets::read("OBJTEX.TXT").ok())
-                .flatten()
-        });
-    let objtex = own_sheet
-        .or_else(|| assets::read("OBJTEX.PCX").ok())
-        .and_then(|b| pcx::decode(&b).ok());
-    let txt = txt.map(|b| String::from_utf8_lossy(&b).into_owned());
-    let colliders = objects::colliders(txt.as_deref(), objtex.as_ref())
-        .map_err(|e| format!("maps/{name}: {e}"))?;
-    // what the trees are made of counts too, once there are trees
-    let collider_bytes: Vec<u8> = if objects_pcx.is_empty() {
-        vec![]
-    } else {
-        colliders
-            .iter()
-            .flatten()
-            .flat_map(|v| v.to_le_bytes())
-            .collect()
-    };
-    let zone_cells = track.as_ref().map_or(vec![], |t| {
-        (0..SIZE * SIZE)
-            .filter_map(|i| {
-                t.zone_at(i % SIZE, i / SIZE)
-                    .map(|z| (i % SIZE, i / SIZE, z))
-            })
-            .collect()
-    });
-    let info = assets::read(&format!("maps/{name}/INFO.TXT")).unwrap_or_default();
-    let info = String::from_utf8_lossy(&info);
-    let mut lines = info.lines().map(str::trim);
-    let level = Level {
-        title: lines.next().filter(|l| !l.is_empty()).map(String::from),
-        credits: lines.collect::<Vec<_>>().join(" ").trim().to_string(),
-        track,
-        // the trees are in both (they're hit now); without OBJECTS.PCX both stay what they were
-        key: check
-            .as_ref()
-            .map(|c| track_hash(&[&map, &col, c, &objects_pcx, &collider_bytes])),
-        hash: track_hash(&[
-            &map,
-            &col,
-            check.as_deref().unwrap_or_default(),
-            &objects_pcx,
-            &collider_bytes,
-        ]),
-        zone_cells,
-        maptex,
-        objects,
-        objtex,
-        colliders,
-    };
-    Ok((terrain, level))
-}
-
-impl Level {
-    /// The objects' colliders, for `Sim::set_trunks`.
-    fn trunks(&self) -> Vec<Trunk> {
-        self.objects
-            .iter()
-            .filter_map(|o| o.trunk(&self.colliders))
-            .collect()
-    }
-}
-
 fn best_key(level: &Level, car: usize) -> Option<String> {
     level.key.map(|k| format!("{k:016x}-car{}", car + 1))
-}
-
-/// FNV-1a over the map files: best laps belong to this exact track.
-fn track_hash(files: &[&[u8]]) -> u64 {
-    files
-        .iter()
-        .flat_map(|f| f.iter())
-        .fold(0xcbf29ce484222325, |h, &b| {
-            (h ^ b as u64).wrapping_mul(0x100000001b3)
-        })
 }
 
 /// World (x, y, z-up) → render space (y-up). The world is left-handed (PCX rows run down),

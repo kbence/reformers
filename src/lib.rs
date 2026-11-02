@@ -3,6 +3,7 @@ pub mod bmp;
 pub mod car;
 pub mod ghost;
 pub mod icon;
+pub mod level;
 pub mod lighting;
 // on the web the sockets don't open (browsers can't do UDP): online play says so
 pub mod net;
