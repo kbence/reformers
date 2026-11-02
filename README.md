@@ -67,6 +67,11 @@ the host, which sends everyone's back, and they compare a state hash every secon
 leaves or goes quiet for 5 s just stops, and the race goes on; if the host goes, or the sims
 ever disagree, you're back to driving alone. Online laps aren't saved as best laps or ghosts.
 
+A dedicated server runs rounds without a player of its own: `reform serve` (see Tools). Players
+join it like any host, at any time: mid-round they wait for the next one. When a round ends (on
+time, or someone's laps) everyone sees the standings and is back in its lobby by themselves, for
+the next map.
+
 ## Time trial
 
 When a map has a `CHECK.PCX`, it's a time trial. Drive through the start line to start the
@@ -209,8 +214,14 @@ cargo run --release --bin reform -- drive "t:3 tl:2 b:1" out/run   # headless dr
 cargo run --release --bin reform -- assets/maps/terep2/MAP.PCX out/map.pgm --map  # PCX → PGM/PPM/raw f32/raw RGB
 cargo run --release --bin reform -- sounds out/sounds                 # the synthesised sounds as WAVs
 cargo run --release --bin reform -- car-export CAR1.DAT out/car1.obj  # a car as OBJ + MTL + skin PNG, for Blender
+cargo run --release --bin reform -- serve --maps terep2,a1hegy --min 2  # a dedicated online server
 cargo test
 ```
+
+`reform serve` options: `--port` (47800), `--maps a,b,…` or `all` (terep2), `--min` players before
+a round (1) and `--wait` seconds after the first one's in (20), `--round` seconds (300), `--laps`
+that end a time trial (3), `--delay` in ticks (8, 67 ms: the internet wants more than a LAN's 4).
+It needs `assets/` next to it, like the game, and UDP on its port open.
 
 The engine is a recorded CC0 loop ("racing car engine sound loops" by domasx2, OpenGameArt; full
 provenance in `assets/sounds/engine/SOURCES.md`), pitched up at load time into nine speed steps and

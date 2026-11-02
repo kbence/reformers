@@ -18,6 +18,10 @@
 //! join until the host says it's in the lobby, then waits for Start (map, every car, its own
 //! slot). Every `HASH_EVERY` ticks each side sends `Sim::state_hash`; the host compares each
 //! joiner's with its own and the joiners compare the host's; a mismatch is a desync.
+//!
+//! A dedicated host (`reform serve`, #62) drives no car: every slot is a joiner's, car 0 the
+//! first in. It ends each round with `RoundOver` (the standings), and the joiners come back to
+//! its lobby by themselves for the next map. `Start` carries the host's input delay.
 
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
@@ -26,13 +30,14 @@ pub const PORT: u16 = 47800;
 /// Cars in an online race at most: lockstep waits for the slowest link, so more wants a different
 /// netcode (rollback).
 pub const MAX_PLAYERS: usize = 4;
-/// Ticks between pressing a key and its tick: 4 = 33 ms, enough for a LAN or a nearby host.
+/// Ticks between pressing a key and its tick: 4 = 33 ms, enough for a LAN or a nearby host. A
+/// dedicated host may choose more (`Start::delay`).
 pub const DELAY: usize = 4;
 const HASH_EVERY: u64 = 120;
 const TIMEOUT: Duration = Duration::from_secs(5);
 const RESEND: Duration = Duration::from_millis(200);
 const MAGIC: &[u8; 4] = b"RFN1";
-const VERSION: u8 = 4;
+const VERSION: u8 = 5;
 /// Ticks of frames / inputs per packet at most (4 cars × 256 ticks fits the 2 KB buffer).
 const BATCH: usize = 256;
 
@@ -52,6 +57,10 @@ pub struct Start {
     pub spawns: Vec<[u16; 3]>,
     /// Which car is this machine's.
     pub you: u8,
+    /// The host drives no car (`reform serve`): rounds end with `RoundOver`, then the next map.
+    pub dedicated: bool,
+    /// Ticks between a key and its tick, `DELAY` unless a dedicated host says otherwise.
+    pub delay: u8,
 }
 
 #[derive(Debug, PartialEq)]
@@ -65,7 +74,8 @@ enum Msg {
         car: u8,
         skin: String,
     },
-    /// Host → joiner waiting to start: you're in, `players` cars so far (host included).
+    /// Host → joiner waiting to start: you're in, `players` cars so far (host included). 0 from
+    /// a dedicated host: a round is on, keep asking and you're in the next one.
     Lobby {
         players: u8,
     },
@@ -89,6 +99,8 @@ enum Msg {
         hash: Option<(u32, u64)>,
     },
     Bye,
+    /// Dedicated host → joiners: the round is over (the standings); come back to the lobby.
+    RoundOver(String),
 }
 
 fn put_str(out: &mut Vec<u8>, s: &str) {
@@ -121,7 +133,8 @@ impl Msg {
                 put_str(&mut o, &s.map);
                 o.extend(s.map_hash.to_le_bytes());
                 o.extend([
-                    s.soft as u8 | (s.gradual as u8) << 1,
+                    s.soft as u8 | (s.gradual as u8) << 1 | (s.dedicated as u8) << 2,
+                    s.delay,
                     s.you,
                     s.cars.len() as u8,
                 ]);
@@ -149,6 +162,10 @@ impl Msg {
                 put_hash(&mut o, *hash);
             }
             Msg::Bye => o.push(6),
+            Msg::RoundOver(text) => {
+                o.push(9);
+                put_str(&mut o, text);
+            }
             Msg::Lobby { players } => o.extend([7, *players]),
             Msg::Frames {
                 have,
@@ -186,9 +203,10 @@ impl Msg {
                     return Some(Msg::Refused("the host runs a different version".into()));
                 }
                 let (map, map_hash) = (r.str()?, r.u64()?);
-                let (flags, you, n) = (r.u8()?, r.u8()?, r.u8()? as usize);
-                let (soft, gradual) = (flags & 1 != 0, flags & 2 != 0);
-                if n > MAX_PLAYERS || you as usize >= n {
+                let (flags, delay) = (r.u8()?, r.u8()?);
+                let (you, n) = (r.u8()?, r.u8()? as usize);
+                let (soft, gradual, dedicated) = (flags & 1 != 0, flags & 2 != 0, flags & 4 != 0);
+                if n > MAX_PLAYERS || you as usize >= n || delay == 0 {
                     return None;
                 }
                 let (mut cars, mut skins, mut spawns) = (vec![], vec![], vec![]);
@@ -206,6 +224,8 @@ impl Msg {
                     skins,
                     spawns,
                     you,
+                    dedicated,
+                    delay,
                 })
             }
             4 => Msg::Refused(r.str()?),
@@ -221,6 +241,7 @@ impl Msg {
                 }
             }
             6 => Msg::Bye,
+            9 => Msg::RoundOver(r.str()?),
             7 => Msg::Lobby { players: r.u8()? },
             8 => {
                 let (have, first) = (r.u32()?, r.u32()?);
@@ -318,8 +339,10 @@ pub struct Guest {
 /// The lobby: answers LAN discovery and collects who asks to join, until `start`.
 pub struct Host {
     sock: UdpSocket,
-    /// In the order they joined: they'll be cars 1, 2, ….
+    /// In the order they joined: they'll be cars 1, 2, … (0, 1, … on a dedicated host).
     pub guests: Vec<Guest>,
+    /// Drives no car (`reform serve`): every slot is a guest's.
+    pub dedicated: bool,
 }
 
 impl Host {
@@ -327,7 +350,21 @@ impl Host {
         Ok(Host {
             sock: socket(port)?,
             guests: vec![],
+            dedicated: false,
         })
+    }
+
+    /// A host without a car of its own (`reform serve`).
+    pub fn bind_dedicated(port: u16) -> std::io::Result<Host> {
+        Ok(Host {
+            dedicated: true,
+            ..Host::bind(port)?
+        })
+    }
+
+    /// Cars in the lobby so far, the host's own included.
+    pub fn players(&self) -> usize {
+        self.guests.len() + !self.dedicated as usize
     }
 
     pub fn port(&self) -> u16 {
@@ -347,7 +384,7 @@ impl Host {
                 ),
                 Msg::Join { car, skin, .. } => {
                     let known = self.guests.iter().any(|g| g.addr == from);
-                    if !known && self.guests.len() + 1 >= MAX_PLAYERS {
+                    if !known && self.players() >= MAX_PLAYERS {
                         send(&self.sock, from, &Msg::Refused("the race is full".into()));
                         continue;
                     }
@@ -358,7 +395,7 @@ impl Host {
                             skin,
                         });
                     }
-                    let players = self.guests.len() as u8 + 1;
+                    let players = self.players() as u8;
                     send(&self.sock, from, &Msg::Lobby { players });
                 }
                 Msg::Bye => self.guests.retain(|g| g.addr != from),
@@ -367,21 +404,24 @@ impl Host {
         }
     }
 
-    /// The race starts: `start` lists every car (the host's first, then the guests' in order;
-    /// its `you` is ignored). Each guest gets it with their own slot, repeated until their
-    /// first inputs show it arrived.
-    pub fn start(self, start: Start) -> Link {
+    /// The race starts: `start` lists every car (the host's first unless dedicated, then the
+    /// guests' in order; its `you` and `dedicated` are set here). Each guest gets it with their
+    /// own slot, repeated until their first inputs show it arrived.
+    pub fn start(self, mut start: Start) -> Link {
+        start.dedicated = self.dedicated;
+        let first = !self.dedicated as usize; // the guests' first car
         let peers = self
             .guests
             .iter()
             .enumerate()
             .map(|(i, g)| {
                 let mut s = start.clone();
-                s.you = i as u8 + 1;
-                Peer::new(g.addr, Some(s))
+                s.you = (first + i) as u8;
+                Peer::new(g.addr, first + i, Some(s))
             })
             .collect();
-        Link::new(self.sock, peers, 0, start.cars.len())
+        let me = if self.dedicated { None } else { Some(0) };
+        Link::new(self.sock, peers, true, me, &start)
     }
 }
 
@@ -450,11 +490,13 @@ impl Joiner {
 
     /// The race starts as `start` says (from `poll`): we're car `start.you`.
     pub fn start(self, start: &Start) -> Link {
+        let host = Peer::new(self.host, 0, None);
         Link::new(
             self.sock,
-            vec![Peer::new(self.host, None)],
-            start.you as usize,
-            start.cars.len(),
+            vec![host],
+            false,
+            Some(start.you as usize),
+            start,
         )
     }
 
@@ -506,9 +548,11 @@ impl Discovery {
     }
 }
 
-/// The other end: for the host, each guest (car i + 1); for a joiner, the host.
+/// The other end: for the host, each guest; for a joiner, the host.
 struct Peer {
     addr: SocketAddr,
+    /// The guest's car (for a joiner's host: unused).
+    car: usize,
     /// How many of what we send it (host: frames; joiner: our inputs) it has.
     has: usize,
     heard: Instant,
@@ -517,9 +561,10 @@ struct Peer {
 }
 
 impl Peer {
-    fn new(addr: SocketAddr, start: Option<Start>) -> Peer {
+    fn new(addr: SocketAddr, car: usize, start: Option<Start>) -> Peer {
         Peer {
             addr,
+            car,
             has: 0,
             heard: Instant::now(),
             start,
@@ -531,12 +576,16 @@ impl Peer {
 pub struct Link {
     sock: UdpSocket,
     peers: Vec<Peer>,
-    /// Our car: 0 host, 1… joiners.
+    /// We decide the frames (and hand out the slots).
+    host: bool,
+    /// Our car: 0 host, 1… joiners (a dedicated host has none: `usize::MAX`).
     pub me: usize,
     /// Cars in the race.
     pub players: usize,
+    /// Ticks between a key and its tick (`Start::delay`).
+    pub delay: usize,
     /// Inputs by car, then tick (host: everyone's as they arrive; joiner: only ours, in
-    /// `streams[me]`). The first `DELAY` ticks run on no keys.
+    /// `streams[me]`). The first `delay` ticks run on no keys.
     streams: Vec<Vec<u8>>,
     /// Complete ticks, a byte per car: what the sim runs.
     frames: Vec<Vec<u8>>,
@@ -549,30 +598,49 @@ pub struct Link {
     /// for the host, every guest did).
     pub desync: Option<u64>,
     pub lost: bool,
+    /// A dedicated host ended the round: the standings it sent.
+    pub over: Option<String>,
 }
 
 impl Link {
-    fn new(sock: UdpSocket, peers: Vec<Peer>, me: usize, players: usize) -> Link {
+    /// `me`: our car, None for a dedicated host.
+    fn new(
+        sock: UdpSocket,
+        peers: Vec<Peer>,
+        host: bool,
+        me: Option<usize>,
+        start: &Start,
+    ) -> Link {
+        let (players, delay) = (start.cars.len(), start.delay as usize);
         Link {
             sock,
+            host,
             peers,
-            me,
+            me: me.unwrap_or(usize::MAX),
             players,
-            streams: vec![vec![0; DELAY]; players],
-            frames: (0..DELAY).map(|_| vec![0; players]).collect(),
+            delay,
+            streams: vec![vec![0; delay]; players],
+            frames: (0..delay).map(|_| vec![0; players]).collect(),
             gone: vec![false; players],
             hashes: vec![],
             sent: None,
             desync: None,
             lost: false,
+            over: None,
         }
     }
 
-    fn host(&self) -> bool {
-        self.me == 0
+    /// We're the host (decide the frames), with a car of our own or not.
+    pub fn host(&self) -> bool {
+        self.host
     }
 
-    /// Our input for the next tick that hasn't got one (`DELAY` ticks ahead of the sim).
+    /// Where the host is (a joiner's only peer).
+    pub fn host_addr(&self) -> SocketAddr {
+        self.peers[0].addr
+    }
+
+    /// Our input for the next tick that hasn't got one (`delay` ticks ahead of the sim).
     pub fn push_local(&mut self, input: u8) {
         self.streams[self.me].push(input);
     }
@@ -610,11 +678,20 @@ impl Link {
     pub fn poll(&mut self) {
         for (from, msg) in received(&self.sock) {
             let Some(k) = self.peers.iter().position(|p| p.addr == from) else {
+                // a dedicated host keeps newcomers waiting: they join the next round's lobby
+                if self.me == usize::MAX
+                    && let Msg::Join { version, .. } = msg
+                {
+                    let reply = match version == VERSION {
+                        true => Msg::Lobby { players: 0 },
+                        false => Msg::Refused("the host runs a different version".into()),
+                    };
+                    send(&self.sock, from, &reply);
+                }
                 continue;
             };
-            // the host's guest k is car k + 1
-            let car = if self.host() { k + 1 } else { 0 };
-            if self.gone[car] {
+            let car = self.peers[k].car;
+            if self.host() && self.gone[car] {
                 continue;
             }
             self.peers[k].heard = Instant::now();
@@ -657,6 +734,7 @@ impl Link {
                 }
                 Msg::Bye if self.host() => self.gone[car] = true,
                 Msg::Bye => self.lost = true,
+                Msg::RoundOver(text) if !self.host() => self.over = Some(text),
                 _ => {}
             }
         }
@@ -664,14 +742,14 @@ impl Link {
         for k in 0..self.peers.len() {
             if self.peers[k].heard.elapsed() > TIMEOUT {
                 match self.host() {
-                    true => self.gone[k + 1] = true,
+                    true => self.gone[self.peers[k].car] = true,
                     false => self.lost = true,
                 }
             }
         }
         if self.host() {
-            if self.gone[1..].iter().all(|&g| g) {
-                self.lost = true; // everyone left: back to driving alone
+            if self.peers.iter().all(|p| self.gone[p.car]) {
+                self.lost = true; // everyone left: back to driving alone (or the lobby)
             }
             // complete ticks: everyone's input in, a gone car's as far as it got, then none
             loop {
@@ -690,7 +768,7 @@ impl Link {
         let hash = self.hashes.last().map(|&(t, h)| (t as u32, h));
         let gone = (0..self.players).fold(0u8, |m, c| m | (self.gone[c] as u8) << c);
         for k in 0..self.peers.len() {
-            let car = if self.host() { k + 1 } else { 0 };
+            let car = self.peers[k].car;
             if self.host() && self.gone[car] {
                 continue;
             }
@@ -734,6 +812,21 @@ impl Link {
             }
         }
     }
+
+    /// Dedicated host: the round is over, with `standings`; back to an empty lobby on the same
+    /// port, which the joiners rejoin by themselves.
+    pub fn end_round(self, standings: &str) -> Host {
+        for p in &self.peers {
+            for _ in 0..3 {
+                send(&self.sock, p.addr, &Msg::RoundOver(standings.into()));
+            }
+        }
+        Host {
+            sock: self.sock,
+            guests: vec![],
+            dedicated: true,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -756,6 +849,8 @@ mod tests {
                 .map(|i| [0x8000 + 0x180 * i, 0x7a00, 0x4000])
                 .collect(),
             you: n as u8 - 1,
+            dedicated: n == 3,
+            delay: DELAY as u8 + n as u8,
         }
     }
 
@@ -790,6 +885,7 @@ mod tests {
                 hash: None,
             },
             Msg::Bye,
+            Msg::RoundOver("1. P2  3 laps".into()),
         ] {
             assert_eq!(Msg::decode(&m.encode()), Some(m));
         }
@@ -870,6 +966,7 @@ mod tests {
         );
         let mut s = start(n);
         s.cars = vec![0; n];
+        s.delay = DELAY as u8;
         let mut links = vec![host.start(s.clone())];
         let mut pending: Vec<Option<Link>> = (1..n).map(|_| None).collect();
         while pending.iter().any(Option::is_none) {
@@ -879,7 +976,10 @@ mod tests {
                 if let Some(jj) = j
                     && let JoinState::Started(st) = jj.poll()
                 {
-                    assert_eq!((st.you as usize, &st.cars), (i + 1, &s.cars));
+                    assert_eq!(
+                        (st.you as usize, &st.cars, st.dedicated),
+                        (i + 1, &s.cars, false)
+                    );
                     pending[i] = Some(j.take().unwrap().start(&st));
                 }
             }
@@ -998,5 +1098,143 @@ mod tests {
             ran[0][250..].iter().any(|&b| b != 0),
             "the others still drive"
         );
+    }
+
+    /// A dedicated host (#62): two joiners get cars 0 and 1 and the host's delay, the host runs
+    /// the same sim without a car of its own, and after `end_round` both come back to its lobby
+    /// by themselves and get the next start.
+    #[test]
+    fn a_dedicated_host_runs_rounds() {
+        crate::need_assets!();
+        let read = |f: &str| crate::assets::read(f).unwrap();
+        let car = crate::car::parse(&read("CAR1.DAT")).unwrap();
+        let terrain =
+            Terrain::load(&read("maps/terep2/MAP.PCX"), &read("maps/terep2/COL.PCX")).unwrap();
+        let new_sim = || {
+            let mut s = Sim::new(terrain.clone());
+            for i in 0..2 {
+                s.cars.push(SimCar::spawn_facing(
+                    &car,
+                    &s.terrain,
+                    0x8000 + 0x180 * i,
+                    0x7a00,
+                    0,
+                ));
+            }
+            s
+        };
+        let mut host = Host::bind_dedicated(0).unwrap();
+        let addr: SocketAddr = (Ipv4Addr::LOCALHOST, host.port()).into();
+        let mut s = start(2);
+        (s.cars, s.delay) = (vec![0; 2], 7);
+        let t0 = Instant::now();
+        // two rounds: the second is set up by the joiners coming back on their own
+        let mut back: Vec<SocketAddr> = vec![addr; 2];
+        // and a latecomer, who connects mid-round and waits for the next lobby
+        let mut late = Joiner::new(addr, 0, "").unwrap();
+        for round in 0..2 {
+            let mut joiners: Vec<_> = back
+                .iter()
+                .map(|&a| Some(Joiner::new(a, 0, "").unwrap()))
+                .collect();
+            for i in 0..2 {
+                while host.guests.len() < i + 1 {
+                    assert!(
+                        t0.elapsed() < Duration::from_secs(5),
+                        "lobby, round {round}"
+                    );
+                    assert!(matches!(
+                        joiners[i].as_mut().unwrap().poll(),
+                        JoinState::Waiting
+                    ));
+                    host.poll("terep2");
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            }
+            assert_eq!(host.players(), 2, "the host has no car");
+            let mut server = host.start(s.clone());
+            assert!(server.host() && server.peers.iter().map(|p| p.car).eq(0..2));
+            let mut links: Vec<Option<Link>> = vec![None, None];
+            while links.iter().any(Option::is_none) {
+                assert!(
+                    t0.elapsed() < Duration::from_secs(10),
+                    "start, round {round}"
+                );
+                server.poll();
+                for (i, j) in joiners.iter_mut().enumerate() {
+                    if let Some(jj) = j
+                        && let JoinState::Started(st) = jj.poll()
+                    {
+                        assert_eq!((st.you as usize, st.dedicated, st.delay), (i, true, 7));
+                        links[i] = Some(j.take().unwrap().start(&st));
+                    }
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let mut links: Vec<Link> = links.into_iter().map(Option::unwrap).collect();
+            assert!(links.iter().all(|l| l.delay == 7));
+            // 2 s in lockstep: the joiners drive, the host only runs the ticks
+            let ticks = 2 * crate::sim::TICK_HZ as usize;
+            let mut sims = vec![new_sim(), new_sim(), new_sim()]; // the host's last
+            let mut t = [0usize; 3];
+            while t.iter().any(|&t| t < ticks) {
+                assert!(t0.elapsed() < Duration::from_secs(30), "lockstep stalled");
+                for (c, link) in links.iter_mut().enumerate() {
+                    link.poll();
+                    while link.local_ticks() < t[c] + link.delay + 1 {
+                        let k = link.local_ticks() - link.delay;
+                        link.push_local(keys(c, k));
+                    }
+                }
+                server.poll();
+                for c in 0..3 {
+                    let link = if c < 2 { &mut links[c] } else { &mut server };
+                    while t[c] < ticks
+                        && let Some(inputs) = link.inputs(t[c])
+                    {
+                        let mut races: Vec<_> = (0..2).map(|_| Race::new(None)).collect();
+                        run::tick_all(
+                            &mut sims[c],
+                            &[&car, &car],
+                            None,
+                            &mut races,
+                            &inputs,
+                            t[c] as u64,
+                        );
+                        t[c] += 1;
+                        link.ran(t[c] as u64, || sims[c].state_hash());
+                    }
+                    assert_eq!(link.desync, None, "side {c}, round {round}");
+                }
+                if round == 0 {
+                    assert!(matches!(late.poll(), JoinState::Waiting));
+                }
+                std::thread::sleep(Duration::from_micros(200));
+            }
+            let h = sims[2].state_hash();
+            assert!(sims.iter().all(|s| s.state_hash() == h));
+            host = server.end_round("1. P1");
+            for link in &mut links {
+                while link.over.is_none() {
+                    assert!(t0.elapsed() < Duration::from_secs(30), "round over");
+                    link.poll();
+                }
+                assert_eq!(link.over.as_deref(), Some("1. P1"));
+            }
+            if round == 0 {
+                assert_eq!(late.lobby, Some(0), "told a round is on");
+                while host.guests.is_empty() {
+                    assert!(t0.elapsed() < Duration::from_secs(30), "the latecomer");
+                    late.poll();
+                    host.poll("terep2");
+                }
+                assert_eq!(
+                    host.guests[0].addr.port(),
+                    late.sock.local_addr().unwrap().port()
+                );
+                host.guests.clear(); // ponytail: the test's next round is for two
+            }
+            back = links.iter().map(Link::host_addr).collect();
+        }
     }
 }

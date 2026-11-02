@@ -2521,6 +2521,8 @@ async fn main() {
                     .collect(),
                 cars,
                 you: 0,
+                dedicated: false,
+                delay: net::DELAY as u8,
             };
             online = Some((h.start(start.clone()), start.clone()));
             begin = Some(start);
@@ -2674,14 +2676,19 @@ async fn main() {
                 ));
             }
         }
+        // a dedicated host's round is over: show the standings, then back into its lobby
+        let mut rejoin = None;
         if let Some((link, _)) = &mut online {
             link.poll();
             if let Some(t) = link.desync {
                 leave = Some(format!("out of sync with the host (tick {t})"));
+            } else if let Some(standings) = link.over.take() {
+                leave = Some(format!("round over: {standings}"));
+                rejoin = Some(link.host_addr());
             } else if link.lost {
-                leave = Some(match link.me {
-                    0 => "everyone else left".into(),
-                    _ => "the host left".into(),
+                leave = Some(match link.host() {
+                    true => "everyone else left".into(),
+                    false => "the host left".into(),
                 });
             } else {
                 for (c, seen) in gone_seen.iter_mut().enumerate() {
@@ -2709,6 +2716,11 @@ async fn main() {
                 recording_run = new_run(&map, &level, players[0].car, &sim);
             }
             banner = Some((why, get_time() + 5.0));
+        }
+        if let Some(addr) = rejoin
+            && let Ok(j) = net::Joiner::new(addr, players[0].car as u8, &gfx.skin)
+        {
+            lobby = Lobby::Joining(j);
         }
         // the Race page looks for hosts on the LAN while it's open
         if menu_open && menu.page == Page::Race && online.is_none() {
@@ -2749,7 +2761,8 @@ async fn main() {
         gfx.join_label = match (&online, &lobby) {
             (Some(_), _) => "Join: (in a race)".into(),
             (None, Lobby::Joining(j)) => match j.lobby {
-                Some(n) => format!("In the lobby, {n} in: waiting for the host  (Enter: leave)"),
+                Some(0) => "A round is on: you're in the next one  (Enter: leave)".into(),
+                Some(n) => format!("In the lobby, {n} in: waiting for the start  (Enter: leave)"),
                 None => format!("Joining {}...  (Enter: cancel)", gfx.join),
             },
             _ if found > 0 => format!(
@@ -3024,10 +3037,10 @@ async fn main() {
             acc += get_frame_time().min(0.25);
         }
         while acc >= 1.0 / TICK_HZ as f32 {
-            // online: our keys go DELAY ticks ahead; a tick runs once the other side's are in
+            // online: our keys go the link's delay ahead; a tick runs once the other side's are in
             let net_inputs = match &mut online {
                 Some((link, _)) => {
-                    if link.local_ticks() <= ticks as usize + net::DELAY {
+                    if link.local_ticks() <= ticks as usize + link.delay {
                         let k = if menu_open { Keys::default() } else { keys };
                         let p = &mut players[link.me];
                         let mend = sim.gradual_repair && !menu_open && down(KeyCode::F);

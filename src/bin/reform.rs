@@ -15,6 +15,9 @@ fn main() {
     if args.first().is_some_and(|a| a == "car-export") {
         return car_export(&args[1..]);
     }
+    if args.first().is_some_and(|a| a == "serve") {
+        return serve(&args[1..]);
+    }
     if args.first().is_some_and(|a| a == "sounds") {
         return sounds(args.get(1).map_or("out", |s| s.as_str()));
     }
@@ -154,6 +157,178 @@ fn drive(args: &[String]) {
     ] {
         std::fs::write(&path, pgm(px)).unwrap_or_else(|e| fail(&format!("{path}: {e}")));
     }
+}
+
+/// `reform serve [--port P] [--maps a,b,…|all] [--min N] [--wait S] [--round S] [--laps N]
+/// [--delay T]` (#62): a dedicated host. It drives no car and runs rounds forever: a lobby until
+/// `--min` players are in (default 1) and `--wait` seconds have passed since the first (20), or
+/// the race is full; then the next map of `--maps` (default terep2), until `--round` seconds
+/// (300) or, on a time trial, someone's `--laps` laps (3); then the standings, and the players
+/// come back to the lobby by themselves. `--delay` is the input delay in ticks (8 = 67 ms; the
+/// game's own host uses 4, for a LAN).
+fn serve(args: &[String]) {
+    use reformers::level::{SPAWN, grid, load_level};
+    use reformers::net::{Host, MAX_PLAYERS, PORT, Start};
+    use reformers::run;
+    use reformers::track::{Race, format_time};
+    use std::time::{Duration, Instant};
+    let opt = |f: &str, default: &str| {
+        args.iter()
+            .position(|a| a == f)
+            .and_then(|i| args.get(i + 1))
+            .map_or(default.to_string(), |v| v.clone())
+    };
+    let num = |f: &str, default: &str| -> u64 {
+        opt(f, default)
+            .parse()
+            .unwrap_or_else(|_| fail(&format!("{f} wants a number")))
+    };
+    let maps: Vec<String> = match opt("--maps", "terep2").as_str() {
+        "all" => assets::maps(),
+        list => list.split(',').map(String::from).collect(),
+    };
+    for m in &maps {
+        load_level(m).unwrap_or_else(|e| fail(&format!("map {m}: {e}")));
+    }
+    let (min, wait) = (
+        num("--min", "1").clamp(1, MAX_PLAYERS as u64) as usize,
+        num("--wait", "20"),
+    );
+    let round = num("--round", "300") * TICK_HZ as u64;
+    let (laps, delay) = (
+        num("--laps", "3") as u32,
+        num("--delay", "8").clamp(1, 60) as u8,
+    );
+    let port = num("--port", &PORT.to_string()) as u16;
+    let models: Vec<car::Car> = (1..=5)
+        .map(|n| {
+            let f = format!("CAR{n}.DAT");
+            car::parse(&assets::read(&f).unwrap_or_else(|e| fail(&e))).unwrap_or_else(|e| fail(&e))
+        })
+        .collect();
+    let mut host =
+        Host::bind_dedicated(port).unwrap_or_else(|e| fail(&format!("port {port}: {e}")));
+    println!("serving on port {port}: {}", maps.join(", "));
+    for map in maps.iter().cycle() {
+        // the lobby
+        let mut first_in: Option<Instant> = None;
+        loop {
+            host.poll(map);
+            first_in = match host.players() {
+                0 => None,
+                _ => first_in.or(Some(Instant::now())),
+            };
+            let waited = first_in.is_some_and(|t| t.elapsed() >= Duration::from_secs(wait));
+            if host.players() >= MAX_PLAYERS || (host.players() >= min && waited) {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        // the round: as the game's host sets one up, minus a car of its own
+        let (terrain, level) = load_level(map).unwrap_or_else(|e| fail(&e));
+        let mut sim = Sim::new(terrain);
+        if let Some(t) = &level.track {
+            sim.set_soft_dirt(t.soft_dirt.clone());
+        }
+        sim.set_trunks(level.trunks());
+        let ((sx, sy), sh) = level
+            .track
+            .as_ref()
+            .and_then(|t| t.spawn.as_ref())
+            .map_or((SPAWN, 0), |s| ((s.x, s.y), s.heading));
+        let cars: Vec<u8> = host.guests.iter().map(|g| g.car.min(4)).collect();
+        let spawns: Vec<[u16; 3]> = (0..cars.len())
+            .map(|i| {
+                let (x, y) = grid((sx, sy), sh, i);
+                [x, y, sh]
+            })
+            .collect();
+        for (&c, &[x, y, h]) in cars.iter().zip(&spawns) {
+            sim.cars.push(SimCar::spawn_facing(
+                &models[c as usize],
+                &sim.terrain,
+                x,
+                y,
+                h,
+            ));
+        }
+        let start = Start {
+            map: map.clone(),
+            map_hash: level.hash,
+            soft: false,
+            gradual: false,
+            skins: host.guests.iter().map(|g| g.skin.clone()).collect(),
+            spawns,
+            cars: cars.clone(),
+            you: 0,
+            dedicated: true,
+            delay,
+        };
+        println!("{map}: {} player(s)", cars.len());
+        let mut link = host.start(start);
+        let car_models: Vec<&car::Car> = cars.iter().map(|&c| &models[c as usize]).collect();
+        let mut races: Vec<Race> = cars.iter().map(|_| Race::new(None)).collect();
+        let mut t = 0u64;
+        // the joiners set the pace: a tick runs once everyone's input for it is in
+        let why = loop {
+            link.poll();
+            while let Some(inputs) = link.inputs(t as usize) {
+                run::tick_all(
+                    &mut sim,
+                    &car_models,
+                    level.track.as_ref(),
+                    &mut races,
+                    &inputs,
+                    t,
+                );
+                t += 1;
+                link.ran(t, || sim.state_hash());
+            }
+            if let Some(at) = link.desync {
+                break format!("out of sync at tick {at}");
+            } else if link.lost {
+                break "everyone left".into();
+            } else if t >= round {
+                break "time's up".into();
+            } else if level.track.is_some() && races.iter().any(|r| r.laps >= laps) {
+                break format!("{laps} laps done");
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        };
+        let standings = standings(&races, level.track.is_some(), &link.gone, format_time);
+        println!("{map}: {why}. {standings}");
+        host = link.end_round(&standings);
+    }
+}
+
+/// "1. P2 3 laps, best 1:02.34  2. P1 …": most laps first, then the better best lap; players
+/// who left are left out. Free roam (no track) has none.
+fn standings(
+    races: &[reformers::track::Race],
+    timed: bool,
+    gone: &[bool],
+    time: fn(u64) -> String,
+) -> String {
+    if !timed {
+        return "free roam over".into();
+    }
+    let mut order: Vec<usize> = (0..races.len()).filter(|&c| !gone[c]).collect();
+    let best = |c: usize| races[c].best.as_ref().map_or(u64::MAX, |b| b.time);
+    order.sort_by_key(|&c| (std::cmp::Reverse(races[c].laps), best(c)));
+    order
+        .iter()
+        .enumerate()
+        .map(|(place, &c)| {
+            let best = races[c].best.as_ref().map_or("-".into(), |b| time(b.time));
+            format!(
+                "{}. P{} {} laps, best {best}",
+                place + 1,
+                c + 1,
+                races[c].laps
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("  ")
 }
 
 fn fail(msg: &str) -> ! {
