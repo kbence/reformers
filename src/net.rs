@@ -360,7 +360,31 @@ fn received(sock: &UdpSocket) -> Vec<(SocketAddr, Msg)> {
 }
 
 fn send(sock: &UdpSocket, to: SocketAddr, msg: &Msg) {
-    let _ = sock.send_to(&msg.encode(), to); // a lost packet is resent by the next
+    let bytes = msg.encode();
+    if let Some((ms, jitter)) = lag()
+        && let Ok(sock) = sock.try_clone()
+    {
+        use std::hash::{BuildHasher, RandomState};
+        let ms = ms + RandomState::new().hash_one(0u8) % (jitter + 1);
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(ms));
+            let _ = sock.send_to(&bytes, to);
+        });
+        return;
+    }
+    let _ = sock.send_to(&bytes, to); // a lost packet is resent by the next
+}
+
+/// `REFORMERS_LAG=ms` or `ms+jitter` (e.g. `20+15`): every packet we send goes out that much
+/// later (jitter: up to that much more, at random, so they also arrive out of order), to try a
+/// bad network on one machine.
+fn lag() -> Option<(u64, u64)> {
+    static LAG: std::sync::OnceLock<Option<(u64, u64)>> = std::sync::OnceLock::new();
+    *LAG.get_or_init(|| {
+        let v = std::env::var("REFORMERS_LAG").ok()?;
+        let (ms, jitter) = v.split_once('+').unwrap_or((&v, "0"));
+        Some((ms.trim().parse().ok()?, jitter.trim().parse().ok()?))
+    })
 }
 
 /// Someone who asked to join: where they are, their car and skin.

@@ -66,6 +66,8 @@ or Join leaves it. The sims run in lockstep: each player sends only their keys, 
 the host, which sends everyone's back, and they compare a state hash every second. A player who
 leaves or goes quiet for 5 s just stops, and the race goes on; if the host goes, or the sims
 ever disagree, you're back to driving alone. Online laps aren't saved as best laps or ghosts.
+To try a slow network on one machine, set `REFORMERS_LAG=ms` or `ms+jitter` (e.g. `15+15`) for
+the host and the joiners: every packet they send goes out that much later.
 
 A dedicated server runs rounds without a player of its own: `reform serve` (see Tools). Players
 join it like any host, at any time: mid-round they catch up on the race so far in a second or
