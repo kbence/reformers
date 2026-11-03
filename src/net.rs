@@ -556,8 +556,9 @@ struct Peer {
     /// How many of what we send it (host: frames; joiner: our inputs) it has.
     has: usize,
     heard: Instant,
-    /// Host: the Start to repeat until this guest's first packet.
+    /// Host: the Start to repeat until this guest's first packet, and when it last went.
     start: Option<Start>,
+    start_sent: Option<Instant>,
 }
 
 impl Peer {
@@ -568,6 +569,7 @@ impl Peer {
             has: 0,
             heard: Instant::now(),
             start,
+            start_sent: None,
         }
     }
 }
@@ -593,7 +595,6 @@ pub struct Link {
     pub gone: Vec<bool>,
     /// Our recent state hashes (tick, hash).
     hashes: Vec<(u64, u64)>,
-    sent: Option<Instant>,
     /// Set when the sims disagree (the tick), or the race is over for us: the host left (or,
     /// for the host, every guest did).
     pub desync: Option<u64>,
@@ -623,7 +624,6 @@ impl Link {
             frames: (0..delay).map(|_| vec![0; players]).collect(),
             gone: vec![false; players],
             hashes: vec![],
-            sent: None,
             desync: None,
             lost: false,
             over: None,
@@ -772,12 +772,14 @@ impl Link {
             if self.host() && self.gone[car] {
                 continue;
             }
-            let p = &self.peers[k];
+            let p = &mut self.peers[k];
             if let Some(s) = &p.start
-                && self.sent.is_none_or(|t| t.elapsed() > RESEND)
+                && p.start_sent.is_none_or(|t| t.elapsed() > RESEND)
             {
                 send(&self.sock, p.addr, &Msg::Start(s.clone()));
+                p.start_sent = Some(Instant::now());
             }
+            let p = &self.peers[k];
             let msg = if self.host() {
                 let from = p.has.min(self.frames.len());
                 let to = (from + BATCH).min(self.frames.len());
@@ -801,7 +803,6 @@ impl Link {
             };
             send(&self.sock, p.addr, &msg);
         }
-        self.sent = Some(Instant::now());
     }
 
     /// Tells the others we're leaving.
