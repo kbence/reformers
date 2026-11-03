@@ -35,9 +35,9 @@ pub const PORT: u16 = 47800;
 /// Cars in an online race at most: lockstep waits for the slowest link, so more wants a different
 /// netcode (rollback).
 pub const MAX_PLAYERS: usize = 4;
-/// Ticks between pressing a key and its tick: 4 = 33 ms, enough for a LAN or a nearby host. A
-/// dedicated host may choose more (`Start::delay`).
-pub const DELAY: usize = 4;
+/// Ticks between pressing a key and its tick: 6 = 50 ms, enough for a LAN over Wi-Fi (4 stalled
+/// with 8–16 ms each way, `REFORMERS_LAG=8+8`). A dedicated host may choose more (`Start::delay`).
+pub const DELAY: usize = 6;
 const HASH_EVERY: u64 = 120;
 const TIMEOUT: Duration = Duration::from_secs(5);
 const RESEND: Duration = Duration::from_millis(200);

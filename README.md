@@ -62,7 +62,7 @@ left/right, then Enter (or `--join ADDRESS`). They wait in the host's lobby; the
 Enter on Host to start once everyone's in (`--host N` starts by itself when N cars are in). The
 host's map is used, with everyone's own car and skin, on a starting grid; joiners need the same
 map files. Each machine shows its own car; the menu doesn't pause an online race; Enter on Host
-or Join leaves it. The sims run in lockstep: each player sends only their keys, 33 ms ahead, to
+or Join leaves it. The sims run in lockstep: each player sends only their keys, 50 ms ahead, to
 the host, which sends everyone's back, and they compare a state hash every second. A player who
 leaves or goes quiet for 5 s just stops, and the race goes on; if the host goes, or the sims
 ever disagree, you're back to driving alone. Online laps aren't saved as best laps or ghosts.
@@ -223,7 +223,7 @@ cargo test
 
 `reform serve` options: `--port` (47800), `--maps a,b,…` or `all` (terep2), `--min` players before
 a round (1) and `--wait` seconds after the first one's in (20), `--round` seconds (300), `--laps`
-that end a time trial (3), `--delay` in ticks (8, 67 ms: the internet wants more than a LAN's 4).
+that end a time trial (3), `--delay` in ticks (8, 67 ms: the internet wants more than a LAN's 6).
 It needs `assets/` next to it, like the game, and UDP on its port open.
 
 The engine is a recorded CC0 loop ("racing car engine sound loops" by domasx2, OpenGameArt; full

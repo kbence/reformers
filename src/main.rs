@@ -3059,9 +3059,14 @@ async fn main() {
             l.ready().saturating_sub(ticks as usize + 2 * l.delay)
         });
         acc = acc.max(behind.min(10 * TICK_HZ as usize) as f32 / TICK_HZ as f32);
+        // online, ticks that came in late run spread over the next frames, a tick more than due
+        // per frame, not all at once (a jump)
+        let due = (get_frame_time() * TICK_HZ as f32).ceil() as usize + 1;
+        let mut ran = 0;
         while acc >= 1.0 / TICK_HZ as f32 {
             // online: our keys go the link's delay ahead; a tick runs once the other side's are in
             let net_inputs = match &mut online {
+                Some(_) if behind == 0 && ran >= due => break,
                 Some((link, _)) => {
                     if link.local_ticks() <= ticks as usize + link.delay {
                         let k = if menu_open { Keys::default() } else { keys };
@@ -3106,6 +3111,7 @@ async fn main() {
             }
             acc -= 1.0 / TICK_HZ as f32;
             ticks += 1;
+            ran += 1;
             let byte = match (&net_inputs, &mut playing) {
                 (Some(i), _) => i[0],
                 (None, Some((r, i))) => {
@@ -3250,6 +3256,11 @@ async fn main() {
                     roll: players[0].roll,
                 });
             }
+        }
+        // online: the inputs those ticks queued go now, not a frame later (the host's complete
+        // the next frames at once)
+        if let Some((link, _)) = &mut online {
+            link.poll();
         }
         if let Some(a) = &mut audio {
             let vol = if menu_open {
