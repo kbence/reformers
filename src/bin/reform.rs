@@ -266,19 +266,36 @@ fn serve(args: &[String]) {
         };
         println!("{map}: {} player(s)", cars.len());
         let mut link = host.start(start);
-        let car_models: Vec<&car::Car> = cars.iter().map(|&c| &models[c as usize]).collect();
+        // the rest of the grid, for anyone who joins mid-round
+        link.spawns = (0..MAX_PLAYERS)
+            .map(|i| {
+                let (x, y) = grid((sx, sy), sh, i);
+                [x, y, sh]
+            })
+            .collect();
+        let mut car_models: Vec<&car::Car> = cars.iter().map(|&c| &models[c as usize]).collect();
         let mut races: Vec<Race> = cars.iter().map(|_| Race::new(None)).collect();
         let mut t = 0u64;
         // the joiners set the pace: a tick runs once everyone's input for it is in
         let why = loop {
             link.poll();
             while let Some(inputs) = link.inputs(t as usize) {
+                for (c, l) in link.joining(t) {
+                    let [x, y, h] = l.spawn;
+                    let model = &models[l.car as usize];
+                    sim.cars
+                        .push(SimCar::spawn_facing(model, &sim.terrain, x, y, h));
+                    car_models.push(model);
+                    races.push(Race::new(None));
+                    println!("{map}: P{} joined", c + 1);
+                }
+                let n = sim.cars.len();
                 run::tick_all(
                     &mut sim,
                     &car_models,
                     level.track.as_ref(),
                     &mut races,
-                    &inputs,
+                    &inputs[..n],
                     t,
                 );
                 t += 1;

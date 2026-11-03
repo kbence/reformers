@@ -1328,6 +1328,14 @@ const RESOLUTIONS: [(f32, f32); 4] = [
 /// CAR1–CAR5.DAT.
 const CARS: usize = 5;
 
+/// The car this machine drives: online ours, which a latecomer doesn't have until it has caught
+/// up to the tick it joined at (until then it watches car 0).
+fn my_car(online: &Option<(net::Link, net::Start)>, cars: usize) -> usize {
+    online
+        .as_ref()
+        .map_or(0, |(l, _)| if l.me < cars { l.me } else { 0 })
+}
+
 const CAMERAS: [&str; 4] = ["chase", "bumper", "orbit (Q/E)", "top-down"];
 
 /// The extra skins (file, name), read once.
@@ -2663,17 +2671,20 @@ async fn main() {
                 playing = None;
                 recording = Ghost::default();
                 menu_open = false;
-                let me = online.as_ref().map_or(0, |(l, _)| l.me);
-                gone_seen = vec![false; start.cars.len()];
-                banner = Some((
-                    format!(
+                let (me, slots) = online
+                    .as_ref()
+                    .map_or((0, start.cars.len()), |(l, _)| (l.me, l.players));
+                gone_seen = vec![false; slots];
+                let msg = match me < start.cars.len() {
+                    true => format!(
                         "online race on {}, {} cars: you're P{}",
                         start.map,
                         start.cars.len(),
                         me + 1
                     ),
-                    get_time() + 4.0,
-                ));
+                    false => format!("joining the round on {}: catching up...", start.map),
+                };
+                banner = Some((msg, get_time() + 4.0));
             }
         }
         // a dedicated host's round is over: show the standings, then back into its lobby
@@ -2706,9 +2717,11 @@ async fn main() {
             // back to driving alone, in our own car where it stands
             if let Some((link, _)) = online.take() {
                 link.bye();
-                // ours becomes player 1
-                sim.cars.swap(0, link.me);
-                players.swap(0, link.me);
+                // ours becomes player 1 (a latecomer still catching up has none: car 0 it is)
+                if link.me < sim.cars.len() {
+                    sim.cars.swap(0, link.me);
+                    players.swap(0, link.me);
+                }
                 sim.cars.truncate(1);
                 players.truncate(1);
                 gfx.players = 1;
@@ -2880,7 +2893,12 @@ async fn main() {
         colour_tex.set_filter(filter);
         // each car's skin: the players' choices, or online the ones the race started with
         let skin_files = match &online {
-            Some((_, s)) => s.skins.to_vec(),
+            Some((l, s)) => s
+                .skins
+                .iter()
+                .chain(l.late.iter().map(|c| &c.skin))
+                .cloned()
+                .collect(),
             None => vec![gfx.skin.clone(), gfx.skin2.clone()],
         };
         skin_files
@@ -2946,8 +2964,7 @@ async fn main() {
             sim.gradual_repair = gfx.gradual;
             recording_run = new_run(&map, &level, players[0].car, &sim);
         }
-        // the car this machine drives: online the joiner's is car 1
-        let me = online.as_ref().map_or(0, |(l, _)| l.me);
+        let me = my_car(&online, sim.cars.len());
         // R and F act on the next tick, so a replay reproduces them exactly
         if !menu_open && playing.is_none() {
             players[me].reset |= pressed(KeyCode::R);
@@ -3036,21 +3053,31 @@ async fn main() {
         if !menu_open || online.is_some() {
             acc += get_frame_time().min(0.25);
         }
+        // online and far behind the frames (a latecomer replaying the round so far): run them
+        // quietly, up to ten seconds of race a frame
+        let behind = online.as_ref().map_or(0, |(l, _)| {
+            l.ready().saturating_sub(ticks as usize + 2 * l.delay)
+        });
+        acc = acc.max(behind.min(10 * TICK_HZ as usize) as f32 / TICK_HZ as f32);
         while acc >= 1.0 / TICK_HZ as f32 {
             // online: our keys go the link's delay ahead; a tick runs once the other side's are in
             let net_inputs = match &mut online {
                 Some((link, _)) => {
                     if link.local_ticks() <= ticks as usize + link.delay {
                         let k = if menu_open { Keys::default() } else { keys };
-                        let p = &mut players[link.me];
                         let mend = sim.gradual_repair && !menu_open && down(KeyCode::F);
-                        link.push_local(run::input(
-                            k,
-                            p.reset,
-                            p.repair || mend || p.full,
-                            p.turn || p.full,
-                        ));
-                        (p.reset, p.repair, p.turn, p.full) = (false, false, false, false);
+                        // no car yet (catching up): no keys, the host ignores them anyway
+                        let input = players.get_mut(link.me).map_or(0, |p| {
+                            let i = run::input(
+                                k,
+                                p.reset,
+                                p.repair || mend || p.full,
+                                p.turn || p.full,
+                            );
+                            (p.reset, p.repair, p.turn, p.full) = (false, false, false, false);
+                            i
+                        });
+                        link.push_local(input);
                     }
                     match link.inputs(ticks as usize) {
                         Some(i) => Some(i),
@@ -3062,6 +3089,21 @@ async fn main() {
                 }
                 None => None,
             };
+            // someone joined a dedicated host's round: their car goes down before this tick
+            if let Some((link, _)) = &online {
+                for (c, l) in link.joining(ticks) {
+                    let [x, y, h] = l.spawn;
+                    let car = (l.car as usize).min(CARS - 1);
+                    players.push(Player::new(car, Race::new(None), players[0].cam));
+                    sim.cars
+                        .push(SimCar::spawn_facing(&cars[car].0, &sim.terrain, x, y, h));
+                    let msg = match c == link.me {
+                        true => format!("you're in: P{}", c + 1),
+                        false => format!("P{} joined", c + 1),
+                    };
+                    banner = Some((msg, get_time() + 3.0));
+                }
+            }
             acc -= 1.0 / TICK_HZ as f32;
             ticks += 1;
             let byte = match (&net_inputs, &mut playing) {
@@ -3141,7 +3183,9 @@ async fn main() {
                 let (Some(t), Some(ev)) = (&level.track, &o.event) else {
                     continue;
                 };
-                if let Some(a) = &audio {
+                if let Some(a) = &audio
+                    && behind == 0
+                {
                     a.chime(&o.event, gfx.volume as f32 / 10.0);
                 }
                 let who = if i == me {
@@ -3216,7 +3260,7 @@ async fn main() {
             // the original's engine (0x02cf): pitch from the driven wheels' spin, loudness from
             // the throttle control word; one per car in split screen
             // ours and the first other car
-            let me = online.as_ref().map_or(0, |(l, _)| l.me);
+            let me = my_car(&online, sim.cars.len());
             let heard = [
                 me,
                 (0..sim.cars.len()).find(|&c| c != me).unwrap_or(usize::MAX),
@@ -3284,8 +3328,7 @@ async fn main() {
             }
         }
         impacts = sim.impacts;
-        // the car this machine drives: online the joiner's is car 1
-        let me = online.as_ref().map_or(0, |(l, _)| l.me);
+        let me = my_car(&online, sim.cars.len());
         let c = sim.cars[me].centre();
         let moved = ((c[0] - last_centre[0]).powi(2) + (c[1] - last_centre[1]).powi(2)).sqrt();
         if !menu_open {

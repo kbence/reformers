@@ -21,7 +21,12 @@
 //!
 //! A dedicated host (`reform serve`, #62) drives no car: every slot is a joiner's, car 0 the
 //! first in. It ends each round with `RoundOver` (the standings), and the joiners come back to
-//! its lobby by themselves for the next map. `Start` carries the host's input delay.
+//! its lobby by themselves for the next map. `Start` carries the host's input delay. Its rounds
+//! have `MAX_PLAYERS` slots: someone who joins mid-round (#63) gets a free one, from the next
+//! tick the host completes (`Late`, sent to everyone with the frames). They get the round's
+//! Start and every frame so far, replay them, and the host waits for them once their inputs
+//! run ahead of the frames; until then their car stands on the grid with no keys. With no free
+//! slot they wait for the next round's lobby.
 
 use std::net::{Ipv4Addr, SocketAddr, UdpSocket};
 use std::time::{Duration, Instant};
@@ -37,7 +42,7 @@ const HASH_EVERY: u64 = 120;
 const TIMEOUT: Duration = Duration::from_secs(5);
 const RESEND: Duration = Duration::from_millis(200);
 const MAGIC: &[u8; 4] = b"RFN1";
-const VERSION: u8 = 5;
+const VERSION: u8 = 6;
 /// Ticks of frames / inputs per packet at most (4 cars × 256 ticks fits the 2 KB buffer).
 const BATCH: usize = 256;
 
@@ -58,9 +63,20 @@ pub struct Start {
     /// Which car is this machine's.
     pub you: u8,
     /// The host drives no car (`reform serve`): rounds end with `RoundOver`, then the next map.
+    /// Its rounds have `MAX_PLAYERS` slots, the ones past `cars` for latecomers (`Late`).
     pub dedicated: bool,
     /// Ticks between a key and its tick, `DELAY` unless a dedicated host says otherwise.
     pub delay: u8,
+}
+
+/// A car that joined a dedicated host's round at tick `at`: it's car `Start::cars.len()` plus
+/// its place in the list, spawned before tick `at` runs.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Late {
+    pub at: u64,
+    pub car: u8,
+    pub skin: String,
+    pub spawn: [u16; 3],
 }
 
 #[derive(Debug, PartialEq)]
@@ -89,13 +105,14 @@ enum Msg {
         hash: Option<(u32, u64)>,
     },
     /// Host → joiner: complete ticks from `first`, `players` bytes each; the host has `have` of
-    /// this joiner's inputs; bit k of `gone` = car k left.
+    /// this joiner's inputs; bit k of `gone` = car k left; every latecomer so far.
     Frames {
         have: u32,
         first: u32,
         players: u8,
         bytes: Vec<u8>,
         gone: u8,
+        late: Vec<Late>,
         hash: Option<(u32, u64)>,
     },
     Bye,
@@ -173,12 +190,19 @@ impl Msg {
                 players,
                 bytes,
                 gone,
+                late,
                 hash,
             } => {
                 o.push(8);
                 o.extend(have.to_le_bytes());
                 o.extend(first.to_le_bytes());
-                o.extend([*players, *gone]);
+                o.extend([*players, *gone, late.len() as u8]);
+                for l in late {
+                    o.extend((l.at as u32).to_le_bytes());
+                    o.push(l.car);
+                    put_str(&mut o, &l.skin);
+                    l.spawn.iter().for_each(|v| o.extend(v.to_le_bytes()));
+                }
                 o.extend((bytes.len() as u16).to_le_bytes());
                 o.extend(bytes);
                 put_hash(&mut o, *hash);
@@ -206,7 +230,8 @@ impl Msg {
                 let (flags, delay) = (r.u8()?, r.u8()?);
                 let (you, n) = (r.u8()?, r.u8()? as usize);
                 let (soft, gradual, dedicated) = (flags & 1 != 0, flags & 2 != 0, flags & 4 != 0);
-                if n > MAX_PLAYERS || you as usize >= n || delay == 0 {
+                let slots = if dedicated { MAX_PLAYERS } else { n };
+                if n > MAX_PLAYERS || you as usize >= slots || delay == 0 {
                     return None;
                 }
                 let (mut cars, mut skins, mut spawns) = (vec![], vec![], vec![]);
@@ -246,6 +271,15 @@ impl Msg {
             8 => {
                 let (have, first) = (r.u32()?, r.u32()?);
                 let (players, gone) = (r.u8()?, r.u8()?);
+                let mut late = vec![];
+                for _ in 0..r.u8()? {
+                    late.push(Late {
+                        at: r.u32()? as u64,
+                        car: r.u8()?,
+                        skin: r.str()?,
+                        spawn: [r.u16()?, r.u16()?, r.u16()?],
+                    });
+                }
                 let n = r.u16()? as usize;
                 let bytes = r.take(n)?.to_vec();
                 if players == 0 || bytes.len() % players as usize != 0 {
@@ -257,6 +291,7 @@ impl Msg {
                     players,
                     bytes,
                     gone,
+                    late,
                     hash: r.hash()?,
                 }
             }
@@ -593,6 +628,15 @@ pub struct Link {
     frames: Vec<Vec<u8>>,
     /// Cars whose player left (they get no keys from where their inputs ran out).
     pub gone: Vec<bool>,
+    /// What the round started from (a dedicated host hands it to latecomers).
+    start: Start,
+    /// Cars that joined mid-round (dedicated host only), in slot order.
+    pub late: Vec<Late>,
+    /// Dedicated host: where each slot starts, latecomers' included (the game's grid).
+    pub spawns: Vec<[u16; 3]>,
+    /// Host: the slots it waits for. An empty slot, or a latecomer still catching up, gets no
+    /// keys until its inputs run ahead of the frames.
+    live: Vec<bool>,
     /// Our recent state hashes (tick, hash).
     hashes: Vec<(u64, u64)>,
     /// Set when the sims disagree (the tick), or the race is over for us: the host left (or,
@@ -612,7 +656,9 @@ impl Link {
         me: Option<usize>,
         start: &Start,
     ) -> Link {
-        let (players, delay) = (start.cars.len(), start.delay as usize);
+        let n = start.cars.len();
+        let players = if start.dedicated { MAX_PLAYERS } else { n };
+        let delay = start.delay as usize;
         Link {
             sock,
             host,
@@ -623,6 +669,10 @@ impl Link {
             streams: vec![vec![0; delay]; players],
             frames: (0..delay).map(|_| vec![0; players]).collect(),
             gone: vec![false; players],
+            start: start.clone(),
+            late: vec![],
+            spawns: start.spawns.clone(),
+            live: (0..players).map(|c| c < n).collect(),
             hashes: vec![],
             desync: None,
             lost: false,
@@ -655,6 +705,21 @@ impl Link {
         self.frames.get(t).cloned()
     }
 
+    /// How many ticks are complete: a latecomer far behind them is catching up.
+    pub fn ready(&self) -> usize {
+        self.frames.len()
+    }
+
+    /// The cars that join just before tick `t` runs, with their car numbers.
+    pub fn joining(&self, t: u64) -> impl Iterator<Item = (usize, &Late)> {
+        let n = self.start.cars.len();
+        self.late
+            .iter()
+            .enumerate()
+            .filter(move |(_, l)| l.at == t)
+            .map(move |(i, l)| (n + i, l))
+    }
+
     /// After running tick `t` (1-based count): every `HASH_EVERY` ticks, note the state.
     pub fn ran(&mut self, t: u64, hash: impl FnOnce() -> u64) {
         if t.is_multiple_of(HASH_EVERY) {
@@ -678,15 +743,28 @@ impl Link {
     pub fn poll(&mut self) {
         for (from, msg) in received(&self.sock) {
             let Some(k) = self.peers.iter().position(|p| p.addr == from) else {
-                // a dedicated host keeps newcomers waiting: they join the next round's lobby
+                // a dedicated host takes newcomers into a free slot (they catch up on the frames
+                // so far), or keeps them waiting for the next round's lobby
                 if self.me == usize::MAX
-                    && let Msg::Join { version, .. } = msg
+                    && let Msg::Join { version, car, skin } = msg
                 {
-                    let reply = match version == VERSION {
-                        true => Msg::Lobby { players: 0 },
-                        false => Msg::Refused("the host runs a different version".into()),
-                    };
-                    send(&self.sock, from, &reply);
+                    let slot = self.start.cars.len() + self.late.len();
+                    if version != VERSION {
+                        let why = "the host runs a different version".into();
+                        send(&self.sock, from, &Msg::Refused(why));
+                    } else if slot >= self.players.min(self.spawns.len()) {
+                        send(&self.sock, from, &Msg::Lobby { players: 0 });
+                    } else {
+                        self.late.push(Late {
+                            at: self.frames.len() as u64,
+                            car: car.min(4),
+                            skin,
+                            spawn: self.spawns[slot],
+                        });
+                        let mut s = self.start.clone();
+                        s.you = slot as u8;
+                        self.peers.push(Peer::new(from, slot, Some(s)));
+                    }
                 }
                 continue;
             };
@@ -711,6 +789,8 @@ impl Link {
                             stream.push(b);
                         }
                     }
+                    // a latecomer's inputs ran ahead of the frames: it has caught up
+                    self.live[car] |= stream.len() > self.frames.len();
                     self.check(hash);
                 }
                 Msg::Frames {
@@ -719,8 +799,12 @@ impl Link {
                     players,
                     bytes,
                     gone,
+                    late,
                     hash,
                 } if !self.host() && players as usize == self.players => {
+                    if late.len() > self.late.len() {
+                        self.late = late;
+                    }
                     self.peers[0].has = self.peers[0].has.max(have as usize);
                     for (i, f) in bytes.chunks_exact(self.players).enumerate() {
                         if first as usize + i == self.frames.len() {
@@ -751,12 +835,19 @@ impl Link {
             if self.peers.iter().all(|p| self.gone[p.car]) {
                 self.lost = true; // everyone left: back to driving alone (or the lobby)
             }
-            // complete ticks: everyone's input in, a gone car's as far as it got, then none
+            // complete ticks: everyone's input in, a gone car's as far as it got, then none; a
+            // slot that isn't live gets none, kept in its stream so a latecomer's line up after
             loop {
                 let t = self.frames.len();
-                let ready = (0..self.players).all(|c| self.gone[c] || t < self.streams[c].len());
+                let ready = (0..self.players)
+                    .all(|c| self.gone[c] || !self.live[c] || t < self.streams[c].len());
                 if !ready {
                     break;
+                }
+                for c in 0..self.players {
+                    if !self.live[c] && self.streams[c].len() <= t {
+                        self.streams[c].resize(t + 1, 0);
+                    }
                 }
                 let frame = (0..self.players)
                     .map(|c| self.streams[c].get(t).copied().unwrap_or(0))
@@ -789,6 +880,7 @@ impl Link {
                     players: self.players as u8,
                     bytes: self.frames[from..to].concat(),
                     gone,
+                    late: self.late.clone(),
                     hash,
                 }
             } else {
@@ -883,6 +975,12 @@ mod tests {
                 players: 3,
                 bytes: vec![1, 2, 3, 4, 5, 6],
                 gone: 0b100,
+                late: vec![Late {
+                    at: 900,
+                    car: 2,
+                    skin: "HUFO.PCX".into(),
+                    spawn: [1, 2, 3],
+                }],
                 hash: None,
             },
             Msg::Bye,
@@ -898,6 +996,7 @@ mod tests {
             players: 3,
             bytes: vec![1, 2],
             gone: 0,
+            late: vec![],
             hash: None,
         };
         assert_eq!(
@@ -1237,5 +1336,140 @@ mod tests {
             }
             back = links.iter().map(Link::host_addr).collect();
         }
+    }
+
+    #[test]
+    fn a_latecomer_catches_up_and_drives() {
+        crate::need_assets!();
+        let read = |f: &str| crate::assets::read(f).unwrap();
+        let car = crate::car::parse(&read("CAR1.DAT")).unwrap();
+        let terrain =
+            Terrain::load(&read("maps/terep2/MAP.PCX"), &read("maps/terep2/COL.PCX")).unwrap();
+        let spot = |i: u16| [0x8000 + 0x180 * i, 0x7a00, 0];
+        let mut host = Host::bind_dedicated(0).unwrap();
+        let addr: SocketAddr = (Ipv4Addr::LOCALHOST, host.port()).into();
+        let t0 = Instant::now();
+        let mut first = Joiner::new(addr, 0, "").unwrap();
+        while host.guests.is_empty() {
+            assert!(t0.elapsed() < Duration::from_secs(5), "lobby");
+            first.poll();
+            host.poll("terep2");
+        }
+        let mut s = start(1);
+        (s.cars, s.skins, s.spawns, s.delay) = (vec![0], vec!["".into()], vec![spot(0)], 6);
+        let mut server = host.start(s);
+        server.spawns = (0..2).map(spot).collect(); // room for one more
+        // each side: its link, sim, races and next tick; a new car goes down just before its tick
+        struct Side {
+            link: Link,
+            sim: Sim,
+            races: Vec<Race>,
+            t: usize,
+        }
+        let side = |link: Link, st: &Start| Side {
+            sim: {
+                let mut sim = Sim::new(terrain.clone());
+                for &[x, y, h] in &st.spawns {
+                    sim.cars
+                        .push(SimCar::spawn_facing(&car, &sim.terrain, x, y, h));
+                }
+                sim
+            },
+            races: st.cars.iter().map(|_| Race::new(None)).collect(),
+            link,
+            t: 0,
+        };
+        let run = |s: &mut Side, upto: usize| {
+            while s.t < upto
+                && let Some(inputs) = s.link.inputs(s.t)
+            {
+                let joining: Vec<[u16; 3]> =
+                    s.link.joining(s.t as u64).map(|(_, l)| l.spawn).collect();
+                for [x, y, h] in joining {
+                    s.sim
+                        .cars
+                        .push(SimCar::spawn_facing(&car, &s.sim.terrain, x, y, h));
+                    s.races.push(Race::new(None));
+                }
+                let n = s.sim.cars.len();
+                let models = vec![&car; n];
+                run::tick_all(
+                    &mut s.sim,
+                    &models,
+                    None,
+                    &mut s.races,
+                    &inputs[..n],
+                    s.t as u64,
+                );
+                s.t += 1;
+                s.link.ran(s.t as u64, || s.sim.state_hash());
+            }
+        };
+        let st = loop {
+            assert!(t0.elapsed() < Duration::from_secs(5), "start");
+            server.poll();
+            if let JoinState::Started(st) = first.poll() {
+                break st;
+            }
+        };
+        let mut sides = vec![side(first.start(&st), &st)];
+        let mut srv = side(server, &st);
+        let mut late = Some(Joiner::new(addr, 0, "").unwrap());
+        let end = 3 * crate::sim::TICK_HZ as usize;
+        let mut joined_at = None;
+        while sides.iter().chain([&srv]).any(|s| s.t < end) || sides.len() < 2 {
+            assert!(
+                t0.elapsed() < Duration::from_secs(30),
+                "stalled at {}",
+                srv.t
+            );
+            for s in sides.iter_mut() {
+                s.link.poll();
+                while s.link.local_ticks() < s.t + s.link.delay + 1 {
+                    let k = s.link.local_ticks() - s.link.delay;
+                    s.link.push_local(keys(s.link.me, k));
+                }
+                run(s, end);
+            }
+            srv.link.poll();
+            run(&mut srv, end);
+            // a second's racing in, someone else joins
+            if srv.t >= crate::sim::TICK_HZ as usize
+                && let Some(j) = &mut late
+            {
+                match j.poll() {
+                    JoinState::Started(st) => {
+                        assert_eq!((st.you, st.dedicated, st.cars.len()), (1, true, 1));
+                        let link = late.take().unwrap().start(&st);
+                        sides.push(side(link, &st));
+                    }
+                    JoinState::Waiting => {}
+                    JoinState::Failed(why) => panic!("{why}"),
+                }
+            }
+            if let Some(l) = srv.link.late.first() {
+                joined_at.get_or_insert(l.at);
+            }
+            std::thread::sleep(Duration::from_micros(200));
+        }
+        for s in &sides {
+            assert_eq!(s.link.desync, None);
+        }
+        let at = joined_at.expect("the latecomer got a slot") as usize;
+        assert!(
+            at >= crate::sim::TICK_HZ as usize && at < end,
+            "joined at {at}"
+        );
+        assert_eq!(sides[1].link.late, srv.link.late, "everyone knows when");
+        assert!(sides.iter().all(|s| s.sim.cars.len() == 2));
+        let h = srv.sim.state_hash();
+        assert!(sides.iter().all(|s| s.sim.state_hash() == h), "same race");
+        // and the latecomer drove: its car left the grid
+        let [x, y, _] = srv.sim.cars[1].centre();
+        let [gx, gy, _] = spot(1);
+        assert!(
+            (x - gx as f32).abs() + (y - gy as f32).abs() > 256.0,
+            "car 1 moved"
+        );
     }
 }

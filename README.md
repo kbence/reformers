@@ -68,9 +68,10 @@ leaves or goes quiet for 5 s just stops, and the race goes on; if the host goes,
 ever disagree, you're back to driving alone. Online laps aren't saved as best laps or ghosts.
 
 A dedicated server runs rounds without a player of its own: `reform serve` (see Tools). Players
-join it like any host, at any time: mid-round they wait for the next one. When a round ends (on
-time, or someone's laps) everyone sees the standings and is back in its lobby by themselves, for
-the next map.
+join it like any host, at any time: mid-round they catch up on the race so far in a second or
+two and drive on from the grid (or, with all four cars taken, wait for the next round). When a
+round ends (on time, or someone's laps) everyone sees the standings and is back in its lobby by
+themselves, for the next map.
 
 ## Time trial
 
