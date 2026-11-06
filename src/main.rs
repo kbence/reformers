@@ -17,6 +17,7 @@ use reformers::car::{self, Car, Prim};
 use reformers::ghost::{self, Frame, Ghost};
 use reformers::level::{Level, SPAWN, grid, load_level};
 use reformers::run::{self, Replay};
+use reformers::season;
 use reformers::sim::{Keys, REPAIR_CAP, Sim, SimCar, TICK_HZ};
 use reformers::terrain::{SIZE, Terrain};
 use reformers::track::{Event, Lap, Race, Track, Zone, format_time};
@@ -513,19 +514,10 @@ fn save_screenshot() -> Result<PathBuf, String> {
     Ok(path)
 }
 
-/// Seconds since 1970 as `YYYY-MM-DD-hhmmss` (UTC; days to dates as in Hinnant's
-/// `civil_from_days`).
+/// Seconds since 1970 as `YYYY-MM-DD-hhmmss` (UTC).
 fn timestamp(secs: u64) -> String {
     let (days, s) = ((secs / 86400) as i64, secs % 86400);
-    let z = days + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z - era * 146_097;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = doy - (153 * mp + 2) / 5 + 1;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 };
-    let y = yoe + era * 400 + (m <= 2) as i64;
+    let (y, m, d) = season::civil(days);
     format!(
         "{y:04}-{m:02}-{d:02}-{:02}{:02}{:02}",
         s / 3600,
@@ -978,6 +970,73 @@ fn skin_texture(pcx_bytes: &[u8], palette: &[[u8; 3]; 256]) -> Skin {
     }
 }
 
+/// Santa hats this run (#69), decided once at launch.
+static HATS: std::sync::LazyLock<bool> = std::sync::LazyLock::new(|| season::hats(season::today()));
+
+/// A Santa hat on the roof (atoms 12–15 in every shipped car): an upright red cone, a white brim
+/// and a white bobble, tilting with the roof.
+fn santa_hat(atoms: &[[f32; 3]], fwd: Vec3, m: &mut Mesh) {
+    let w = |p: [f32; 3]| Vec3::from(p);
+    let roof = atoms[12..16]
+        .iter()
+        .fold(Vec3::ZERO, |s, &p| s + w(p) / 4.0);
+    let body = atoms.iter().fold(Vec3::ZERO, |s, &p| s + w(p)) / atoms.len() as f32;
+    let up = (roof - body).normalize_or(Vec3::Z);
+    let span = atoms[12..16]
+        .iter()
+        .map(|&p| (w(p) - roof).length())
+        .sum::<f32>()
+        / 4.0;
+    // ponytail: sizes as fractions of the roof, tuned by eye
+    let (r, h) = (span * 0.42, span * 1.1);
+    let a = (fwd - up * fwd.dot(up)).normalize_or(Vec3::X);
+    let b = up.cross(a);
+    let ring = |c: Vec3, rad: f32| -> Vec<Vec3> {
+        (0..10)
+            .map(|j| {
+                let (s, k) = (j as f32 * std::f32::consts::TAU / 10.0).sin_cos();
+                c + (a * k + b * s) * rad
+            })
+            .collect()
+    };
+    let (red, white) = (
+        Color::from_rgba(200, 20, 30, 255),
+        Color::from_rgba(245, 245, 245, 255),
+    );
+    let mut tri = |p: [Vec3; 3], c: Color| {
+        let i = m.vertices.len() as u16;
+        m.indices.extend([i, i + 1, i + 2]);
+        m.vertices.extend(p.map(|q| {
+            let q = v(q.into());
+            Vertex::new(q.x, q.y, q.z, 0.0, 0.0, c)
+        }));
+    };
+    let base = roof + up * (span * 0.08);
+    let tip = base + up * h; // upright: it sits on a roof, not a head
+    let brim = h * 0.18;
+    let (lo, hi, cone) = (
+        ring(base, r * 1.12),
+        ring(base + up * brim, r * 1.12),
+        ring(base + up * brim, r),
+    );
+    for j in 0..10 {
+        let k = (j + 1) % 10;
+        tri([lo[j], lo[k], hi[k]], white);
+        tri([lo[j], hi[k], hi[j]], white);
+        tri([hi[j], hi[k], cone[k]], white); // brim top
+        tri([hi[j], cone[k], cone[j]], white);
+        tri([cone[j], cone[k], tip], red);
+    }
+    // the bobble: an octahedron
+    let s = r * 0.32;
+    let d = [a * s, b * s, -a * s, -b * s];
+    for j in 0..4 {
+        let k = (j + 1) % 4;
+        tri([tip + d[j], tip + d[k], tip + up * s], white);
+        tri([tip + d[k], tip + d[j], tip - up * s], white);
+    }
+}
+
 /// Builds the car's meshes for this frame from the display-list primitives.
 /// Wheels are sprites facing `eye` (the camera, render space), as the original draws them, with
 /// their full height along the wheel's widest extent on screen (`cam_up` breaks the tie face-on).
@@ -1057,6 +1116,9 @@ fn car_meshes(
         }
         m.vertices.extend(verts);
     };
+    if *HATS && n >= 16 {
+        santa_hat(atoms, fwd, &mut flat);
+    }
     // where the eye is in the car's world (render space is y-up)
     let eye_world = [eye.x * S, eye.z * S, eye.y * S];
     for (i, prim) in model.prims.iter().enumerate() {

@@ -10,6 +10,7 @@ pub mod net;
 pub mod objects;
 pub mod pcx;
 pub mod run;
+pub mod season;
 pub mod sim;
 pub mod sound;
 pub mod terrain;
