@@ -63,7 +63,9 @@ Enter on Host to start once everyone's in (`--host N` starts by itself when N ca
 host's map is used, with everyone's own car and skin, on a starting grid; joiners need the same
 map files. Each machine shows its own car; the menu doesn't pause an online race; Enter on Host
 or Join leaves it. The sims run in lockstep: each player sends only their keys, 50 ms ahead, to
-the host, which sends everyone's back, and they compare a state hash every second. A player who
+the host, which sends everyone's back, and they compare a state hash every second. A joiner sends
+its keys further ahead as its link needs (up to 167 ms), and runs a few per cent fast or slow to
+stay even with the host. A player who
 leaves or goes quiet for 5 s just stops, and the race goes on; if the host goes, or the sims
 ever disagree, you're back to driving alone. Online laps aren't saved as best laps or ghosts.
 To try a slow network on one machine, set `REFORMERS_LAG=ms` or `ms+jitter` (e.g. `15+15`) for
@@ -223,7 +225,7 @@ cargo test
 
 `reform serve` options: `--port` (47800), `--maps a,b,…` or `all` (terep2), `--min` players before
 a round (1) and `--wait` seconds after the first one's in (20), `--round` seconds (300), `--laps`
-that end a time trial (3), `--delay` in ticks (8, 67 ms: the internet wants more than a LAN's 6), `--snow auto|on|off` (auto: snow from December
+that end a time trial (3), `--delay` in ticks to start from (8, 67 ms; each joiner then adapts its own), `--snow auto|on|off` (auto: snow from December
 to February by the server's date, decided as each round starts), `--snow-grip on|off` (on: snow is slippery; off: it's only white).
 It needs `assets/` next to it, like the game, and UDP on its port open.
 

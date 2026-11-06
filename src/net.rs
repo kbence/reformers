@@ -39,11 +39,15 @@ pub const MAX_PLAYERS: usize = 4;
 /// with 8–16 ms each way, `REFORMERS_LAG=8+8`). A dedicated host may choose more (`Start::delay`).
 pub const DELAY: usize = 6;
 const HASH_EVERY: u64 = 120;
+/// Margins are judged by their smallest over this long; the pace and a joiner's delay follow.
+const WINDOW: Duration = Duration::from_secs(1);
+/// A joiner's input delay (#70) stays within this many ticks.
+pub const DELAY_RANGE: (usize, usize) = (4, 20);
 const TIMEOUT: Duration = Duration::from_secs(5);
 const RESEND: Duration = Duration::from_millis(200);
 const MAGIC: &[u8; 4] = b"RFN1";
-/// Raised whenever two builds would disagree on the messages or the sim (7: `Start::snow` and `snow_grip`, #68).
-const VERSION: u8 = 7;
+/// Raised whenever two builds would disagree on the messages or the sim (7: `Start::snow` and `snow_grip`, #68; 8: `Frames::lead`, #70).
+const VERSION: u8 = 8;
 /// Ticks of frames / inputs per packet at most (4 cars × 256 ticks fits the 2 KB buffer).
 const BATCH: usize = 256;
 
@@ -110,13 +114,16 @@ enum Msg {
         hash: Option<(u32, u64)>,
     },
     /// Host → joiner: complete ticks from `first`, `players` bytes each; the host has `have` of
-    /// this joiner's inputs; bit k of `gone` = car k left; every latecomer so far.
+    /// this joiner's inputs; bit k of `gone` = car k left; every latecomer so far; `lead`: how
+    /// many ticks early this joiner's inputs came in, at the least, over the last second (none
+    /// yet, or from a dedicated host).
     Frames {
         have: u32,
         first: u32,
         players: u8,
         bytes: Vec<u8>,
         gone: u8,
+        lead: Option<i8>,
         late: Vec<Late>,
         hash: Option<(u32, u64)>,
     },
@@ -199,13 +206,15 @@ impl Msg {
                 players,
                 bytes,
                 gone,
+                lead,
                 late,
                 hash,
             } => {
                 o.push(8);
                 o.extend(have.to_le_bytes());
                 o.extend(first.to_le_bytes());
-                o.extend([*players, *gone, late.len() as u8]);
+                let lead = lead.map_or(i8::MIN, |l| l.max(-127)) as u8;
+                o.extend([*players, *gone, lead, late.len() as u8]);
                 for l in late {
                     o.extend((l.at as u32).to_le_bytes());
                     o.push(l.car);
@@ -283,6 +292,7 @@ impl Msg {
             8 => {
                 let (have, first) = (r.u32()?, r.u32()?);
                 let (players, gone) = (r.u8()?, r.u8()?);
+                let lead = Some(r.u8()? as i8).filter(|&l| l != i8::MIN);
                 let mut late = vec![];
                 for _ in 0..r.u8()? {
                     late.push(Late {
@@ -303,6 +313,7 @@ impl Msg {
                     players,
                     bytes,
                     gone,
+                    lead,
                     late,
                     hash: r.hash()?,
                 }
@@ -311,6 +322,33 @@ impl Msg {
         };
         Some(msg)
     }
+}
+
+/// A joiner's pace from its margins (#70): slower while the host holds more of its inputs than it
+/// holds frames (so its inputs go out later and its frames pile up), faster the other way; at
+/// most 5% off, and not at all within a tick of even.
+fn pace(input_lead: i32, frame_lead: i32) -> f32 {
+    let e = (input_lead - frame_lead) as f32 / 2.0;
+    if e.abs() <= 1.0 {
+        1.0
+    } else {
+        1.0 - (0.01 * e).clamp(-0.05, 0.05)
+    }
+}
+
+/// A joiner's input delay for the next window, from the last one's smallest margin (the host's
+/// lead on its inputs + its lead on frames, which add up to both delays less the round trip):
+/// up at once when it ran short, down a tick at a time when there's room.
+fn next_delay(delay: usize, margin: i32, may_lower: bool) -> usize {
+    // ponytail: aim for 4–7 ticks to spare between both ends (a frame of polling each, plus jitter)
+    let d = if margin < 4 {
+        delay + (4 - margin) as usize
+    } else if margin > 7 && may_lower {
+        delay - 1
+    } else {
+        delay
+    };
+    d.clamp(DELAY_RANGE.0, DELAY_RANGE.1)
 }
 
 struct Reader<'a>(&'a [u8]);
@@ -630,6 +668,10 @@ struct Peer {
     /// Host: the Start to repeat until this guest's first packet, and when it last went.
     start: Option<Start>,
     start_sent: Option<Instant>,
+    /// Host: how many ticks early this guest's inputs come in, at the least, this window and
+    /// the last one (what its Frames report).
+    lead_min: i32,
+    lead: Option<i32>,
 }
 
 impl Peer {
@@ -641,6 +683,8 @@ impl Peer {
             heard: Instant::now(),
             start,
             start_sent: None,
+            lead_min: i32::MAX,
+            lead: None,
         }
     }
 }
@@ -681,6 +725,15 @@ pub struct Link {
     pub lost: bool,
     /// A dedicated host ended the round: the standings it sent.
     pub over: Option<String>,
+    /// Ticks run so far (from `ran`).
+    ticks: usize,
+    /// Joiner (#70): complete frames ahead of our sim, at the least, this window and the last;
+    /// and the host's lead on our inputs (`Frames::lead`). They set our pace and delay.
+    frame_min: i32,
+    frame_lead: Option<i32>,
+    input_lead: Option<i32>,
+    window: Instant,
+    lowered: Instant,
 }
 
 impl Link {
@@ -713,6 +766,12 @@ impl Link {
             desync: None,
             lost: false,
             over: None,
+            ticks: 0,
+            frame_min: i32::MAX,
+            frame_lead: None,
+            input_lead: None,
+            window: Instant::now(),
+            lowered: Instant::now(),
         }
     }
 
@@ -758,11 +817,58 @@ impl Link {
 
     /// After running tick `t` (1-based count): every `HASH_EVERY` ticks, note the state.
     pub fn ran(&mut self, t: u64, hash: impl FnOnce() -> u64) {
+        self.ticks = t as usize;
         if t.is_multiple_of(HASH_EVERY) {
             self.hashes.push((t, hash()));
             if self.hashes.len() > 64 {
                 self.hashes.remove(0);
             }
+        }
+    }
+
+    /// How fast to run our ticks against the clock (#70): 1 for the host (the race's clock); a
+    /// joiner a few per cent off, to keep its frames and the host's store of its inputs even.
+    pub fn rate(&self) -> f32 {
+        match (
+            self.host || self.start.dedicated,
+            self.input_lead,
+            self.frame_lead,
+        ) {
+            (false, Some(i), Some(f)) => pace(i, f),
+            _ => 1.0,
+        }
+    }
+
+    /// Notes this frame's margins; each window, passes them on and (a joiner) sets its delay.
+    fn measure(&mut self) {
+        let ticks = self.ticks as i32;
+        if self.host {
+            for p in &mut self.peers {
+                if !self.gone[p.car] && self.live[p.car] {
+                    p.lead_min = p.lead_min.min(self.streams[p.car].len() as i32 - ticks);
+                }
+            }
+        } else {
+            self.frame_min = self.frame_min.min(self.frames.len() as i32 - ticks);
+        }
+        if self.window.elapsed() < WINDOW {
+            return;
+        }
+        self.window = Instant::now();
+        if self.host {
+            for p in &mut self.peers {
+                p.lead = (p.lead_min != i32::MAX).then_some(p.lead_min);
+                p.lead_min = i32::MAX;
+            }
+        } else {
+            let f = std::mem::replace(&mut self.frame_min, i32::MAX);
+            self.frame_lead = Some(f);
+            let may_lower = self.lowered.elapsed() >= 2 * WINDOW;
+            let d = next_delay(self.delay, f + self.input_lead.unwrap_or(0), may_lower);
+            if d < self.delay {
+                self.lowered = Instant::now();
+            }
+            self.delay = d;
         }
     }
 
@@ -777,6 +883,9 @@ impl Link {
 
     /// Receives what's there and sends what the others lack. Call once per frame.
     pub fn poll(&mut self) {
+        // the margins as they stand before what just came in: one that arrives only now was
+        // late for the ticks we just ran (a 0-tick frame, then 2)
+        self.measure();
         for (from, msg) in received(&self.sock) {
             let Some(k) = self.peers.iter().position(|p| p.addr == from) else {
                 // a dedicated host takes newcomers into a free slot (they catch up on the frames
@@ -835,9 +944,13 @@ impl Link {
                     players,
                     bytes,
                     gone,
+                    lead,
                     late,
                     hash,
                 } if !self.host() && players as usize == self.players => {
+                    if let Some(l) = lead {
+                        self.input_lead = Some(l as i32);
+                    }
                     if late.len() > self.late.len() {
                         self.late = late;
                     }
@@ -916,6 +1029,10 @@ impl Link {
                     players: self.players as u8,
                     bytes: self.frames[from..to].concat(),
                     gone,
+                    lead: match self.start.dedicated {
+                        true => None, // no clock of its own to keep up with
+                        false => p.lead.map(|l| l.clamp(-127, 127) as i8),
+                    },
                     late: self.late.clone(),
                     hash,
                 }
@@ -1013,6 +1130,7 @@ mod tests {
                 players: 3,
                 bytes: vec![1, 2, 3, 4, 5, 6],
                 gone: 0b100,
+                lead: Some(-3),
                 late: vec![Late {
                     at: 900,
                     car: 2,
@@ -1020,6 +1138,16 @@ mod tests {
                     spawn: [1, 2, 3],
                 }],
                 hash: None,
+            },
+            Msg::Frames {
+                have: 0,
+                first: 0,
+                players: 1,
+                bytes: vec![],
+                gone: 0,
+                lead: None,
+                late: vec![],
+                hash: Some((240, 5)),
             },
             Msg::Bye,
             Msg::RoundOver("1. P2  3 laps".into()),
@@ -1034,6 +1162,7 @@ mod tests {
             players: 3,
             bytes: vec![1, 2],
             gone: 0,
+            lead: Some(4),
             late: vec![],
             hash: None,
         };
@@ -1042,6 +1171,23 @@ mod tests {
             None,
             "frames not a whole tick"
         );
+    }
+
+    /// A joiner slows while the host holds more of its inputs than it holds frames, speeds up the
+    /// other way, within 5%; its delay goes up at once when the margin ran short, down slowly.
+    #[test]
+    fn pace_and_delay_follow_the_margins() {
+        assert_eq!(pace(4, 4), 1.0);
+        assert_eq!(pace(5, 3), 1.0, "within a tick of even");
+        assert!(pace(10, 0) < 1.0 && pace(0, 10) > 1.0);
+        assert_eq!((pace(100, 0), pace(0, 100)), (0.95, 1.05));
+        assert_eq!(next_delay(6, 0, false), 10, "ran out: up at once");
+        assert_eq!(next_delay(6, 3, false), 7);
+        assert_eq!(next_delay(6, 5, true), 6, "enough");
+        assert_eq!(next_delay(6, 9, false), 6, "room, but lowered just now");
+        assert_eq!(next_delay(6, 9, true), 5);
+        assert_eq!(next_delay(4, 9, true), 4, "floor");
+        assert_eq!(next_delay(20, 0, false), 20, "ceiling");
     }
 
     /// What car `me` presses on tick `t`.

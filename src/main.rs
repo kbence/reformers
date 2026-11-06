@@ -3334,7 +3334,9 @@ async fn main() {
         };
         // Fixed 120 Hz sim like the original timer interrupt; drawing runs free.
         if !menu_open || online.is_some() {
-            acc += get_frame_time().min(0.25);
+            // online, a joiner runs a few per cent fast or slow to stay even with the host (#70)
+            let rate = online.as_ref().map_or(1.0, |(l, _)| l.rate());
+            acc += get_frame_time().min(0.25) * rate;
         }
         // online and far behind the frames (a latecomer replaying the round so far): run them
         // quietly, up to ten seconds of race a frame
@@ -3351,7 +3353,8 @@ async fn main() {
             let net_inputs = match &mut online {
                 Some(_) if behind == 0 && ran >= due => break,
                 Some((link, _)) => {
-                    if link.local_ticks() <= ticks as usize + link.delay {
+                    // a raised delay (#70) fills its new ticks with the keys held now
+                    while link.local_ticks() <= ticks as usize + link.delay {
                         let k = if menu_open { Keys::default() } else { keys };
                         let mend = sim.gradual_repair && !menu_open && down(KeyCode::F);
                         // no car yet (catching up): no keys, the host ignores them anyway
