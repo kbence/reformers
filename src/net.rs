@@ -42,7 +42,8 @@ const HASH_EVERY: u64 = 120;
 const TIMEOUT: Duration = Duration::from_secs(5);
 const RESEND: Duration = Duration::from_millis(200);
 const MAGIC: &[u8; 4] = b"RFN1";
-const VERSION: u8 = 6;
+/// Raised whenever two builds would disagree on the messages or the sim (7: `Start::snow` and `snow_grip`, #68).
+const VERSION: u8 = 7;
 /// Ticks of frames / inputs per packet at most (4 cars × 256 ticks fits the 2 KB buffer).
 const BATCH: usize = 256;
 
@@ -56,6 +57,10 @@ pub struct Start {
     pub soft: bool,
     /// Gradual repair from a budget (the host's Repair option), sent in the soft byte's bit 1.
     pub gradual: bool,
+    /// Snow builds up on the map (#68), sent in the soft byte's bit 3. The host decides it.
+    pub snow: bool,
+    /// Snow drives slippery (`Sim::snow_grip`).
+    pub snow_grip: bool,
     /// Per car (0 = host): model 0–4, skin file ("" = own), spawn x, y and heading.
     pub cars: Vec<u8>,
     pub skins: Vec<String>,
@@ -150,7 +155,11 @@ impl Msg {
                 put_str(&mut o, &s.map);
                 o.extend(s.map_hash.to_le_bytes());
                 o.extend([
-                    s.soft as u8 | (s.gradual as u8) << 1 | (s.dedicated as u8) << 2,
+                    s.soft as u8
+                        | (s.gradual as u8) << 1
+                        | (s.dedicated as u8) << 2
+                        | (s.snow as u8) << 3
+                        | (s.snow_grip as u8) << 4,
                     s.delay,
                     s.you,
                     s.cars.len() as u8,
@@ -230,6 +239,7 @@ impl Msg {
                 let (flags, delay) = (r.u8()?, r.u8()?);
                 let (you, n) = (r.u8()?, r.u8()? as usize);
                 let (soft, gradual, dedicated) = (flags & 1 != 0, flags & 2 != 0, flags & 4 != 0);
+                let (snow, snow_grip) = (flags & 8 != 0, flags & 16 != 0);
                 let slots = if dedicated { MAX_PLAYERS } else { n };
                 if n > MAX_PLAYERS || you as usize >= slots || delay == 0 {
                     return None;
@@ -245,6 +255,8 @@ impl Msg {
                     map_hash,
                     soft,
                     gradual,
+                    snow,
+                    snow_grip,
                     cars,
                     skins,
                     spawns,
@@ -960,6 +972,8 @@ mod tests {
             map_hash: 0x0123_4567_89ab_cdef,
             soft: n % 2 == 0,
             gradual: n > 2,
+            snow: n == 4,
+            snow_grip: n == 2,
             cars: (0..n as u8).collect(),
             skins: (0..n).map(|i| format!("S{i}.PCX")).collect(),
             spawns: (0..n as u16)

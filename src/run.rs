@@ -170,6 +170,9 @@ pub struct Replay {
     pub soft: bool,
     /// Gradual repair (`Sim::gradual_repair`), stored in the soft byte's bit 1.
     pub gradual: bool,
+    /// Snow fell (#68), stored in the soft byte's bit 2. Older builds ignore it and replay without.
+    pub snow: bool,
+    pub snow_grip: bool,
     /// Spawn x, y (world units) and heading (`SimCar::spawn_facing`).
     pub start: [u16; 3],
     pub inputs: Vec<u8>,
@@ -178,14 +181,20 @@ pub struct Replay {
 const MAGIC: &[u8; 4] = b"RFR1";
 
 impl Replay {
-    /// `RFR1`, map name (u8 length + bytes), key (u64), car, flags (1 soft, 2 gradual repair), start x/y/heading (u16 ×3),
+    /// `RFR1`, map name (u8 length + bytes), key (u64), car, flags (1 soft, 2 gradual repair, 4 snow, 8 snow grip), start x/y/heading (u16 ×3),
     /// tick count (u32), then (run length u16, input byte) pairs. All little-endian.
     pub fn to_bytes(&self) -> Vec<u8> {
         let mut out = MAGIC.to_vec();
         out.push(self.map.len() as u8);
         out.extend(self.map.as_bytes());
         out.extend(self.key.to_le_bytes());
-        out.extend([self.car, self.soft as u8 | (self.gradual as u8) << 1]);
+        out.extend([
+            self.car,
+            self.soft as u8
+                | (self.gradual as u8) << 1
+                | (self.snow as u8) << 2
+                | (self.snow_grip as u8) << 3,
+        ]);
         self.start.iter().for_each(|v| out.extend(v.to_le_bytes()));
         out.extend((self.inputs.len() as u32).to_le_bytes());
         let mut i = 0;
@@ -231,6 +240,8 @@ impl Replay {
             car: h[8],
             soft: h[9] & 1 != 0,
             gradual: h[9] & 2 != 0,
+            snow: h[9] & 4 != 0,
+            snow_grip: h[9] & 8 != 0,
             start: [u16_at(10), u16_at(12), u16_at(14)],
             inputs,
         })
@@ -354,6 +365,8 @@ mod tests {
             car: 3,
             soft: true,
             gradual: true,
+            snow: true,
+            snow_grip: true,
             start: [0x7a00, 0x8900, 0x4000],
             inputs: [vec![1u8; 70_000], vec![0, 5, 5, 96]].concat(),
         };
@@ -362,6 +375,12 @@ mod tests {
         assert_eq!(Replay::from_bytes(&b).unwrap(), r);
         assert!(Replay::from_bytes(&b[..b.len() - 1]).is_err());
         assert!(Replay::from_bytes(b"RFR0").is_err());
+        let r = Replay {
+            snow: false,
+            snow_grip: false,
+            ..r
+        };
+        assert_eq!(Replay::from_bytes(&r.to_bytes()).unwrap(), r);
     }
 
     #[test]

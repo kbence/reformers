@@ -18,7 +18,7 @@ use reformers::ghost::{self, Frame, Ghost};
 use reformers::level::{Level, SPAWN, grid, load_level};
 use reformers::run::{self, Replay};
 use reformers::season;
-use reformers::sim::{Keys, REPAIR_CAP, Sim, SimCar, TICK_HZ};
+use reformers::sim::{Keys, REPAIR_CAP, SNOW_TICKS, Sim, SimCar, TICK_HZ};
 use reformers::terrain::{SIZE, Terrain};
 use reformers::track::{Event, Lap, Race, Track, Zone, format_time};
 use reformers::{assets, lighting, net, objects, pcx, sound};
@@ -670,13 +670,15 @@ fn v(p: [f32; 3]) -> Vec3 {
     vec3(p[0] / S, p[2] / S, p[1] / S)
 }
 
-/// COL.PCX, one texel per terrain cell, through the palette.
-fn colour_image(t: &Terrain) -> Image {
-    let bytes = t
-        .colour
-        .iter()
-        .flat_map(|&i| {
-            let [r, g, b] = t.palette[i as usize];
+/// COL.PCX, one texel per terrain cell, through the palette; snowy cells (#68) white.
+fn colour_image(t: &Terrain, snowy: &dyn Fn(usize) -> bool) -> Image {
+    let bytes = (t.colour.iter().enumerate())
+        .flat_map(|(c, &i)| {
+            let [r, g, b] = if snowy(c) {
+                SNOW_FLAT
+            } else {
+                t.palette[i as usize]
+            };
             [r, g, b, 255]
         })
         .collect();
@@ -687,14 +689,72 @@ fn colour_image(t: &Terrain) -> Image {
     }
 }
 
-/// COL.PCX raw indices (in red) for the textured shader, which picks the MAPTEX tile from them.
-fn index_image(t: &Terrain) -> Image {
-    let bytes = t.colour.iter().flat_map(|&i| [i, 0, 0, 255]).collect();
+/// The minimap's picture: `colour_image` with hill shading lit from the north-west, so the relief
+/// still reads when snow turns the map white.
+fn map_image(t: &Terrain, snowy: &dyn Fn(usize) -> bool) -> Image {
+    let mut img = colour_image(t, snowy);
+    let h = |x: usize, y: usize| t.height[y.min(SIZE - 1) * SIZE + x.min(SIZE - 1)] as f32;
+    for y in 0..SIZE {
+        for x in 0..SIZE {
+            // ponytail: strength and clamp tuned by eye
+            let rise =
+                h(x.saturating_sub(1), y) - h(x + 1, y) + h(x, y.saturating_sub(1)) - h(x, y + 1);
+            let k = (1.0 + rise * 0.035).clamp(0.6, 1.25);
+            for c in &mut img.bytes[(y * SIZE + x) * 4..][..3] {
+                *c = (*c as f32 * k).min(255.0) as u8;
+            }
+        }
+    }
+    img
+}
+
+/// COL.PCX raw indices (in red) for the textured shader, which picks the MAPTEX tile from them;
+/// green marks snowy cells, drawn with the snow tile instead.
+fn index_image(t: &Terrain, snowy: &dyn Fn(usize) -> bool) -> Image {
+    let bytes = (t.colour.iter().enumerate())
+        .flat_map(|(c, &i)| [i, if snowy(c) { 255 } else { 0 }, 0, 255])
+        .collect();
     Image {
         bytes,
         width: SIZE as u16,
         height: SIZE as u16,
     }
+}
+
+/// Siberia's snow: its MAPTEX tile 0x0f (RGB, 16×16), drawn on snowy cells on every map (#68).
+#[rustfmt::skip]
+const SNOW_TILE: [u8; 768] = [
+    255, 255, 255, 235, 235, 235, 235, 235, 235, 235, 235, 235, 255, 255, 255, 255, 255, 255, 255, 255, 255, 235, 235, 235, 235, 235, 235, 255, 255, 255, 255, 255, 255, 255, 255, 255, 235, 235, 235, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    235, 235, 235, 235, 235, 235, 167, 167, 167, 235, 235, 235, 255, 255, 255, 255, 255, 255, 235, 235, 235, 235, 235, 235, 235, 235, 235, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 187, 187, 187,
+    203, 203, 203, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 255, 255, 255, 235, 235, 235, 235, 235, 235, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 235, 235, 235, 167, 167, 167,
+    235, 235, 235, 255, 255, 255, 255, 255, 255, 255, 255, 255, 235, 235, 235, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 235, 235, 235, 235, 235, 235, 167, 167, 167,
+    255, 255, 255, 255, 255, 255, 235, 235, 235, 255, 255, 255, 235, 235, 235, 255, 255, 255, 255, 255, 255, 235, 235, 235, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 235, 235, 235, 235, 235, 235, 203, 203, 203, 167, 167, 167,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 235, 235, 235, 255, 255, 255, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 203, 203, 203, 151, 151, 151,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 255, 255, 255, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 203, 203, 203, 151, 151, 151,
+    235, 235, 235, 255, 255, 255, 255, 255, 255, 235, 235, 235, 235, 235, 235, 235, 235, 235, 255, 255, 255, 235, 235, 235, 235, 235, 235, 255, 255, 255, 255, 255, 255, 255, 255, 255, 235, 235, 235, 235, 235, 235, 235, 235, 235, 187, 187, 187,
+    219, 219, 219, 255, 255, 255, 255, 255, 255, 235, 235, 235, 255, 255, 255, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 255, 255, 255, 255, 255, 255, 235, 235, 235, 255, 255, 255, 255, 255, 255, 255, 255, 255,
+    235, 235, 235, 255, 255, 255, 255, 255, 255, 235, 235, 235, 255, 255, 255, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 255, 255, 255, 255, 255, 255, 235, 235, 235, 235, 235, 235, 187, 187, 187,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 255, 255, 255, 235, 235, 235, 235, 235, 235, 235, 235, 235, 187, 187, 187,
+    255, 255, 255, 235, 235, 235, 255, 255, 255, 255, 255, 255, 255, 255, 255, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 255, 255, 255, 235, 235, 235, 255, 255, 255, 235, 235, 235, 255, 255, 255, 235, 235, 235,
+    235, 235, 235, 255, 255, 255, 235, 235, 235, 235, 235, 235, 255, 255, 255, 235, 235, 235, 235, 235, 235, 255, 255, 255, 235, 235, 235, 235, 235, 235, 255, 255, 255, 255, 255, 255, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235,
+    235, 235, 235, 255, 255, 255, 235, 235, 235, 203, 203, 203, 235, 235, 235, 235, 235, 235, 235, 235, 235, 255, 255, 255, 235, 235, 235, 235, 235, 235, 255, 255, 255, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235,
+    255, 255, 255, 255, 255, 255, 255, 255, 255, 235, 235, 235, 255, 255, 255, 255, 255, 255, 235, 235, 235, 255, 255, 255, 255, 255, 255, 235, 235, 235, 255, 255, 255, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 235, 187, 187, 187,
+    255, 234, 223, 255, 234, 223, 255, 234, 223, 235, 235, 235, 235, 235, 235, 235, 235, 235, 255, 255, 255, 255, 234, 223, 255, 234, 223, 255, 234, 223, 255, 234, 223, 255, 255, 255, 255, 255, 255, 255, 234, 223, 219, 219, 219, 255, 255, 255,
+];
+/// The snow tile's average colour, for flat colours.
+const SNOW_FLAT: [u8; 3] = [240, 240, 239];
+
+fn snow_texture() -> Texture2D {
+    let rgba: Vec<u8> = SNOW_TILE
+        .chunks(3)
+        .flat_map(|c| [c[0], c[1], c[2], 255])
+        .collect();
+    Texture2D::from_rgba8(16, 16, &rgba)
+}
+
+/// The cells' snow, for `colour_image` / `index_image`.
+fn snow_of(sim: &Sim) -> impl Fn(usize) -> bool + '_ {
+    move |c| sim.snowy(c % SIZE, c / SIZE)
 }
 
 /// The map's MAPTEX tiles, or a white texel for maps without matching tiles (drawn flat then).
@@ -825,14 +885,18 @@ varying lowp vec4 shade;
 varying mediump float fog;
 uniform sampler2D ColIdx;  // COL indices in red, nearest
 uniform sampler2D MapTex;
+uniform sampler2D SnowTex;  // one 16×16 tile, for cells marked snowy in ColIdx's green
 uniform vec3 FogColor;
 void main() {
     vec2 cell = uv * 256.0;
-    float idx = floor(texture2D(ColIdx, (floor(cell) + 0.5) / 256.0).r * 255.0 + 0.5);
+    vec4 col = texture2D(ColIdx, (floor(cell) + 0.5) / 256.0);
+    float idx = floor(col.r * 255.0 + 0.5);
     vec2 tile = vec2(mod(idx, 16.0), floor(idx / 16.0));
     // 16 texels of equal width per cell (as the original), never sampling past the tile
-    vec2 st = (tile * 16.0 + clamp(fract(cell) * 16.0, 0.5, 15.5)) / 256.0;
-    gl_FragColor = vec4(mix(texture2D(MapTex, st).rgb * shade.rgb, FogColor, fog), 1.0);
+    vec2 in_tile = clamp(fract(cell) * 16.0, 0.5, 15.5);
+    vec3 c = col.g > 0.5 ? texture2D(SnowTex, in_tile / 16.0).rgb
+                         : texture2D(MapTex, (tile * 16.0 + in_tile) / 256.0).rgb;
+    gl_FragColor = vec4(mix(c * shade.rgb, FogColor, fog), 1.0);
 }
 ";
 
@@ -968,6 +1032,79 @@ fn skin_texture(pcx_bytes: &[u8], palette: &[[u8; 3]; 256]) -> Skin {
         texture: tex,
         image: img,
     }
+}
+
+/// Pixel snowflakes, 7×7 each, side by side (`#` = snow): dot, X, star, blob, crystal.
+const FLAKES: [&str; 7] = [
+    "....... ....... ...#... ....... ..#.#..",
+    "....... .#...#. .#.#.#. ....... ...#...",
+    "...#... ..#.#.. ..###.. ....... #.###.#",
+    "..###.. ...#... ####### ...##.. .##.##.",
+    "...#... ..#.#.. ..###.. ...##.. #.###.#",
+    "....... .#...#. .#.#.#. ....... ...#...",
+    "....... ....... ...#... ....... ..#.#..",
+];
+
+fn flake_texture() -> Texture2D {
+    let rgba: Vec<u8> = FLAKES
+        .iter()
+        .flat_map(|row| row.bytes().filter(|&b| b != b' '))
+        .flat_map(|b| if b == b'#' { [255; 4] } else { [0; 4] })
+        .collect();
+    let tex = Texture2D::from_rgba8(35, 7, &rgba);
+    tex.set_filter(FilterMode::Nearest);
+    tex
+}
+
+/// Falling snow (#68) in a box around the camera, as pixel flakes facing it: drawn only, the sim
+/// never sees it. Stateless: a flake's place is a function of its number and the time, wrapped
+/// into the box in world space, so flakes stay put as the camera moves and nothing is stored.
+fn snowfall_meshes(tex: &Texture2D, eye: Vec3, look: Vec3, up: Vec3, t: f32) -> Vec<Mesh> {
+    // ponytail: box, count, sizes and speeds in render units, tuned by eye
+    const BOX: Vec3 = vec3(16.0, 10.0, 16.0);
+    const TEXEL: f32 = 0.015;
+    let fwd = (look - eye).normalize_or(Vec3::Z);
+    let right = fwd.cross(up).normalize_or(Vec3::X) * (3.5 * TEXEL);
+    let up = right.cross(fwd).normalize_or(Vec3::Y) * (3.5 * TEXEL);
+    let mut out: Vec<Mesh> = vec![];
+    for i in 0..4000u32 {
+        // a mesh per 2000 flakes: one draw call holds 10 000 vertices (`window_conf`)
+        if i % 2000 == 0 {
+            out.push(Mesh {
+                vertices: vec![],
+                indices: vec![],
+                texture: Some(tex.clone()),
+            });
+        }
+        let m = out.last_mut().unwrap();
+        let r = |k: u32| {
+            (i.wrapping_mul(2_654_435_761) ^ k.wrapping_mul(40_503)).wrapping_mul(2_246_822_519)
+                >> 8
+        };
+        let f = |k: u32| (r(k) % 10_000) as f32 / 10_000.0;
+        let sway = t * (0.4 + f(5)) + f(6) * std::f32::consts::TAU;
+        let drift = vec3(
+            sway.sin() * 0.3 + t * 0.2,
+            -t * (0.6 + f(4) * 0.8),
+            sway.cos() * 0.3,
+        );
+        let h = vec3(f(1), f(2), f(3)) + drift / BOX - eye / BOX;
+        let c = eye + BOX * (h - h.floor() - Vec3::splat(0.5));
+        let kind = [0, 3, 0, 3, 1, 1, 2, 4][r(7) as usize % 8] as f32;
+        let (u0, u1) = (kind / 5.0, (kind + 1.0) / 5.0);
+        let n = m.vertices.len() as u16;
+        m.indices.extend([n, n + 1, n + 2, n, n + 2, n + 3]);
+        m.vertices.extend(
+            [
+                (c - right + up, u0, 0.0),
+                (c + right + up, u1, 0.0),
+                (c + right - up, u1, 1.0),
+                (c - right - up, u0, 1.0),
+            ]
+            .map(|(p, u, v)| Vertex::new(p.x, p.y, p.z, u, v, WHITE)),
+        );
+    }
+    out
 }
 
 /// Santa hats this run (#69), decided once at launch.
@@ -1486,6 +1623,10 @@ struct Graphics {
     guide: bool,
     /// Repair mends while held, from a recharging budget (#58), instead of a fresh car at once.
     gradual: bool,
+    /// Snow (#68): index into SNOW_MODES; Auto snows in winter.
+    snow: usize,
+    /// Snow is slippery (`Sim::snow_grip`); off, it's only white.
+    snow_grip: bool,
     /// Player 1 steers with WASD instead of the arrows (one player only: two share the keyboard).
     wasd: bool,
     /// The last address typed on the Join row (saved), and the online rows' status (not saved).
@@ -1501,6 +1642,8 @@ struct Graphics {
     minimap: bool,
     ghost: bool,
     fog: bool,
+    /// Falling snowflakes while it snows (#68); the snow on the ground is the Snow option's.
+    snowfall: bool,
     volume: u8,    // 0 (mute) – 10
     engine: usize, // index into ENGINE_SOUNDS
     fullscreen: bool,
@@ -1524,10 +1667,13 @@ enum Row {
     Lighting,
     Crt,
     Fog,
+    Snowfall,
     Minimap,
     Ghost,
     Guide,
     Repair,
+    Snow,
+    SnowGrip,
     Keys,
     Host,
     Join,
@@ -1535,6 +1681,20 @@ enum Row {
     Resolution,
     Quit,
 }
+/// Snow settings (#68), as saved; Auto snows December to February.
+const SNOW_MODES: [&str; 3] = ["auto", "on", "off"];
+
+impl Graphics {
+    /// Whether a race starting now snows.
+    fn snows(&self) -> bool {
+        match self.snow {
+            0 => season::winter(season::today()),
+            1 => true,
+            _ => false,
+        }
+    }
+}
+
 /// Menu pages (Esc menu): the top level and its submenus.
 #[derive(Clone, Copy, PartialEq, Debug)]
 enum Page {
@@ -1596,6 +1756,8 @@ fn items(page: Page, players: usize) -> Vec<Item> {
             Row::Minimap,
             Row::Guide,
             Row::Repair,
+            Row::Snow,
+            Row::SnowGrip,
             Row::Host,
             Row::Join,
         ])
@@ -1607,6 +1769,7 @@ fn items(page: Page, players: usize) -> Vec<Item> {
             Row::Filter,
             Row::Crt,
             Row::Fog,
+            Row::Snowfall,
             Row::Fullscreen,
             Row::Resolution,
         ]
@@ -1705,7 +1868,7 @@ impl Menu {
 impl Graphics {
     fn to_text(&self) -> String {
         format!(
-            "map={}\ncar={}\ncar2={}\nskin={}\nskin2={}\njoin={}\nguide={}\ngradual={}\nwasd={}\ncamera={}\nnearest={}\ntextured={}\nlighting={}\ncrt={}\nminimap={}\nghost={}\nfog={}\nvolume={}\nengine={}\nfullscreen={}\nresolution={}\n",
+            "map={}\ncar={}\ncar2={}\nskin={}\nskin2={}\njoin={}\nguide={}\ngradual={}\nsnow={}\nsnowgrip={}\nwasd={}\ncamera={}\nnearest={}\ntextured={}\nlighting={}\ncrt={}\nminimap={}\nghost={}\nfog={}\nsnowfall={}\nvolume={}\nengine={}\nfullscreen={}\nresolution={}\n",
             self.map,
             self.car + 1,
             self.car2 + 1,
@@ -1714,6 +1877,8 @@ impl Graphics {
             self.join,
             self.guide,
             self.gradual,
+            SNOW_MODES[self.snow],
+            self.snow_grip,
             self.wasd,
             self.camera,
             self.nearest,
@@ -1723,6 +1888,7 @@ impl Graphics {
             self.minimap,
             self.ghost,
             self.fog,
+            self.snowfall,
             self.volume,
             self.engine,
             self.fullscreen,
@@ -1741,6 +1907,11 @@ impl Graphics {
                 "join" => self.join = v.trim().to_string(),
                 "guide" => self.guide = b,
                 "gradual" => self.gradual = b,
+                "snowgrip" => self.snow_grip = b,
+                "snow" => {
+                    let i = SNOW_MODES.iter().position(|m| *m == v.trim());
+                    self.snow = i.unwrap_or(self.snow)
+                }
                 "wasd" => self.wasd = b,
                 "car" => {
                     self.car = n
@@ -1760,6 +1931,7 @@ impl Graphics {
                 "minimap" => self.minimap = b,
                 "ghost" => self.ghost = b,
                 "fog" => self.fog = b,
+                "snowfall" => self.snowfall = b,
                 "volume" => self.volume = n.filter(|&n| n <= 10).map_or(self.volume, |n| n as u8),
                 "engine" => {
                     self.engine = n
@@ -1824,6 +1996,8 @@ impl Graphics {
                     "instant"
                 }
             ),
+            Row::Snow => format!("Snow: {}", SNOW_MODES[self.snow]),
+            Row::SnowGrip => format!("Snow grip: {}", on(self.snow_grip)),
             Row::Keys => format!(
                 "Steering keys: {}",
                 if self.wasd {
@@ -1833,6 +2007,7 @@ impl Graphics {
                 }
             ),
             Row::Fog => format!("Fog: {}", on(self.fog)),
+            Row::Snowfall => format!("Falling snow: {}", on(self.snowfall)),
             Row::Ghost => format!("Ghost car: {}", on(self.ghost)),
             Row::Fullscreen => format!("Fullscreen: {}", on(self.fullscreen)),
             Row::Resolution => {
@@ -1860,8 +2035,15 @@ impl Graphics {
             Row::Minimap => self.minimap = !self.minimap,
             Row::Guide => self.guide = !self.guide,
             Row::Repair => self.gradual = !self.gradual,
+            Row::SnowGrip => self.snow_grip = !self.snow_grip,
+            Row::Snow => {
+                let n = SNOW_MODES.len() as i32;
+                self.snow =
+                    (self.snow as i32 + if step == 0 { 1 } else { step }).rem_euclid(n) as usize;
+            }
             Row::Keys => self.wasd = !self.wasd,
             Row::Fog => self.fog = !self.fog,
+            Row::Snowfall => self.snowfall = !self.snowfall,
             Row::Players => self.players = 3 - self.players,
             Row::Car => {
                 self.car = (self.car as i32 + if step == 0 { 1 } else { step })
@@ -1967,7 +2149,7 @@ fn draw_map_view(
     }
 }
 
-/// COL.PCX in the top-right corner with the gates (next one yellow, start white), the ghost and the car.
+/// The map (COL, hill-shaded) in the top-right corner with the gates (next one yellow, start white), the ghost and the car.
 #[allow(clippy::too_many_arguments)]
 fn draw_minimap(
     colour: &Texture2D,
@@ -2329,6 +2511,8 @@ async fn main() {
             current = (r.car.clamp(1, 5) - 1) as usize;
             sim.dig_everywhere = r.soft;
             sim.gradual_repair = r.gradual;
+            sim.set_snow(r.snow);
+            sim.snow_grip = r.snow_grip;
             ((r.start[0], r.start[1]), r.start[2])
         }
         None => (spawn, spawn_heading),
@@ -2349,7 +2533,9 @@ async fn main() {
     let mut recording = Ghost::default(); // this lap so far
     let mut ticks = 0u64;
     // this run's inputs since the car was placed (a replay), and the replay being played back
-    let new_run = |map: &str, level: &Level, car: usize, sim: &Sim| {
+    // A replay plays from tick 0 of the snow, so a new run restarts it (#68).
+    let new_run = |map: &str, level: &Level, car: usize, sim: &mut Sim| {
+        sim.set_snow(sim.snow);
         let c = &sim.cars[0];
         let [x, y, _] = c.centre();
         Replay {
@@ -2358,13 +2544,16 @@ async fn main() {
             car: car as u8 + 1,
             soft: sim.dig_everywhere,
             gradual: sim.gradual_repair,
+            snow: sim.snow,
+            snow_grip: sim.snow_grip,
             start: [x as u16, y as u16, c.heading()],
             inputs: vec![],
         }
     };
-    let mut recording_run = new_run(&map, &level, players[0].car, &sim);
+    let mut recording_run = new_run(&map, &level, players[0].car, &mut sim);
     recording_run.start = [spawn.0, spawn.1, spawn_heading]; // exactly where it was placed
     let mut playing = replay.map(|r| (r, 0usize));
+    let mut snow_mode = usize::MAX; // the snow option last applied: none yet, so the first frame does
     let mut pristine = sim.terrain.clone(); // the map as loaded, for starting new runs on it
     let mut banner: Option<(String, f64)> = None; // message, shown until
     let mut last_centre = sim.cars[0].centre();
@@ -2375,21 +2564,28 @@ async fn main() {
         .collect();
     // baked lighting for the loaded map, while the option is on (made on the first frame)
     let mut baked: Option<lighting::Baked> = None;
-    let colour_tex = Texture2D::from_image(&colour_image(&sim.terrain));
+    let colour_tex = Texture2D::from_image(&colour_image(&sim.terrain, &snow_of(&sim)));
+    let map_tex = Texture2D::from_image(&map_image(&sim.terrain, &snow_of(&sim)));
     let mut maptex = tiles(&level, &sim.terrain.palette);
     let terrain_material = fog_material(
         TERRAIN_VERTEX,
         TERRAIN_FRAGMENT,
-        vec!["ColIdx".into(), "MapTex".into()],
+        vec!["ColIdx".into(), "MapTex".into(), "SnowTex".into()],
     );
     let fog = fog_material(TERRAIN_VERTEX, FOG_FRAGMENT, vec![]);
     let object_material = fog_material(TERRAIN_VERTEX, OBJECT_FRAGMENT, vec![]);
     let (mut objtex, mut sprites) = objtex_texture(&level);
     terrain_material.set_texture("MapTex", maptex.clone());
-    let index_tex = Texture2D::from_image(&index_image(&sim.terrain));
+    let snow_tex = snow_texture();
+    let flake_tex = flake_texture();
+    terrain_material.set_texture("SnowTex", snow_tex.clone());
+    let index_tex = Texture2D::from_image(&index_image(&sim.terrain, &snow_of(&sim)));
     index_tex.set_filter(FilterMode::Nearest);
     terrain_material.set_texture("ColIdx", index_tex.clone());
     let mut shown_colour = sim.terrain.colour.clone();
+    // snow progress last drawn, in percent: textures follow it in steps, not every tick
+    let snow_step = |sim: &Sim| sim.snow_ticks() * 100 / SNOW_TICKS;
+    let mut shown_snow = snow_step(&sim);
     let flag = |f: &str| args.iter().any(|a| a == f);
     let mut gfx = Graphics {
         map: map.clone(),
@@ -2400,6 +2596,8 @@ async fn main() {
         join: String::new(),
         guide: true,
         gradual: true,
+        snow: 0,
+        snow_grip: true,
         wasd: false,
         host_label: String::new(),
         join_label: String::new(),
@@ -2416,6 +2614,7 @@ async fn main() {
         minimap: true,
         ghost: false,
         fog: true,
+        snowfall: true,
         volume: 7,
         engine: 0,
         fullscreen: false,
@@ -2580,6 +2779,8 @@ async fn main() {
                 map_hash: level.hash,
                 soft: sim.dig_everywhere,
                 gradual: sim.gradual_repair,
+                snow: gfx.snows(),
+                snow_grip: gfx.snow_grip,
                 skins: std::iter::once(gfx.skin.clone())
                     .chain(h.guests.iter().map(|g| g.skin.clone()))
                     .collect(),
@@ -2636,8 +2837,9 @@ async fn main() {
                         meshes = (0..chunks)
                             .map(|c| chunk_mesh(&sim.terrain, c, baked.as_ref()))
                             .collect();
-                        colour_tex.update(&colour_image(&sim.terrain));
-                        index_tex.update(&index_image(&sim.terrain));
+                        colour_tex.update(&colour_image(&sim.terrain, &snow_of(&sim)));
+                        map_tex.update(&map_image(&sim.terrain, &snow_of(&sim)));
+                        index_tex.update(&index_image(&sim.terrain, &snow_of(&sim)));
                         maptex = tiles(&level, &sim.terrain.palette);
                         terrain_material.set_texture("MapTex", maptex.clone());
                         (objtex, sprites) = objtex_texture(&level);
@@ -2691,7 +2893,7 @@ async fn main() {
                         // a changed map starts a new run (a replay only re-drives the map it came from)
                         pristine = sim.terrain.clone();
                         playing = None;
-                        recording_run = new_run(&map, &level, players[0].car, &sim);
+                        recording_run = new_run(&map, &level, players[0].car, &mut sim);
                         let msg = if switched {
                             format!("map: {map}")
                         } else {
@@ -2716,6 +2918,8 @@ async fn main() {
                 // the same start on both machines: cars, places, time trials, tick 0
                 sim.dig_everywhere = start.soft;
                 sim.gradual_repair = start.gradual;
+                sim.set_snow(start.snow);
+                sim.snow_grip = start.snow_grip;
                 let cam = players[0].cam;
                 players = start
                     .cars
@@ -2788,7 +2992,7 @@ async fn main() {
                 players.truncate(1);
                 gfx.players = 1;
                 gfx.car = players[0].car;
-                recording_run = new_run(&map, &level, players[0].car, &sim);
+                recording_run = new_run(&map, &level, players[0].car, &mut sim);
             }
             banner = Some((why, get_time() + 5.0));
         }
@@ -2953,6 +3157,7 @@ async fn main() {
             FilterMode::Linear
         };
         colour_tex.set_filter(filter);
+        map_tex.set_filter(filter);
         // each car's skin: the players' choices, or online the ones the race started with
         let skin_files = match &online {
             Some((l, s)) => s
@@ -2971,6 +3176,7 @@ async fn main() {
             .chain(skins.values().flatten())
             .for_each(|skin| skin.texture.set_filter(filter));
         maptex.set_filter(filter);
+        snow_tex.set_filter(filter);
         if menu_open {
             // paused: no sim ticks, no time banked for later (online the race goes on)
             if online.is_none() {
@@ -3014,7 +3220,7 @@ async fn main() {
             }
             sim.cars[0] =
                 SimCar::spawn_facing(&cars[players[0].car].0, &sim.terrain, x as u16, y as u16, h);
-            recording_run = new_run(&map, &level, players[0].car, &sim);
+            recording_run = new_run(&map, &level, players[0].car, &mut sim);
             players[0].race =
                 Race::new(best_key(&level, players[0].car).and_then(|k| load_best(&k)));
             ghost = load_ghost(&level, players[0].car);
@@ -3024,7 +3230,22 @@ async fn main() {
         // the repair option, offline (online the host's holds; a replay keeps its own)
         if online.is_none() && playing.is_none() && sim.gradual_repair != gfx.gradual {
             sim.gradual_repair = gfx.gradual;
-            recording_run = new_run(&map, &level, players[0].car, &sim);
+            recording_run = new_run(&map, &level, players[0].car, &mut sim);
+        }
+        // the snow option likewise (#68); Auto is read once per change, not every frame
+        if online.is_none()
+            && playing.is_none()
+            && (snow_mode != gfx.snow || sim.snow_grip != gfx.snow_grip)
+        {
+            let launch = snow_mode == usize::MAX;
+            snow_mode = gfx.snow;
+            sim.snow_grip = gfx.snow_grip;
+            sim.set_snow(gfx.snows());
+            recording_run = new_run(&map, &level, players[0].car, &mut sim);
+            if launch && sim.snow {
+                let tip = "It's snowing! Esc > Race > Snow turns it off";
+                banner = Some((tip.into(), get_time() + 10.0));
+            }
         }
         let me = my_car(&online, sim.cars.len());
         // R and F act on the next tick, so a replay reproduces them exactly
@@ -3058,7 +3279,7 @@ async fn main() {
                 players.truncate(1);
             }
             playing = None;
-            recording_run = new_run(&map, &level, players[0].car, &sim);
+            recording_run = new_run(&map, &level, players[0].car, &mut sim);
         }
         if players.len() == 2 && !menu_open && gfx.car2 != players[1].car && online.is_none() {
             // player 2's new car, where the old one stands
@@ -3284,8 +3505,10 @@ async fn main() {
                         } else {
                             Ghost::default()
                         };
+                        // slippery snow changes the driving: no records from it (#68)
                         if best
                             && online.is_none()
+                            && !(sim.snow && sim.snow_grip)
                             && let (Some(k), Some(b)) = (best_key(&level, p.car), &p.race.best)
                         {
                             save_best(&k, b);
@@ -3424,12 +3647,17 @@ async fn main() {
         for c in (0..chunks).filter(|&c| dirty[c]) {
             meshes[c] = chunk_mesh(&sim.terrain, c, baked.as_ref());
         }
+        if dirty.contains(&true) {
+            map_tex.update(&map_image(&sim.terrain, &snow_of(&sim))); // dug: the shading moved
+        }
         shown.copy_from_slice(&sim.terrain.height);
-        if shown_colour != sim.terrain.colour {
-            // landing dirt darkens COL cells
-            colour_tex.update(&colour_image(&sim.terrain));
-            index_tex.update(&index_image(&sim.terrain));
+        if shown_colour != sim.terrain.colour || shown_snow != snow_step(&sim) {
+            // landing dirt darkens COL cells; snow spreads
+            colour_tex.update(&colour_image(&sim.terrain, &snow_of(&sim)));
+            map_tex.update(&map_image(&sim.terrain, &snow_of(&sim)));
+            index_tex.update(&index_image(&sim.terrain, &snow_of(&sim)));
             shown_colour.copy_from_slice(&sim.terrain.colour);
+            shown_snow = snow_step(&sim);
         }
 
         let atoms = sim.cars[0].atom_positions();
@@ -3503,6 +3731,12 @@ async fn main() {
             gl_use_material(&object_material);
             for m in object_meshes(&level, &sim.terrain, &objtex, &sprites, position) {
                 draw_mesh(&m);
+            }
+            if sim.snow && gfx.snowfall {
+                let t = get_time() as f32;
+                for m in snowfall_meshes(&flake_tex, position, look_at, up, t) {
+                    draw_mesh(&m);
+                }
             }
             gl_use_material(&fog);
             for (ci, c) in sim.cars.iter().enumerate() {
@@ -3810,7 +4044,7 @@ async fn main() {
                 .map(|(_, c)| c)
                 .collect();
             draw_minimap(
-                &colour_tex,
+                &map_tex,
                 &level.zone_cells,
                 level.track.as_ref(),
                 players[me].race.next,
@@ -3861,7 +4095,7 @@ async fn main() {
                 Some(Item::Row(Row::Map)) => {
                     let preview = map_previews.entry(gfx.map.clone()).or_insert_with(|| {
                         let (terrain, level) = load_level(&gfx.map).ok()?;
-                        let tex = Texture2D::from_image(&colour_image(&terrain));
+                        let tex = Texture2D::from_image(&map_image(&terrain, &|_| false));
                         tex.set_filter(FilterMode::Nearest);
                         Some((tex, level))
                     });
@@ -4067,6 +4301,8 @@ mod tests {
             join: "192.168.1.20".into(),
             guide: true,
             gradual: true,
+            snow: 0,
+            snow_grip: true,
             wasd: true,
             host_label: String::new(),
             join_label: String::new(),
@@ -4079,6 +4315,7 @@ mod tests {
             minimap: false,
             ghost: true,
             fog: false,
+            snowfall: true,
             volume: 3,
             engine: 1,
             fullscreen: false,
@@ -4093,6 +4330,8 @@ mod tests {
             join: "192.168.1.20".into(),
             guide: false,
             gradual: false,
+            snow: 0,
+            snow_grip: true,
             wasd: false,
             host_label: String::new(),
             join_label: String::new(),
@@ -4105,6 +4344,7 @@ mod tests {
             minimap: true,
             ghost: false,
             fog: true,
+            snowfall: true,
             volume: 10,
             engine: 0,
             fullscreen: true,

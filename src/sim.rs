@@ -20,6 +20,38 @@ pub const MAX_LOAD: [i32; 16] = [
     0x20000, 0x20000, 0x10000, 0x10000, 0x10000, 0x10000,
 ];
 
+// Snow (#68): one shared material for every snowy cell, whatever COL says beneath.
+// GRIP is a divisor twice over: a contact holds while min(−vn, MAX_LOAD) / GRIP > slip / 64,
+// and a sliding one sheds only slip / (GRIP / 2). So a *higher* GRIP and a *lower* MAX_LOAD
+// are slipperier. The slipperiest stock material (3) is 40 / 0xc000; snow goes a notch past
+// it so cars slide noticeably, but not so far that they can't steer. DAMP is a shift
+// (v −= v >> DAMP): 9 drags a little more than bare ground's usual 10, like soft snow.
+// ponytail: tune note, first guesses; tune in play.
+pub const SNOW_GRIP: i32 = 48;
+pub const SNOW_DAMP: u8 = 9;
+pub const SNOW_MAX_LOAD: i32 = 0xc000;
+/// Ticks from bare to fully white: 10 minutes.
+pub const SNOW_TICKS: u32 = 10 * 60 * TICK_HZ;
+
+/// Tick at which cell (x, y) turns snowy, in [1, SNOW_TICKS] (bare at 0, white at the end): a splitmix64 finaliser of the
+/// cell index, so cells whiten in a uniform random scatter, the same on every machine.
+pub fn snow_threshold(x: usize, y: usize) -> u32 {
+    let mut z = (y * SIZE + x) as u64;
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58476d1ce4e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d049bb133111eb);
+    z ^= z >> 31;
+    (z % SNOW_TICKS as u64) as u32 + 1
+}
+
+/// (grip, damping, max load) of the ground: snow if the cell is snowy, else COL's material.
+fn material(colour: u8, snowy: bool) -> (i32, u8, i32) {
+    if snowy {
+        return (SNOW_GRIP, SNOW_DAMP, SNOW_MAX_LOAD);
+    }
+    let s = (colour >> 4) as usize;
+    (GRIP[s], DAMP[s], MAX_LOAD[s])
+}
+
 /// `imul r32` keeping EDX: (a·b) >> 32.
 fn hi(a: i32, b: i32) -> i32 {
     ((a as i64 * b as i64) >> 32) as i32
@@ -268,6 +300,7 @@ struct Contact {
     n: [i32; 4], // A, B, C, D = [0xe9a0], [0xe9a4], [0xe9a8], [0xe9ac]
     vn: i32,     // [0xe9c8]
     colour: u8,  // [0xea28]
+    snowy: bool,
 }
 
 pub struct Sim {
@@ -291,6 +324,12 @@ pub struct Sim {
     pub impacts: u32,
     /// Repair (`run::REPAIR`) mends while held, from a budget (#58), instead of a fresh car at once.
     pub gradual_repair: bool,
+    /// Snow mode (#68): cells whiten over `SNOW_TICKS` and drive as snow. Set with `set_snow`.
+    pub snow: bool,
+    /// Snow drives as snow (slippery); off, it only looks white and COL's materials hold.
+    pub snow_grip: bool,
+    /// Ticks since the map loaded; drives snow. Not in `state_hash`: snow is a function of it.
+    ticks: u32,
 }
 
 /// How deep soft dirt ruts can get, in MAP height steps (16 world units each).
@@ -814,12 +853,16 @@ impl Sim {
             trunks: Vec::new(),
             impacts: 0,
             gradual_repair: false,
+            snow: false,
+            snow_grip: true,
+            ticks: 0,
         }
     }
 
     /// Swaps in a new map (hot reload): clears dirt particles and the soft-ground marks.
     pub fn set_terrain(&mut self, terrain: Terrain) {
         self.terrain = terrain;
+        self.ticks = 0;
         self.particles.clear();
         self.soft = vec![true; SIZE * SIZE];
         self.set_soft_dirt(vec![false; SIZE * SIZE]);
@@ -857,8 +900,29 @@ impl Sim {
         self.particles.iter().map(|p| p.colour as u8)
     }
 
+    /// Snow progress in ticks, 0..=SNOW_TICKS (0 with snow off), so the renderer sees it move.
+    pub fn snow_ticks(&self) -> u32 {
+        if self.snow {
+            self.ticks.min(SNOW_TICKS)
+        } else {
+            0
+        }
+    }
+
+    /// Turns snow on or off and starts it again from bare (a race starting or restarting).
+    pub fn set_snow(&mut self, on: bool) {
+        self.snow = on;
+        self.ticks = 0;
+    }
+
+    /// Whether cell (x, y) is under snow now.
+    pub fn snowy(&self, x: usize, y: usize) -> bool {
+        self.snow && self.ticks >= snow_threshold(x, y)
+    }
+
     /// One 120 Hz timer tick (`0x5680`). `keys[i]` drives car `i`.
     pub fn tick(&mut self, keys: &[Keys]) {
+        self.ticks = self.ticks.saturating_add(1);
         for i in 0..self.cars.len() {
             let car = &mut self.cars[i];
             car.input(keys.get(i).copied().unwrap_or_default());
@@ -1035,14 +1099,17 @@ impl Sim {
             let (h, sx, sy, colour) = height(&self.terrain, x, y);
             if h.wrapping_add(a.radius as i16).wrapping_sub(z) >= 0 {
                 // 0x4a0d: surface damping, then contact along the terrain normal
-                let k = DAMP[(colour >> 4) as usize];
+                // (the cell `height` reads COL from)
+                let snowy = self.snow_grip
+                    && self.snowy((x >> 8) as usize % SIZE, (y >> 8) as usize % SIZE);
+                let k = material(colour, snowy).1;
                 let at = &mut self.cars[ci].atoms[i];
                 for v in &mut at.vel {
                     *v -= *v >> k;
                 }
                 let (ax_, ay_) = (atan2(sx, 0x100), atan2(sy, 0x100));
                 let n = [sin15(ax_), cos15(ax_), sin15(ay_), cos15(ay_)].map(|v| (v as i32) << 16);
-                self.contact(ci, i, n, colour);
+                self.contact(ci, i, n, colour, snowy);
             }
             let r = a.radius;
             let (wx, wy) = ((a.pos[0] >> 16) as u16, (a.pos[1] >> 16) as u16);
@@ -1060,7 +1127,7 @@ impl Sim {
             ];
             for (hit, n) in walls {
                 if hit {
-                    self.contact(ci, i, n, 0);
+                    self.contact(ci, i, n, 0, false); // walls: material 0, never snowy
                 }
             }
             let at = &mut self.cars[ci].atoms[i];
@@ -1071,7 +1138,7 @@ impl Sim {
     }
 
     /// `0x4a71`: bounce off the plane, then friction (wheel or body).
-    fn contact(&mut self, ci: usize, i: usize, n: [i32; 4], colour: u8) {
+    fn contact(&mut self, ci: usize, i: usize, n: [i32; 4], colour: u8, snowy: bool) {
         let [na, nb, nc, nd] = n;
         let at = &mut self.cars[ci].atoms[i];
         let vn = q31(q31(at.vel[2], nb), nd) - q31(at.vel[0], na) - q31(at.vel[1], nc);
@@ -1093,7 +1160,12 @@ impl Sim {
         at.vel[2] -= dz;
         at.pos[2] -= dz.wrapping_shl(1);
 
-        let c = Contact { n, vn, colour };
+        let c = Contact {
+            n,
+            vn,
+            colour,
+            snowy,
+        };
         let at = *at;
         let tx = q31(at.vel[0], nb) + q31(at.vel[2], na);
         let ty = q31(at.vel[1], nd) + q31(at.vel[2], nc);
@@ -1197,10 +1269,10 @@ impl Sim {
 
     /// `0x4c68`: true if the surface can hold this slip; also returns grip/2.
     fn grips(c: &Contact, tx: i32, ty: i32) -> (bool, i32) {
-        let s = (c.colour >> 4) as usize;
+        let (grip, _, max_load) = material(c.colour, c.snowy);
         let slip = tx.wrapping_abs().wrapping_add(ty.wrapping_abs());
-        let budget = (-c.vn).min(MAX_LOAD[s]) / GRIP[s];
-        (budget > slip >> 6, GRIP[s] >> 1)
+        let budget = (-c.vn).min(max_load) / grip;
+        (budget > slip >> 6, grip >> 1)
     }
 
     fn body_friction(&mut self, ci: usize, i: usize, c: &Contact, tx: i32, ty: i32) {
@@ -1363,6 +1435,72 @@ mod tests {
         assert_eq!(hash, GOLDEN, "{hash:#018x}");
     }
     const GOLDEN: u64 = 0x4711da3abcdc297f;
+
+    /// `scripted_drive_is_bit_exact` in snow, fast-forwarded to half cover so the car drives
+    /// over a mix of bare and snowy cells.
+    #[test]
+    fn snowy_drive_is_bit_exact() {
+        crate::need_assets!();
+        let mut s = sim();
+        s.set_snow(true);
+        s.ticks = SNOW_TICKS / 2;
+        for t in 0..TICK_HZ * 10 {
+            s.tick(&[Keys {
+                throttle: t % 300 < 220,
+                left: t % 170 < 40,
+                right: t % 230 > 180,
+                brake: t % 500 > 470,
+                ..Keys::default()
+            }]);
+        }
+        let hash = s.state_hash();
+        assert_ne!(hash, GOLDEN, "snow changed nothing");
+        assert_eq!(hash, SNOWY_GOLDEN, "{hash:#018x}");
+    }
+    const SNOWY_GOLDEN: u64 = 0x80c46cb55fe53033;
+
+    /// Snow without its grip: the same drive as bare ground.
+    #[test]
+    fn snow_without_grip_drives_bare() {
+        crate::need_assets!();
+        let mut s = sim();
+        s.set_snow(true);
+        s.snow_grip = false;
+        s.ticks = SNOW_TICKS / 2;
+        for t in 0..TICK_HZ * 10 {
+            s.tick(&[Keys {
+                throttle: t % 300 < 220,
+                left: t % 170 < 40,
+                right: t % 230 > 180,
+                brake: t % 500 > 470,
+                ..Keys::default()
+            }]);
+        }
+        assert_eq!(s.state_hash(), GOLDEN);
+    }
+
+    #[test]
+    fn snow_covers_linearly() {
+        let mut s = Sim::new(flat());
+        let covered = |s: &Sim| {
+            (0..SIZE * SIZE)
+                .filter(|i| s.snowy(i % SIZE, i / SIZE))
+                .count()
+        };
+        s.ticks = SNOW_TICKS;
+        assert_eq!(covered(&s), 0, "snow off");
+        s.snow = true;
+        assert_eq!(covered(&s), SIZE * SIZE);
+        s.set_snow(true);
+        assert_eq!(covered(&s), 0, "set_snow restarts from bare");
+        s.ticks = SNOW_TICKS;
+        assert_eq!(covered(&s), SIZE * SIZE);
+        s.ticks = 0;
+        assert_eq!(covered(&s), 0, "maps start bare");
+        s.ticks = SNOW_TICKS / 2;
+        let half = covered(&s) as f64 / (SIZE * SIZE) as f64;
+        assert!((half - 0.5).abs() < 0.01, "{half}");
+    }
 
     #[test]
     fn trig_matches_original_conventions() {

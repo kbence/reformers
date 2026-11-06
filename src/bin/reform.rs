@@ -160,12 +160,14 @@ fn drive(args: &[String]) {
 }
 
 /// `reform serve [--port P] [--maps a,b,…|all] [--min N] [--wait S] [--round S] [--laps N]
-/// [--delay T]` (#62): a dedicated host. It drives no car and runs rounds forever: a lobby until
-/// `--min` players are in (default 1) and `--wait` seconds have passed since the first (20), or
-/// the race is full; then the next map of `--maps` (default terep2), until `--round` seconds
-/// (300) or, on a time trial, someone's `--laps` laps (3); then the standings, and the players
+/// [--delay T] [--snow auto|on|off] [--snow-grip on|off]` (#62): a dedicated host. It drives no car and runs rounds
+/// forever: a lobby until `--min` players are in (default 1) and `--wait` seconds have passed
+/// since the first (20), or the race is full; then the next map of `--maps` (default terep2),
+/// until `--round` seconds (300) or, on a time trial, someone's `--laps` laps (3); then the standings, and the players
 /// come back to the lobby by themselves. `--delay` is the input delay in ticks (8 = 67 ms; the
-/// game's own host uses 4, for a LAN).
+/// game's own host uses 4, for a LAN). `--snow` (#68): auto (the default) snows from December to
+/// February by this machine's date, decided as each round starts; `--snow-grip off` keeps it
+/// white but not slippery.
 fn serve(args: &[String]) {
     use reformers::level::{SPAWN, grid, load_level};
     use reformers::net::{Host, MAX_PLAYERS, PORT, Start};
@@ -200,6 +202,19 @@ fn serve(args: &[String]) {
         num("--delay", "8").clamp(1, 60) as u8,
     );
     let port = num("--port", &PORT.to_string()) as u16;
+    let snow = opt("--snow", "auto");
+    let snow = move || match snow.as_str() {
+        "auto" => reformers::season::winter(reformers::season::today()),
+        on_off => on_off == "on",
+    };
+    if !["auto", "on", "off"].contains(&opt("--snow", "auto").as_str()) {
+        fail("--snow wants auto, on or off");
+    }
+    let snow_grip = match opt("--snow-grip", "on").as_str() {
+        "on" => true,
+        "off" => false,
+        _ => fail("--snow-grip wants on or off"),
+    };
     let models: Vec<car::Car> = (1..=5)
         .map(|n| {
             let f = format!("CAR{n}.DAT");
@@ -227,6 +242,9 @@ fn serve(args: &[String]) {
         // the round: as the game's host sets one up, minus a car of its own
         let (terrain, level) = load_level(map).unwrap_or_else(|e| fail(&e));
         let mut sim = Sim::new(terrain);
+        let snow = snow();
+        sim.set_snow(snow);
+        sim.snow_grip = snow_grip;
         if let Some(t) = &level.track {
             sim.set_soft_dirt(t.soft_dirt.clone());
         }
@@ -257,6 +275,8 @@ fn serve(args: &[String]) {
             map_hash: level.hash,
             soft: false,
             gradual: false,
+            snow,
+            snow_grip,
             skins: host.guests.iter().map(|g| g.skin.clone()).collect(),
             spawns,
             cars: cars.clone(),

@@ -223,7 +223,8 @@ cargo test
 
 `reform serve` options: `--port` (47800), `--maps a,b,…` or `all` (terep2), `--min` players before
 a round (1) and `--wait` seconds after the first one's in (20), `--round` seconds (300), `--laps`
-that end a time trial (3), `--delay` in ticks (8, 67 ms: the internet wants more than a LAN's 6).
+that end a time trial (3), `--delay` in ticks (8, 67 ms: the internet wants more than a LAN's 6), `--snow auto|on|off` (auto: snow from December
+to February by the server's date, decided as each round starts), `--snow-grip on|off` (on: snow is slippery; off: it's only white).
 It needs `assets/` next to it, like the game, and UDP on its port open.
 
 The engine is a recorded CC0 loop ("racing car engine sound loops" by domasx2, OpenGameArt; full
