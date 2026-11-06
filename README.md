@@ -65,7 +65,7 @@ map files. Each machine shows its own car; the menu doesn't pause an online race
 or Join leaves it. The sims run in lockstep: each player sends only their keys, 50 ms ahead, to
 the host, which sends everyone's back, and they compare a state hash every second. A joiner sends
 its keys further ahead as its link needs (up to 167 ms), and runs a few per cent fast or slow to
-stay even with the host. A player who
+stay even with the host; cars are drawn between ticks, so they glide at any frame rate. A player who
 leaves or goes quiet for 5 s just stops, and the race goes on; if the host goes, or the sims
 ever disagree, you're back to driving alone. Online laps aren't saved as best laps or ghosts.
 To try a slow network on one machine, set `REFORMERS_LAG=ms` or `ms+jitter` (e.g. `15+15`) for

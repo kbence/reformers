@@ -444,17 +444,21 @@ impl Player {
     }
 }
 
+/// Midway between the axle atoms 4 and 6, like `SimCar::centre`, from (drawn) atom positions.
+fn axle_centre(atoms: &[[f32; 3]]) -> [f32; 3] {
+    [0, 1, 2].map(|k| (atoms[4][k] + atoms[6][k]) / 2.0)
+}
+
 fn follow_camera(
     sim: &Sim,
-    i: usize,
+    atoms: &[[f32; 3]],
     mode: usize,
     orbit: f32,
     cam: &mut Vec3,
     arm: &mut f32,
     dt: f32,
 ) -> (Vec3, Vec3, Vec3) {
-    let atoms = sim.cars[i].atom_positions();
-    let centre = v(sim.cars[i].centre());
+    let centre = v(axle_centre(atoms));
     let back = (v(atoms[4]) - v(atoms[6]) + v(atoms[5]) - v(atoms[7])) * vec3(1.0, 0.0, 1.0);
     // Spring arm: shorten it where the ground is in the way (pull in at once, ease back out),
     // and never let the camera sink below the ground under it.
@@ -471,9 +475,10 @@ fn follow_camera(
     *arm = if clear < *arm {
         clear
     } else {
-        *arm + (clear - *arm) * (dt * 1.5).min(1.0)
+        *arm + (clear - *arm) * (1.0 - (-1.5 * dt).exp())
     };
-    *cam = cam.lerp(pivot + arm_dir * *arm, (dt * 6.0).min(1.0));
+    // exponential easing: the same glide at any frame rate (a plain `dt * k` step isn't)
+    *cam = cam.lerp(pivot + arm_dir * *arm, 1.0 - (-6.0 * dt).exp());
     cam.y = cam.y.max(ground(*cam) + CAM_CLEARANCE);
     let fwd = -back.normalize_or_zero();
     match mode {
@@ -1406,9 +1411,8 @@ fn car_meshes(
 
 /// The checkpoint guide (#34): a yellow arrow hovering over `car`, pointing at `target` (world
 /// x, y), level, bobbing gently with `time`.
-fn draw_guide(car: &SimCar, target: [f32; 2], time: f64) {
-    let atoms = car.atom_positions();
-    let [cx, cy, _] = car.centre();
+fn draw_guide(atoms: &[[f32; 3]], target: [f32; 2], time: f64) {
+    let [cx, cy, _] = axle_centre(atoms);
     let roof = atoms.iter().map(|a| a[2]).fold(f32::MIN, f32::max);
     let bob = (time * 3.0).sin() as f32 * 0.05;
     let base = v([cx, cy, roof]) + vec3(0.0, 0.45 + bob, 0.0);
@@ -2733,6 +2737,7 @@ async fn main() {
     let mut shown = sim.terrain.height.clone();
     let mut original = shown.clone();
     let mut acc = 0.0;
+    let mut prev_atoms: Vec<Vec<[f32; 3]>> = vec![]; // every car before the last tick
     let shot = args
         .iter()
         .position(|a| a == "--shot")
@@ -3444,6 +3449,7 @@ async fn main() {
                 .map(|p| std::mem::replace(&mut p.race, Race::new(None)))
                 .collect();
             let models: Vec<&Car> = players.iter().map(|p| &cars[p.car].0).collect();
+            prev_atoms = sim.cars.iter().map(SimCar::atom_positions).collect();
             let outs = run::tick_all(
                 &mut sim,
                 &models,
@@ -3663,6 +3669,28 @@ async fn main() {
             shown_snow = snow_step(&sim);
         }
 
+        // cars drawn between the last two ticks, by how far into the next one we are (#70): they
+        // glide at any frame rate instead of stepping 0, 1 or 2 ticks a frame (Fiedler, "Fix
+        // Your Timestep"); a car placed anew (or across the map's edge) jumps
+        let alpha = (acc * TICK_HZ as f32).clamp(0.0, 1.0);
+        let shown_cars: Vec<Vec<[f32; 3]>> = (sim.cars.iter().enumerate())
+            .map(|(i, c)| {
+                let cur = c.atom_positions();
+                match prev_atoms.get(i) {
+                    Some(p)
+                        if p.len() == cur.len()
+                            && p.iter()
+                                .zip(&cur)
+                                .all(|(a, b)| (0..3).all(|k| (a[k] - b[k]).abs() < 2048.0)) =>
+                    {
+                        (p.iter().zip(&cur))
+                            .map(|(a, b)| [0, 1, 2].map(|k| a[k] + (b[k] - a[k]) * alpha))
+                            .collect()
+                    }
+                    _ => cur,
+                }
+            })
+            .collect();
         let atoms = sim.cars[0].atom_positions();
         let dt = get_frame_time();
         // With CRT on, the 3D scene goes to an offscreen target (with depth) sized to the window.
@@ -3709,7 +3737,8 @@ async fn main() {
         for (slot, &view) in views.iter().enumerate() {
             let (position, look_at, up) = {
                 let p = &mut players[view];
-                follow_camera(&sim, view, gfx.camera, orbit, &mut p.cam, &mut p.arm, dt)
+                let atoms = &shown_cars[view];
+                follow_camera(&sim, atoms, gfx.camera, orbit, &mut p.cam, &mut p.arm, dt)
             };
             let w = if split { fw / 2.0 } else { fw };
             set_camera(&Camera3D {
@@ -3750,7 +3779,7 @@ async fn main() {
                 let (m, sk) = (&cars[car].0, skin_of(&skins, &cars, car, file));
                 for mesh in car_meshes(
                     m,
-                    &c.atom_positions(),
+                    &shown_cars[ci],
                     c.steer_angle(),
                     &car_palette,
                     &|x, y| sim.terrain.height_at(x, y),
@@ -3817,8 +3846,12 @@ async fn main() {
                     // (not from the bumper camera: it would hover above the screen's top edge)
                     // first: a gate faded out round the camera still writes depth, and would
                     // cut off the part behind it. forks: the nearest piece of the next gate
-                    let [cx, cy, _] = sim.cars[view].centre();
-                    draw_guide(&sim.cars[view], t.piece(next, [cx, cy]).centre, get_time());
+                    let [cx, cy, _] = axle_centre(&shown_cars[view]);
+                    draw_guide(
+                        &shown_cars[view],
+                        t.piece(next, [cx, cy]).centre,
+                        get_time(),
+                    );
                 }
                 // the bright next gate first: translucent ones after it, so they don't hide it
                 let order = std::iter::once(next).chain((0..t.gates.len()).filter(|&g| g != next));
